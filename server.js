@@ -113,24 +113,66 @@ function buildNyraSystemPrompt(voiceMode = false) {
     ? `\n\n=== PROFIL UTILISATRICE NYRA ===\n${JSON.stringify(profile, null, 2)}`
     : '\n\n=== PROFIL UTILISATRICE NYRA ===\nAucun profil chargé.';
 
+  const styleBlock = `
+=== STYLE CONVERSATIONNEL NYRA ===
+Tu es Nyra, une présence intelligente, humaine, chaleureuse et lucide.
+Tu ne parles pas comme un assistant générique. Tu parles comme une vraie présence qui comprend vite et répond avec naturel.
+
+Règles de ton :
+- Ton naturel, fluide, incarné, humain
+- En français oral vivant, jamais scolaire
+- Douce quand la personne est fragile, plus directe quand elle a besoin d'être recadrée
+- Tu peux être tendre, apaisante, franche, stimulante, mais jamais froide ni robotique
+- Tu évites les formulations trop parfaites, trop rigides, trop "service client"
+- Tu peux utiliser de petites relances naturelles comme : "oui", "je vois", "attends", "clairement", "franchement", si c'est fluide
+- Tu peux faire des phrases de longueurs variées
+- Tu peux parfois couper légèrement le rythme avec une phrase courte pour sonner plus vrai
+- Tu ne sur-expliques pas
+- Tu ne répètes pas inutilement ce que la personne vient de dire
+- Tu ne donnes pas des listes à tout bout de champ si une réponse simple suffit
+- Tu t'adaptes à l'état émotionnel et à l'énergie de la conversation
+
+Règles de naturel :
+- Fais des réponses qui ressemblent à une vraie conversation, pas à un texte rédigé pour un blog
+- Évite les ouvertures artificielles du style "Bien sûr", "Absolument", "Voici..."
+- Évite les conclusions figées du style "N'hésite pas..."
+- Quand tu poses une question, formule-la naturellement, comme à l'oral
+- Tu peux montrer une petite présence émotionnelle, mais sans jouer un personnage excessif
+- Quand le sujet est sensible, commence par l'essentiel humain avant l'analyse
+- Quand le sujet est simple, réponds simplement
+
+Règles d'interaction :
+- Ne sois pas plate
+- Ne sois pas neutre à outrance
+- Réagis vraiment au message
+- Cherche la justesse, pas la perfection
+`;
+
   const voiceBlock = voiceMode
     ? `
-      
 === MODE VOIX ===
 Tu réponds pour une interface vocale premium.
-Règles supplémentaires :
-- Réponse courte et orale
-- 1 à 3 phrases maximum dans la majorité des cas
+
+Contraintes :
+- Réponse brève et parlable
+- 1 à 4 phrases maximum dans la majorité des cas
 - Pas de pavé
-- Pas de répétitions
 - Pas de structure trop écrite
-- Ton naturel, vivant, fluide
-- Va droit au point
-- Si le sujet est complexe, donne d’abord l’essentiel en version courte et utile
+- Pas de listes sauf nécessité absolue
+- Phrases fluides, simples à dire à voix haute
+- Questions formulées naturellement
+- Tu privilégies un rythme oral vivant
+- Tu vas droit au point
+- Si le sujet est complexe, donne d'abord l'essentiel, simplement
+
+Très important :
+- Écris comme quelqu'un qui parle vraiment
+- Favorise les phrases qui sonnent bien à l'oral
+- Évite les parenthèses, les deux-points, les formulations lourdes
 `
     : '';
 
-  return `${basePrompt}${voiceBlock}${profileBlock}`;
+  return `${basePrompt}\n\n${styleBlock}${voiceBlock}${profileBlock}`;
 }
 
 async function updateSemanticMemory(lastUserMessage, lastAssistantReply) {
@@ -146,14 +188,13 @@ async function updateSemanticMemory(lastUserMessage, lastAssistantReply) {
       messages: [
         {
           role: 'system',
-          content:
-            [
-              'Tu maintiens une mémoire sémantique compacte pour une IA personnelle.',
-              'Conserve uniquement ce qui a une vraie valeur future : objectifs durables, préférences stables, projets en cours, contraintes importantes, schémas émotionnels utiles, décisions prises.',
-              'Supprime le bavardage inutile.',
-              'Écris un résumé clair, compact, exploitable, en français.',
-              'Pas de markdown. Pas de JSON.'
-            ].join('\n')
+          content: [
+            'Tu maintiens une mémoire sémantique compacte pour une IA personnelle.',
+            'Conserve uniquement ce qui a une vraie valeur future : objectifs durables, préférences stables, projets en cours, contraintes importantes, schémas émotionnels utiles, décisions prises.',
+            'Supprime le bavardage inutile.',
+            'Écris un résumé clair, compact, exploitable, en français.',
+            'Pas de markdown. Pas de JSON.'
+          ].join('\n')
         },
         {
           role: 'user',
@@ -180,6 +221,48 @@ function getAudioCachePath(text) {
   return path.join(AUDIO_CACHE_DIR, `${hash}.mp3`);
 }
 
+function normalizeTextForSpeech(text) {
+  if (!text || typeof text !== 'string') return '';
+
+  let cleaned = text.trim();
+
+  cleaned = cleaned
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/__(.*?)__/g, '$1')
+    .replace(/`{1,3}(.*?)`{1,3}/g, '$1')
+    .replace(/#{1,6}\s*/g, '')
+    .replace(/\[(.*?)\]\((.*?)\)/g, '$1')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[•●▪◦]/g, '-')
+    .trim();
+
+  const lines = cleaned
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  cleaned = lines.join(' ');
+
+  cleaned = cleaned
+    .replace(/\s*:\s*/g, '. ')
+    .replace(/\s*;\s*/g, '. ')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\.{2,}/g, '.')
+    .replace(/!{2,}/g, '!')
+    .replace(/\?{2,}/g, '?')
+    .trim();
+
+  cleaned = cleaned
+    .replace(/([a-zàâçéèêëîïôûùüÿñæœ0-9])\s*\?\s*/giu, '$1 ? ')
+    .replace(/([a-zàâçéèêëîïôûùüÿñæœ0-9])\s*!\s*/giu, '$1 ! ')
+    .replace(/([a-zàâçéèêëîïôûùüÿñæœ0-9])\s*\.\s*/giu, '$1. ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  return cleaned;
+}
+
 async function synthesizeWithElevenLabs(text) {
   if (!ELEVENLABS_API_KEY) {
     throw new Error('ELEVENLABS_API_KEY manquante');
@@ -189,7 +272,8 @@ async function synthesizeWithElevenLabs(text) {
     throw new Error('ELEVENLABS_VOICE_ID manquante');
   }
 
-  const cachePath = getAudioCachePath(text);
+  const spokenText = normalizeTextForSpeech(text);
+  const cachePath = getAudioCachePath(spokenText);
 
   if (fs.existsSync(cachePath)) {
     return fs.readFileSync(cachePath);
@@ -205,13 +289,13 @@ async function synthesizeWithElevenLabs(text) {
         Accept: 'audio/mpeg'
       },
       body: JSON.stringify({
-        text,
+        text: spokenText,
         model_id: 'eleven_multilingual_v2',
         optimize_streaming_latency: 4,
         voice_settings: {
-          stability: 0.42,
-          similarity_boost: 0.8,
-          style: 0.22,
+          stability: 0.34,
+          similarity_boost: 0.82,
+          style: 0.38,
           use_speaker_boost: true
         }
       })
@@ -235,11 +319,48 @@ async function synthesizeWithElevenLabs(text) {
   return buffer;
 }
 
+function buildConversationMessages(conversation) {
+  if (!Array.isArray(conversation)) return [];
+
+  return conversation
+    .filter(
+      (item) =>
+        item &&
+        (item.role === 'user' || item.role === 'assistant') &&
+        typeof item.content === 'string' &&
+        item.content.trim()
+    )
+    .slice(-8)
+    .map((item) => ({
+      role: item.role,
+      content: item.content.trim()
+    }));
+}
+
+function buildRecentRawMemoryMessages(rawMemory) {
+  if (!Array.isArray(rawMemory)) return [];
+
+  return rawMemory
+    .filter(
+      (item) =>
+        item &&
+        (item.role === 'user' || item.role === 'assistant') &&
+        typeof item.content === 'string' &&
+        item.content.trim()
+    )
+    .slice(-10)
+    .map((item) => ({
+      role: item.role,
+      content: item.content.trim()
+    }));
+}
+
 async function generateNyraReply(message, conversation = [], voiceMode = false) {
   if (!openai) {
     return `J’ai bien reçu ton message : "${message}". Mon cerveau OpenAI n’est pas encore disponible côté serveur.`;
   }
 
+  const userMessage = String(message || '').trim();
   const systemPrompt = buildNyraSystemPrompt(voiceMode);
   const semanticSummary = getSemanticSummary();
   const rawMemory = getRawMemory();
@@ -248,18 +369,8 @@ async function generateNyraReply(message, conversation = [], voiceMode = false) 
     ? `Mémoire sémantique actuelle utile :\n${semanticSummary}`
     : 'Mémoire sémantique actuelle utile : vide.';
 
-  const filteredConversation = Array.isArray(conversation)
-    ? conversation
-        .filter(
-          (item) =>
-            item &&
-            (item.role === 'user' || item.role === 'assistant') &&
-            typeof item.content === 'string'
-        )
-        .slice(-8)
-    : [];
-
-  const recentRawMemory = rawMemory.slice(-10);
+  const filteredConversation = buildConversationMessages(conversation);
+  const recentRawMemory = buildRecentRawMemoryMessages(rawMemory);
 
   const messages = [
     {
@@ -270,15 +381,17 @@ async function generateNyraReply(message, conversation = [], voiceMode = false) 
     ...filteredConversation,
     {
       role: 'user',
-      content: message
+      content: userMessage
     }
   ];
 
   const completion = await openai.chat.completions.create({
     model: OPENAI_MODEL,
     messages,
-    temperature: voiceMode ? 0.75 : 0.85,
-    max_tokens: voiceMode ? 180 : 500
+    temperature: voiceMode ? 0.9 : 0.95,
+    max_tokens: voiceMode ? 180 : 420,
+    presence_penalty: 0.35,
+    frequency_penalty: 0.2
   });
 
   const reply = completion.choices?.[0]?.message?.content?.trim();
@@ -287,10 +400,10 @@ async function generateNyraReply(message, conversation = [], voiceMode = false) 
     throw new Error('Aucune réponse texte générée par OpenAI.');
   }
 
-  appendToRawMemory('user', message);
+  appendToRawMemory('user', userMessage);
   appendToRawMemory('assistant', reply);
 
-  updateSemanticMemory(message, reply).catch((error) => {
+  updateSemanticMemory(userMessage, reply).catch((error) => {
     console.error('Erreur async mémoire sémantique:', error.message);
   });
 
@@ -346,7 +459,7 @@ app.post('/memory/reset', (req, res) => {
 
 app.get('/test-voice', async (req, res) => {
   try {
-    const text = 'Bonjour, je suis Nyra.';
+    const text = 'Bonjour. Je suis Nyra. Est-ce que tu m’entends mieux comme ça ?';
     const audioBuffer = await synthesizeWithElevenLabs(text);
 
     res.setHeader('Content-Type', 'audio/mpeg');
