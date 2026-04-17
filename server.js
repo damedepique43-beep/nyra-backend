@@ -4,6 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const OpenAI = require('openai');
 
 const app = express();
@@ -25,6 +26,7 @@ const PROFILE_PATH = path.join(__dirname, 'nyra_profile.json');
 const SYSTEM_PROMPT_PATH = path.join(__dirname, 'systemPromptNyra.txt');
 const RAW_MEMORY_PATH = path.join(__dirname, 'memory_raw.json');
 const SUMMARY_MEMORY_PATH = path.join(__dirname, 'memory_summary.json');
+const AUDIO_CACHE_DIR = path.join(__dirname, 'audio_cache');
 
 function ensureFileExists(filePath, defaultValue) {
   try {
@@ -36,8 +38,19 @@ function ensureFileExists(filePath, defaultValue) {
   }
 }
 
+function ensureDirExists(dirPath) {
+  try {
+    if (!fs.existsSync(dirPath)) {
+      fs.mkdirSync(dirPath, { recursive: true });
+    }
+  } catch (error) {
+    console.error(`Erreur création dossier ${dirPath}:`, error.message);
+  }
+}
+
 ensureFileExists(RAW_MEMORY_PATH, []);
 ensureFileExists(SUMMARY_MEMORY_PATH, { summary: '' });
+ensureDirExists(AUDIO_CACHE_DIR);
 
 function readJsonFileSafe(filePath, fallbackValue) {
   try {
@@ -80,9 +93,7 @@ function saveRawMemory(memory) {
 function appendToRawMemory(role, content) {
   const memory = getRawMemory();
   memory.push({ role, content });
-
-  const trimmed = memory.slice(-40);
-  saveRawMemory(trimmed);
+  saveRawMemory(memory.slice(-40));
 }
 
 function getSemanticSummary() {
@@ -94,7 +105,7 @@ function saveSemanticSummary(summary) {
   writeJsonFileSafe(SUMMARY_MEMORY_PATH, { summary });
 }
 
-function buildNyraSystemPrompt() {
+function buildNyraSystemPrompt(voiceMode = false) {
   const basePrompt = readTextFileSafe(SYSTEM_PROMPT_PATH).trim();
   const profile = readJsonFileSafe(PROFILE_PATH, null);
 
@@ -102,7 +113,24 @@ function buildNyraSystemPrompt() {
     ? `\n\n=== PROFIL UTILISATRICE NYRA ===\n${JSON.stringify(profile, null, 2)}`
     : '\n\n=== PROFIL UTILISATRICE NYRA ===\nAucun profil chargé.';
 
-  return `${basePrompt}${profileBlock}`;
+  const voiceBlock = voiceMode
+    ? `
+      
+=== MODE VOIX ===
+Tu réponds pour une interface vocale premium.
+Règles supplémentaires :
+- Réponse courte et orale
+- 1 à 3 phrases maximum dans la majorité des cas
+- Pas de pavé
+- Pas de répétitions
+- Pas de structure trop écrite
+- Ton naturel, vivant, fluide
+- Va droit au point
+- Si le sujet est complexe, donne d’abord l’essentiel en version courte et utile
+`
+    : '';
+
+  return `${basePrompt}${voiceBlock}${profileBlock}`;
 }
 
 async function updateSemanticMemory(lastUserMessage, lastAssistantReply) {
@@ -121,18 +149,10 @@ async function updateSemanticMemory(lastUserMessage, lastAssistantReply) {
           content:
             [
               'Tu maintiens une mémoire sémantique compacte pour une IA personnelle.',
-              'Ta mission : mettre à jour un résumé durable, utile et structuré de ce qui compte vraiment.',
-              'Conserve uniquement ce qui a une vraie valeur future :',
-              '- objectifs durables',
-              '- préférences stables',
-              '- projets en cours',
-              '- état émotionnel récurrent',
-              '- contraintes importantes',
-              '- décisions prises',
-              '- éléments relationnels ou psychologiques utiles à la continuité',
-              'Ne garde pas le bavardage inutile.',
+              'Conserve uniquement ce qui a une vraie valeur future : objectifs durables, préférences stables, projets en cours, contraintes importantes, schémas émotionnels utiles, décisions prises.',
+              'Supprime le bavardage inutile.',
               'Écris un résumé clair, compact, exploitable, en français.',
-              'Pas de markdown. Pas de listes géantes. Pas de JSON.'
+              'Pas de markdown. Pas de JSON.'
             ].join('\n')
         },
         {
@@ -155,6 +175,11 @@ async function updateSemanticMemory(lastUserMessage, lastAssistantReply) {
   }
 }
 
+function getAudioCachePath(text) {
+  const hash = crypto.createHash('sha1').update(text).digest('hex');
+  return path.join(AUDIO_CACHE_DIR, `${hash}.mp3`);
+}
+
 async function synthesizeWithElevenLabs(text) {
   if (!ELEVENLABS_API_KEY) {
     throw new Error('ELEVENLABS_API_KEY manquante');
@@ -162,6 +187,12 @@ async function synthesizeWithElevenLabs(text) {
 
   if (!ELEVENLABS_VOICE_ID) {
     throw new Error('ELEVENLABS_VOICE_ID manquante');
+  }
+
+  const cachePath = getAudioCachePath(text);
+
+  if (fs.existsSync(cachePath)) {
+    return fs.readFileSync(cachePath);
   }
 
   const response = await fetch(
@@ -176,10 +207,11 @@ async function synthesizeWithElevenLabs(text) {
       body: JSON.stringify({
         text,
         model_id: 'eleven_multilingual_v2',
+        optimize_streaming_latency: 4,
         voice_settings: {
-          stability: 0.45,
+          stability: 0.42,
           similarity_boost: 0.8,
-          style: 0.35,
+          style: 0.22,
           use_speaker_boost: true
         }
       })
@@ -192,15 +224,23 @@ async function synthesizeWithElevenLabs(text) {
   }
 
   const arrayBuffer = await response.arrayBuffer();
-  return Buffer.from(arrayBuffer);
+  const buffer = Buffer.from(arrayBuffer);
+
+  try {
+    fs.writeFileSync(cachePath, buffer);
+  } catch (error) {
+    console.error('Erreur écriture cache audio:', error.message);
+  }
+
+  return buffer;
 }
 
-async function generateNyraReply(message, conversation = []) {
+async function generateNyraReply(message, conversation = [], voiceMode = false) {
   if (!openai) {
     return `J’ai bien reçu ton message : "${message}". Mon cerveau OpenAI n’est pas encore disponible côté serveur.`;
   }
 
-  const systemPrompt = buildNyraSystemPrompt();
+  const systemPrompt = buildNyraSystemPrompt(voiceMode);
   const semanticSummary = getSemanticSummary();
   const rawMemory = getRawMemory();
 
@@ -237,8 +277,8 @@ async function generateNyraReply(message, conversation = []) {
   const completion = await openai.chat.completions.create({
     model: OPENAI_MODEL,
     messages,
-    temperature: 0.85,
-    max_tokens: 500
+    temperature: voiceMode ? 0.75 : 0.85,
+    max_tokens: voiceMode ? 180 : 500
   });
 
   const reply = completion.choices?.[0]?.message?.content?.trim();
@@ -344,60 +384,11 @@ app.post('/speak', async (req, res) => {
   }
 });
 
-app.get('/speak-file', async (req, res) => {
-  try {
-    const text = String(req.query?.text || '').trim();
-
-    if (!text) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Le paramètre query "text" est requis.'
-      });
-    }
-
-    const audioBuffer = await synthesizeWithElevenLabs(text);
-
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('Content-Disposition', 'inline; filename="nyra.mp3"');
-    res.send(audioBuffer);
-  } catch (error) {
-    console.error('/speak-file GET error:', error);
-    res.status(500).json({
-      ok: false,
-      error: error.message
-    });
-  }
-});
-
-app.post('/speak-file', async (req, res) => {
-  try {
-    const text = String(req.body?.text || '').trim();
-
-    if (!text) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Le champ "text" est requis.'
-      });
-    }
-
-    const audioBuffer = await synthesizeWithElevenLabs(text);
-
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('Content-Disposition', 'inline; filename="nyra.mp3"');
-    res.send(audioBuffer);
-  } catch (error) {
-    console.error('/speak-file POST error:', error);
-    res.status(500).json({
-      ok: false,
-      error: error.message
-    });
-  }
-});
-
 app.post('/chat', async (req, res) => {
   try {
     const message = String(req.body?.message || '').trim();
     const conversation = Array.isArray(req.body?.conversation) ? req.body.conversation : [];
+    const voiceMode = Boolean(req.body?.voiceMode);
 
     if (!message) {
       return res.status(400).json({
@@ -406,7 +397,7 @@ app.post('/chat', async (req, res) => {
       });
     }
 
-    const reply = await generateNyraReply(message, conversation);
+    const reply = await generateNyraReply(message, conversation, voiceMode);
 
     return res.json({
       ok: true,
@@ -420,33 +411,6 @@ app.post('/chat', async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: error.message || 'Erreur serveur sur /chat'
-    });
-  }
-});
-
-app.post('/chat-with-voice', async (req, res) => {
-  try {
-    const message = String(req.body?.message || '').trim();
-    const conversation = Array.isArray(req.body?.conversation) ? req.body.conversation : [];
-
-    if (!message) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Le champ "message" est requis.'
-      });
-    }
-
-    const reply = await generateNyraReply(message, conversation);
-    const audioBuffer = await synthesizeWithElevenLabs(reply);
-
-    res.setHeader('X-Nyra-Reply', encodeURIComponent(reply));
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.send(audioBuffer);
-  } catch (error) {
-    console.error('/chat-with-voice error:', error);
-    res.status(500).json({
-      ok: false,
-      error: error.message || 'Erreur serveur sur /chat-with-voice'
     });
   }
 });
