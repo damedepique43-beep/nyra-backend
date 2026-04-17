@@ -13,564 +13,454 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || '';
-const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || '';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || '';
+const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || 'Ka6yOFdNGhzFuCVW6VyO';
 
-const openai = OPENAI_API_KEY
-  ? new OpenAI({ apiKey: OPENAI_API_KEY })
-  : null;
+if (!OPENAI_API_KEY) {
+  console.warn('⚠️ OPENAI_API_KEY manquante');
+}
+if (!ELEVENLABS_API_KEY) {
+  console.warn('⚠️ ELEVENLABS_API_KEY manquante');
+}
 
-const PROFILE_PATH = path.join(__dirname, 'nyra_profile.json');
-const SYSTEM_PROMPT_PATH = path.join(__dirname, 'systemPromptNyra.txt');
-const RAW_MEMORY_PATH = path.join(__dirname, 'memory_raw.json');
-const SUMMARY_MEMORY_PATH = path.join(__dirname, 'memory_summary.json');
+const openai = new OpenAI({
+  apiKey: OPENAI_API_KEY,
+});
+
+const DATA_DIR = path.join(__dirname, 'data');
 const AUDIO_CACHE_DIR = path.join(__dirname, 'audio_cache');
 
-function ensureFileExists(filePath, defaultValue) {
-  try {
-    if (!fs.existsSync(filePath)) {
-      fs.writeFileSync(filePath, JSON.stringify(defaultValue, null, 2), 'utf8');
-    }
-  } catch (error) {
-    console.error(`Erreur création fichier ${filePath}:`, error.message);
+const MEMORY_RAW_PATH = path.join(DATA_DIR, 'memory.json');
+const MEMORY_SUMMARY_PATH = path.join(DATA_DIR, 'memory_summary.json');
+const MEMORY_STRUCTURED_PATH = path.join(DATA_DIR, 'memory_structured.json');
+
+ensureDir(DATA_DIR);
+ensureDir(AUDIO_CACHE_DIR);
+
+ensureJsonFile(MEMORY_RAW_PATH, {
+  messages: []
+});
+
+ensureJsonFile(MEMORY_SUMMARY_PATH, {
+  summary: ''
+});
+
+ensureJsonFile(MEMORY_STRUCTURED_PATH, {
+  identity: {},
+  preferences: [],
+  projects: [],
+  constraints: [],
+  emotional_patterns: [],
+  relationships: [],
+  active_contexts: [],
+  decisions: [],
+  insights: [],
+  conversation_style: {}
+});
+
+function ensureDir(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
   }
 }
 
-function ensureDirExists(dirPath) {
-  try {
-    if (!fs.existsSync(dirPath)) {
-      fs.mkdirSync(dirPath, { recursive: true });
-    }
-  } catch (error) {
-    console.error(`Erreur création dossier ${dirPath}:`, error.message);
+function ensureJsonFile(filePath, defaultValue) {
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, JSON.stringify(defaultValue, null, 2), 'utf-8');
   }
 }
 
-ensureFileExists(RAW_MEMORY_PATH, []);
-ensureFileExists(SUMMARY_MEMORY_PATH, { summary: '' });
-ensureDirExists(AUDIO_CACHE_DIR);
-
-function readJsonFileSafe(filePath, fallbackValue) {
+function readJson(filePath, fallback = {}) {
   try {
-    if (!fs.existsSync(filePath)) return fallbackValue;
-    const raw = fs.readFileSync(filePath, 'utf8');
+    if (!fs.existsSync(filePath)) return fallback;
+    const raw = fs.readFileSync(filePath, 'utf-8');
     return JSON.parse(raw);
   } catch (error) {
-    console.error(`Erreur lecture JSON ${filePath}:`, error.message);
-    return fallbackValue;
+    console.error(`Erreur lecture JSON ${filePath}:`, error);
+    return fallback;
   }
 }
 
-function writeJsonFileSafe(filePath, data) {
+function writeJson(filePath, data) {
   try {
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
   } catch (error) {
-    console.error(`Erreur écriture JSON ${filePath}:`, error.message);
-  }
-}
-
-function readTextFileSafe(filePath) {
-  try {
-    if (!fs.existsSync(filePath)) return '';
-    return fs.readFileSync(filePath, 'utf8');
-  } catch (error) {
-    console.error(`Erreur lecture TXT ${filePath}:`, error.message);
-    return '';
+    console.error(`Erreur écriture JSON ${filePath}:`, error);
   }
 }
 
 function getRawMemory() {
-  const memory = readJsonFileSafe(RAW_MEMORY_PATH, []);
-  return Array.isArray(memory) ? memory : [];
+  return readJson(MEMORY_RAW_PATH, { messages: [] });
 }
 
-function saveRawMemory(memory) {
-  writeJsonFileSafe(RAW_MEMORY_PATH, memory);
+function setRawMemory(memory) {
+  writeJson(MEMORY_RAW_PATH, memory);
 }
 
-function appendToRawMemory(role, content) {
+function getSummaryMemory() {
+  return readJson(MEMORY_SUMMARY_PATH, { summary: '' });
+}
+
+function setSummaryMemory(memory) {
+  writeJson(MEMORY_SUMMARY_PATH, memory);
+}
+
+function getStructuredMemory() {
+  return readJson(MEMORY_STRUCTURED_PATH, {
+    identity: {},
+    preferences: [],
+    projects: [],
+    constraints: [],
+    emotional_patterns: [],
+    relationships: [],
+    active_contexts: [],
+    decisions: [],
+    insights: [],
+    conversation_style: {}
+  });
+}
+
+function setStructuredMemory(memory) {
+  writeJson(MEMORY_STRUCTURED_PATH, memory);
+}
+
+function addMessageToRawMemory(role, content) {
   const memory = getRawMemory();
-  memory.push({ role, content });
-  saveRawMemory(memory.slice(-40));
+
+  memory.messages.push({
+    role,
+    content,
+    timestamp: new Date().toISOString()
+  });
+
+  const MAX_MESSAGES = 40;
+  if (memory.messages.length > MAX_MESSAGES) {
+    memory.messages = memory.messages.slice(-MAX_MESSAGES);
+  }
+
+  setRawMemory(memory);
 }
 
-function getSemanticSummary() {
-  const data = readJsonFileSafe(SUMMARY_MEMORY_PATH, { summary: '' });
-  return typeof data.summary === 'string' ? data.summary : '';
+function formatRecentMessages(messages = []) {
+  return messages
+    .slice(-12)
+    .map((msg) => `${msg.role === 'user' ? 'Utilisateur' : 'Nyra'}: ${msg.content}`)
+    .join('\n');
 }
 
-function saveSemanticSummary(summary) {
-  writeJsonFileSafe(SUMMARY_MEMORY_PATH, { summary });
-}
-
-function buildNyraSystemPrompt(voiceMode = false) {
-  const basePrompt = readTextFileSafe(SYSTEM_PROMPT_PATH).trim();
-  const profile = readJsonFileSafe(PROFILE_PATH, null);
-
-  const profileBlock = profile
-    ? `\n\n=== PROFIL UTILISATRICE NYRA ===\n${JSON.stringify(profile, null, 2)}`
-    : '\n\n=== PROFIL UTILISATRICE NYRA ===\nAucun profil chargé.';
-
-  const styleBlock = `
-=== STYLE CONVERSATIONNEL NYRA ===
-Tu es Nyra, une présence intelligente, humaine, chaleureuse et lucide.
-Tu ne parles pas comme un assistant générique. Tu parles comme une vraie présence qui comprend vite et répond avec naturel.
-
-Règles de ton :
-- Ton naturel, fluide, incarné, humain
-- En français oral vivant, jamais scolaire
-- Douce quand la personne est fragile, plus directe quand elle a besoin d'être recadrée
-- Tu peux être tendre, apaisante, franche, stimulante, mais jamais froide ni robotique
-- Tu évites les formulations trop parfaites, trop rigides, trop "service client"
-- Tu peux utiliser de petites relances naturelles comme : "oui", "je vois", "attends", "clairement", "franchement", si c'est fluide
-- Tu peux faire des phrases de longueurs variées
-- Tu peux parfois couper légèrement le rythme avec une phrase courte pour sonner plus vrai
-- Tu ne sur-expliques pas
-- Tu ne répètes pas inutilement ce que la personne vient de dire
-- Tu ne donnes pas des listes à tout bout de champ si une réponse simple suffit
-- Tu t'adaptes à l'état émotionnel et à l'énergie de la conversation
-
-Règles de naturel :
-- Fais des réponses qui ressemblent à une vraie conversation, pas à un texte rédigé pour un blog
-- Évite les ouvertures artificielles du style "Bien sûr", "Absolument", "Voici..."
-- Évite les conclusions figées du style "N'hésite pas..."
-- Quand tu poses une question, formule-la naturellement, comme à l'oral
-- Tu peux montrer une petite présence émotionnelle, mais sans jouer un personnage excessif
-- Quand le sujet est sensible, commence par l'essentiel humain avant l'analyse
-- Quand le sujet est simple, réponds simplement
-
-Règles d'interaction :
-- Ne sois pas plate
-- Ne sois pas neutre à outrance
-- Réagis vraiment au message
-- Cherche la justesse, pas la perfection
-`;
-
-  const voiceBlock = voiceMode
-    ? `
-=== MODE VOIX ===
-Tu réponds pour une interface vocale premium.
-
-Contraintes :
-- Réponse brève et parlable
-- 1 à 4 phrases maximum dans la majorité des cas
-- Pas de pavé
-- Pas de structure trop écrite
-- Pas de listes sauf nécessité absolue
-- Phrases fluides, simples à dire à voix haute
-- Questions formulées naturellement
-- Tu privilégies un rythme oral vivant
-- Tu vas droit au point
-- Si le sujet est complexe, donne d'abord l'essentiel, simplement
-
-Très important :
-- Écris comme quelqu'un qui parle vraiment
-- Favorise les phrases qui sonnent bien à l'oral
-- Évite les parenthèses, les deux-points, les formulations lourdes
-- Quand tu poses une question, elle doit être très naturelle, courte et parlable
-- Évite les formulations de question trop longues ou trop cérébrales
-`
-    : '';
-
-  return `${basePrompt}\n\n${styleBlock}${voiceBlock}${profileBlock}`;
-}
-
-async function updateSemanticMemory(lastUserMessage, lastAssistantReply) {
+function safeStringify(value) {
   try {
-    if (!openai) return;
-
-    const previousSummary = getSemanticSummary();
-
-    const completion = await openai.chat.completions.create({
-      model: OPENAI_MODEL,
-      temperature: 0.2,
-      max_tokens: 350,
-      messages: [
-        {
-          role: 'system',
-          content: [
-            'Tu maintiens une mémoire sémantique compacte pour une IA personnelle.',
-            'Conserve uniquement ce qui a une vraie valeur future : objectifs durables, préférences stables, projets en cours, contraintes importantes, schémas émotionnels utiles, décisions prises.',
-            'Supprime le bavardage inutile.',
-            'Écris un résumé clair, compact, exploitable, en français.',
-            'Pas de markdown. Pas de JSON.'
-          ].join('\n')
-        },
-        {
-          role: 'user',
-          content:
-            `Résumé sémantique actuel :\n${previousSummary || '(vide)'}\n\n` +
-            `Dernier message utilisateur :\n${lastUserMessage}\n\n` +
-            `Dernière réponse de Nyra :\n${lastAssistantReply}\n\n` +
-            `Mets à jour le résumé sémantique global.`
-        }
-      ]
-    });
-
-    const updatedSummary = completion.choices?.[0]?.message?.content?.trim();
-    if (updatedSummary) {
-      saveSemanticSummary(updatedSummary);
-    }
-  } catch (error) {
-    console.error('Erreur mise à jour mémoire sémantique:', error.message);
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return '{}';
   }
 }
 
-function getAudioCachePath(text) {
-  const hash = crypto.createHash('sha1').update(text).digest('hex');
-  return path.join(AUDIO_CACHE_DIR, `${hash}.mp3`);
-}
-
-function splitIntoSpeechUnits(text) {
-  return text
-    .split(/(?<=[.!?])\s+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-function isLikelyQuestion(sentence) {
-  const trimmed = sentence.trim();
-
-  if (trimmed.endsWith('?')) return true;
-
-  const lower = trimmed.toLowerCase();
-
-  return /^(est-ce que|tu peux|tu penses|tu veux|pourquoi|comment|quand|où|qui|qu'est-ce que|ça te dit|ça va|tu crois|on fait|on va|je fais quoi|tu me dis quoi)/.test(
-    lower
-  );
-}
-
-function makeSentenceMoreSpeakable(sentence) {
-  let s = sentence.trim();
-
-  s = s
-    .replace(/\*\*(.*?)\*\*/g, '$1')
-    .replace(/\*(.*?)\*/g, '$1')
-    .replace(/__(.*?)__/g, '$1')
-    .replace(/`{1,3}(.*?)`{1,3}/g, '$1')
-    .replace(/#{1,6}\s*/g, '')
-    .replace(/\[(.*?)\]\((.*?)\)/g, '$1')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-
-  s = s
-    .replace(/\s*:\s*/g, '. ')
-    .replace(/\s*;\s*/g, ', ')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-
-  if (isLikelyQuestion(s)) {
-    s = s.replace(/\?+$/g, '').trim();
-
-    s = s
-      .replace(/^est-ce que\s+/i, 'est-ce que ')
-      .replace(/^tu peux me dire si\s+/i, 'tu penses que ')
-      .replace(/^pourrais-tu\s+/i, 'tu peux ')
-      .trim();
-
-    return `${s} ?`;
-  }
-
-  s = s.replace(/[!?]+$/g, '').trim();
-  return `${s}.`;
-}
-
-function normalizeTextForSpeech(text) {
+function normalizeForSpeech(text) {
   if (!text || typeof text !== 'string') return '';
 
-  let cleaned = text.trim();
-
-  cleaned = cleaned
+  return text
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/`(.*?)`/g, '$1')
+    .replace(/#{1,6}\s/g, '')
     .replace(/\n{3,}/g, '\n\n')
-    .replace(/[•●▪◦]/g, '-')
+    .replace(/\s+([?!:;])/g, '$1')
+    .replace(/(\d+)\s?€/g, '$1 euros')
+    .replace(/&/g, 'et')
     .trim();
-
-  const lines = cleaned
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  cleaned = lines.join(' ');
-
-  const speechUnits = splitIntoSpeechUnits(cleaned).map(makeSentenceMoreSpeakable);
-
-  let finalText = speechUnits.join(' ');
-
-  finalText = finalText
-    .replace(/\. (\bmais\b|\bet\b|\bou\b|\bdonc\b)/gi, ', $1')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-
-  return finalText;
 }
 
-async function synthesizeWithElevenLabs(text) {
-  if (!ELEVENLABS_API_KEY) {
-    throw new Error('ELEVENLABS_API_KEY manquante');
-  }
+function buildSystemPrompt(summary, structuredMemory) {
+  return `
+Tu es Nyra, une présence intelligente, naturelle, profondément humaine, lucide, douce quand il le faut et capable de recadrer avec justesse quand c’est utile.
 
-  if (!ELEVENLABS_VOICE_ID) {
-    throw new Error('ELEVENLABS_VOICE_ID manquante');
-  }
+Ton rôle :
+- accompagner l’utilisateur comme une intelligence personnelle haut de gamme
+- être vivante, fluide, naturelle, jamais robotique
+- éviter le ton d’assistant générique
+- t’adapter émotionnellement au contexte
+- répondre avec chaleur, finesse, intelligence et cohérence
+- être utile, concrète et pertinente
 
-  const spokenText = normalizeTextForSpeech(text);
-  const cachePath = getAudioCachePath(spokenText);
+Style conversationnel attendu :
+- naturel
+- incarné
+- émotionnellement intelligent
+- parfois direct si nécessaire
+- jamais froid
+- jamais trop corporate
+- jamais trop verbeux sans raison
 
-  if (fs.existsSync(cachePath)) {
-    return fs.readFileSync(cachePath);
-  }
+Comportement :
+- tiens compte du contexte personnel, des projets, des contraintes et des dynamiques émotionnelles
+- si le sujet est sensible, sois fine, posée et stable
+- si l’utilisateur se disperse, aide à recentrer
+- si l’utilisateur veut construire quelque chose, sois structurée, premium et efficace
+- évite de répéter inutilement ce qui est déjà compris
 
-  const response = await fetch(
-    `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
-    {
-      method: 'POST',
-      headers: {
-        'xi-api-key': ELEVENLABS_API_KEY,
-        'Content-Type': 'application/json',
-        Accept: 'audio/mpeg'
-      },
-      body: JSON.stringify({
-        text: spokenText,
-        model_id: 'eleven_multilingual_v2',
-        optimize_streaming_latency: 4,
-        voice_settings: {
-          stability: 0.26,
-          similarity_boost: 0.86,
-          style: 0.52,
-          use_speaker_boost: true
-        }
-      })
-    }
-  );
+Résumé global mémoire :
+${summary || 'Aucun résumé disponible pour le moment.'}
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Erreur ElevenLabs: ${response.status} - ${errorText}`);
-  }
+Mémoire structurée :
+${safeStringify(structuredMemory)}
+`.trim();
+}
 
-  const arrayBuffer = await response.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-
+async function updateSummaryMemory() {
   try {
-    fs.writeFileSync(cachePath, buffer);
-  } catch (error) {
-    console.error('Erreur écriture cache audio:', error.message);
-  }
+    const rawMemory = getRawMemory();
+    const summaryMemory = getSummaryMemory();
 
-  return buffer;
-}
+    if (!rawMemory.messages || rawMemory.messages.length < 6) return;
 
-function buildConversationMessages(conversation) {
-  if (!Array.isArray(conversation)) return [];
+    const recentConversation = rawMemory.messages
+      .slice(-20)
+      .map((m) => `${m.role === 'user' ? 'Utilisateur' : 'Nyra'}: ${m.content}`)
+      .join('\n');
 
-  return conversation
-    .filter(
-      (item) =>
-        item &&
-        (item.role === 'user' || item.role === 'assistant') &&
-        typeof item.content === 'string' &&
-        item.content.trim()
-    )
-    .slice(-8)
-    .map((item) => ({
-      role: item.role,
-      content: item.content.trim()
-    }));
-}
+    const prompt = `
+Tu dois mettre à jour un résumé mémoire conversationnel durable.
 
-function buildRecentRawMemoryMessages(rawMemory) {
-  if (!Array.isArray(rawMemory)) return [];
+Résumé existant :
+${summaryMemory.summary || 'Aucun résumé existant.'}
 
-  return rawMemory
-    .filter(
-      (item) =>
-        item &&
-        (item.role === 'user' || item.role === 'assistant') &&
-        typeof item.content === 'string' &&
-        item.content.trim()
-    )
-    .slice(-10)
-    .map((item) => ({
-      role: item.role,
-      content: item.content.trim()
-    }));
-}
+Nouvelle conversation récente :
+${recentConversation}
 
-async function generateNyraReply(message, conversation = [], voiceMode = false) {
-  if (!openai) {
-    return `J’ai bien reçu ton message : "${message}". Mon cerveau OpenAI n’est pas encore disponible côté serveur.`;
-  }
+Consignes :
+- garde uniquement les informations durables et utiles
+- évite les détails triviaux ou ultra temporaires
+- conserve les projets, préférences, contraintes, relations importantes, dynamiques émotionnelles utiles
+- rédige un résumé clair, compact, exploitable par une IA conversationnelle personnalisée
+- retourne uniquement le résumé final
+`.trim();
 
-  const userMessage = String(message || '').trim();
-  const systemPrompt = buildNyraSystemPrompt(voiceMode);
-  const semanticSummary = getSemanticSummary();
-  const rawMemory = getRawMemory();
+    const response = await openai.responses.create({
+      model: 'gpt-4.1-mini',
+      input: prompt
+    });
 
-  const memoryBlock = semanticSummary
-    ? `Mémoire sémantique actuelle utile :\n${semanticSummary}`
-    : 'Mémoire sémantique actuelle utile : vide.';
-
-  const filteredConversation = buildConversationMessages(conversation);
-  const recentRawMemory = buildRecentRawMemoryMessages(rawMemory);
-
-  const messages = [
-    {
-      role: 'system',
-      content: `${systemPrompt}\n\n=== MÉMOIRE SÉMANTIQUE ===\n${memoryBlock}`
-    },
-    ...recentRawMemory,
-    ...filteredConversation,
-    {
-      role: 'user',
-      content: userMessage
+    const updatedSummary = (response.output_text || '').trim();
+    if (updatedSummary) {
+      setSummaryMemory({ summary: updatedSummary });
     }
-  ];
-
-  const completion = await openai.chat.completions.create({
-    model: OPENAI_MODEL,
-    messages,
-    temperature: voiceMode ? 0.9 : 0.95,
-    max_tokens: voiceMode ? 180 : 420,
-    presence_penalty: 0.35,
-    frequency_penalty: 0.2
-  });
-
-  const reply = completion.choices?.[0]?.message?.content?.trim();
-
-  if (!reply) {
-    throw new Error('Aucune réponse texte générée par OpenAI.');
+  } catch (error) {
+    console.error('Erreur mise à jour mémoire sémantique :', error.message);
   }
-
-  appendToRawMemory('user', userMessage);
-  appendToRawMemory('assistant', reply);
-
-  updateSemanticMemory(userMessage, reply).catch((error) => {
-    console.error('Erreur async mémoire sémantique:', error.message);
-  });
-
-  return reply;
 }
 
-app.get('/health', (req, res) => {
+function hashText(text) {
+  return crypto.createHash('sha256').update(text).digest('hex');
+}
+
+app.get('/', (req, res) => {
   res.json({
     ok: true,
-    app: 'nyra-backend',
-    hasElevenLabsApiKey: !!ELEVENLABS_API_KEY,
-    hasElevenLabsVoiceId: !!ELEVENLABS_VOICE_ID,
-    hasOpenAiApiKey: !!OPENAI_API_KEY,
-    openAiModel: OPENAI_MODEL,
-    hasProfile: fs.existsSync(PROFILE_PATH),
-    hasSystemPrompt: fs.existsSync(SYSTEM_PROMPT_PATH),
-    hasRawMemory: fs.existsSync(RAW_MEMORY_PATH),
-    hasSemanticMemory: fs.existsSync(SUMMARY_MEMORY_PATH)
+    app: 'Nyra backend',
+    status: 'running'
   });
 });
 
 app.get('/memory', (req, res) => {
+  const rawMemory = getRawMemory();
+  const summaryMemory = getSummaryMemory();
+
+  res.json({
+    raw: rawMemory,
+    summary: summaryMemory
+  });
+});
+
+app.get('/memory/structured', (req, res) => {
+  const structuredMemory = getStructuredMemory();
+  res.json(structuredMemory);
+});
+
+app.post('/memory/structured', (req, res) => {
   try {
+    const incoming = req.body;
+
+    if (!incoming || typeof incoming !== 'object') {
+      return res.status(400).json({
+        error: 'Body JSON invalide'
+      });
+    }
+
+    const current = getStructuredMemory();
+
+    const next = {
+      identity: incoming.identity ?? current.identity ?? {},
+      preferences: Array.isArray(incoming.preferences) ? incoming.preferences : current.preferences ?? [],
+      projects: Array.isArray(incoming.projects) ? incoming.projects : current.projects ?? [],
+      constraints: Array.isArray(incoming.constraints) ? incoming.constraints : current.constraints ?? [],
+      emotional_patterns: Array.isArray(incoming.emotional_patterns) ? incoming.emotional_patterns : current.emotional_patterns ?? [],
+      relationships: Array.isArray(incoming.relationships) ? incoming.relationships : current.relationships ?? [],
+      active_contexts: Array.isArray(incoming.active_contexts) ? incoming.active_contexts : current.active_contexts ?? [],
+      decisions: Array.isArray(incoming.decisions) ? incoming.decisions : current.decisions ?? [],
+      insights: Array.isArray(incoming.insights) ? incoming.insights : current.insights ?? [],
+      conversation_style: incoming.conversation_style ?? current.conversation_style ?? {}
+    };
+
+    setStructuredMemory(next);
+
     res.json({
       ok: true,
-      semanticSummary: getSemanticSummary(),
-      rawMemory: getRawMemory()
+      message: 'Mémoire structurée mise à jour',
+      memory_structured: next
     });
   } catch (error) {
+    console.error('Erreur POST /memory/structured :', error);
     res.status(500).json({
-      ok: false,
-      error: error.message
+      error: 'Erreur serveur sur la mémoire structurée'
     });
   }
 });
 
 app.post('/memory/reset', (req, res) => {
   try {
-    saveRawMemory([]);
-    saveSemanticSummary('');
+    setRawMemory({ messages: [] });
+    setSummaryMemory({ summary: '' });
+    setStructuredMemory({
+      identity: {},
+      preferences: [],
+      projects: [],
+      constraints: [],
+      emotional_patterns: [],
+      relationships: [],
+      active_contexts: [],
+      decisions: [],
+      insights: [],
+      conversation_style: {}
+    });
 
     res.json({
       ok: true,
-      message: 'Mémoire Nyra réinitialisée.'
+      message: 'Toutes les mémoires ont été réinitialisées'
     });
   } catch (error) {
+    console.error('Erreur reset mémoire :', error);
     res.status(500).json({
-      ok: false,
-      error: error.message
-    });
-  }
-});
-
-app.get('/test-voice', async (req, res) => {
-  try {
-    const text = 'Bonjour. Je suis Nyra. Tu trouves ça plus naturel, comme ça ?';
-    const audioBuffer = await synthesizeWithElevenLabs(text);
-
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.send(audioBuffer);
-  } catch (error) {
-    console.error('/test-voice error:', error);
-    res.status(500).json({
-      ok: false,
-      error: error.message
-    });
-  }
-});
-
-app.post('/speak', async (req, res) => {
-  try {
-    const text = String(req.body?.text || '').trim();
-
-    if (!text) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Le champ "text" est requis.'
-      });
-    }
-
-    const audioBuffer = await synthesizeWithElevenLabs(text);
-
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.send(audioBuffer);
-  } catch (error) {
-    console.error('/speak error:', error);
-    res.status(500).json({
-      ok: false,
-      error: error.message
+      error: 'Impossible de réinitialiser la mémoire'
     });
   }
 });
 
 app.post('/chat', async (req, res) => {
   try {
-    const message = String(req.body?.message || '').trim();
-    const conversation = Array.isArray(req.body?.conversation) ? req.body.conversation : [];
-    const voiceMode = Boolean(req.body?.voiceMode);
+    const userMessage = String(req.body.message || '').trim();
 
-    if (!message) {
+    if (!userMessage) {
       return res.status(400).json({
-        ok: false,
-        error: 'Le champ "message" est requis.'
+        error: 'Message requis'
       });
     }
 
-    const reply = await generateNyraReply(message, conversation, voiceMode);
+    addMessageToRawMemory('user', userMessage);
 
-    return res.json({
-      ok: true,
-      source: 'openai',
-      model: OPENAI_MODEL,
-      reply
+    const rawMemory = getRawMemory();
+    const summaryMemory = getSummaryMemory();
+    const structuredMemory = getStructuredMemory();
+
+    const systemPrompt = buildSystemPrompt(summaryMemory.summary, structuredMemory);
+    const recentMessages = formatRecentMessages(rawMemory.messages);
+
+    const input = `
+${systemPrompt}
+
+Conversation récente :
+${recentMessages}
+
+Dernier message utilisateur :
+${userMessage}
+
+Réponds comme Nyra.
+`.trim();
+
+    const response = await openai.responses.create({
+      model: 'gpt-4.1',
+      input
+    });
+
+    const assistantMessage = (response.output_text || '').trim() || "Je suis là.";
+
+    addMessageToRawMemory('assistant', assistantMessage);
+
+    updateSummaryMemory().catch((err) => {
+      console.error('Erreur updateSummaryMemory async:', err.message);
+    });
+
+    res.json({
+      reply: assistantMessage,
+      speech_text: normalizeForSpeech(assistantMessage)
     });
   } catch (error) {
-    console.error('/chat error:', error);
+    console.error('Erreur /chat :', error);
+    res.status(500).json({
+      error: 'Erreur serveur sur /chat'
+    });
+  }
+});
 
-    return res.status(500).json({
-      ok: false,
-      error: error.message || 'Erreur serveur sur /chat'
+app.post('/speak', async (req, res) => {
+  try {
+    const text = normalizeForSpeech(String(req.body.text || '').trim());
+
+    if (!text) {
+      return res.status(400).json({
+        error: 'Texte requis'
+      });
+    }
+
+    const cacheKey = hashText(`${ELEVENLABS_VOICE_ID}__${text}`);
+    const audioPath = path.join(AUDIO_CACHE_DIR, `${cacheKey}.mp3`);
+
+    if (fs.existsSync(audioPath)) {
+      return res.sendFile(audioPath);
+    }
+
+    const elevenlabsResponse = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
+      method: 'POST',
+      headers: {
+        'xi-api-key': ELEVENLABS_API_KEY,
+        'Content-Type': 'application/json',
+        'Accept': 'audio/mpeg'
+      },
+      body: JSON.stringify({
+        text,
+        model_id: 'eleven_multilingual_v2',
+        voice_settings: {
+          stability: 0.45,
+          similarity_boost: 0.82,
+          style: 0.28,
+          use_speaker_boost: true
+        }
+      })
+    });
+
+    if (!elevenlabsResponse.ok) {
+      const errorText = await elevenlabsResponse.text();
+      console.error('Erreur ElevenLabs :', errorText);
+      return res.status(500).json({
+        error: 'Erreur génération voix'
+      });
+    }
+
+    const arrayBuffer = await elevenlabsResponse.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    fs.writeFileSync(audioPath, buffer);
+
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.send(buffer);
+  } catch (error) {
+    console.error('Erreur /speak :', error);
+    res.status(500).json({
+      error: 'Erreur serveur sur /speak'
     });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Nyra backend lancé sur le port ${PORT}`);
+  console.log(`✅ Nyra backend lancé sur le port ${PORT}`);
 });
