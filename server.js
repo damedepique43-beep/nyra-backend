@@ -23,48 +23,39 @@ const openai = OPENAI_API_KEY
 
 const PROFILE_PATH = path.join(__dirname, 'nyra_profile.json');
 const SYSTEM_PROMPT_PATH = path.join(__dirname, 'systemPromptNyra.txt');
+const MEMORY_PATH = path.join(__dirname, 'memory.json');
 
-function readJsonFileSafe(filePath) {
-  try {
-    if (!fs.existsSync(filePath)) return null;
-    const raw = fs.readFileSync(filePath, 'utf8');
-    return JSON.parse(raw);
-  } catch (error) {
-    console.error('Erreur lecture JSON :', error.message);
-    return null;
-  }
+function readJson(file) {
+  if (!fs.existsSync(file)) return null;
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
-function readTextFileSafe(filePath) {
-  try {
-    if (!fs.existsSync(filePath)) return '';
-    return fs.readFileSync(filePath, 'utf8');
-  } catch (error) {
-    console.error('Erreur lecture TXT :', error.message);
-    return '';
-  }
+function writeJson(file, data) {
+  fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
-function buildNyraSystemPrompt() {
-  const basePrompt = readTextFileSafe(SYSTEM_PROMPT_PATH).trim();
-  const profile = readJsonFileSafe(PROFILE_PATH);
-
-  const profileBlock = profile
-    ? `\n\n=== PROFIL UTILISATRICE NYRA ===\n${JSON.stringify(profile, null, 2)}`
-    : '\n\n=== PROFIL UTILISATRICE NYRA ===\nAucun profil chargé.';
-
-  return `${basePrompt}${profileBlock}`;
+function getMemory() {
+  const mem = readJson(MEMORY_PATH);
+  return Array.isArray(mem) ? mem : [];
 }
 
-async function synthesizeWithElevenLabs(text) {
-  if (!ELEVENLABS_API_KEY) {
-    throw new Error('ELEVENLABS_API_KEY manquante');
-  }
+function saveToMemory(entry) {
+  const mem = getMemory();
+  mem.push(entry);
 
-  if (!ELEVENLABS_VOICE_ID) {
-    throw new Error('ELEVENLABS_VOICE_ID manquante');
-  }
+  // garde seulement les 50 derniers messages
+  const trimmed = mem.slice(-50);
+  writeJson(MEMORY_PATH, trimmed);
+}
 
+function buildSystemPrompt() {
+  const base = fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf8');
+  const profile = readJson(PROFILE_PATH);
+
+  return `${base}\n\n=== PROFIL ===\n${JSON.stringify(profile, null, 2)}`;
+}
+
+async function synthesize(text) {
   const response = await fetch(
     `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
     {
@@ -76,281 +67,61 @@ async function synthesizeWithElevenLabs(text) {
       },
       body: JSON.stringify({
         text,
-        model_id: 'eleven_multilingual_v2',
-        voice_settings: {
-          stability: 0.45,
-          similarity_boost: 0.8,
-          style: 0.35,
-          use_speaker_boost: true
-        }
+        model_id: 'eleven_multilingual_v2'
       })
     }
   );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Erreur ElevenLabs: ${response.status} - ${errorText}`);
-  }
 
   const arrayBuffer = await response.arrayBuffer();
   return Buffer.from(arrayBuffer);
 }
 
-function getFallbackNyraReply(message) {
-  const clean = String(message || '').trim();
-
-  if (!clean) {
-    return "Je suis là. Dis-moi ce que tu as sur le cœur ou ce dont tu as besoin, et on reprend proprement.";
-  }
-
-  return `J’ai bien reçu ton message : "${clean}". Pour l’instant je peux encore te répondre en mode secours, mais l’objectif est que mon vrai cerveau OpenAI prenne totalement le relais.`;
-}
-
 app.get('/health', (req, res) => {
   res.json({
     ok: true,
-    app: 'nyra-backend',
-    hasElevenLabsApiKey: !!ELEVENLABS_API_KEY,
-    hasElevenLabsVoiceId: !!ELEVENLABS_VOICE_ID,
     hasOpenAiApiKey: !!OPENAI_API_KEY,
-    openAiModel: OPENAI_MODEL,
     hasProfile: fs.existsSync(PROFILE_PATH),
-    hasSystemPrompt: fs.existsSync(SYSTEM_PROMPT_PATH)
+    hasSystemPrompt: fs.existsSync(SYSTEM_PROMPT_PATH),
+    hasMemory: fs.existsSync(MEMORY_PATH)
   });
 });
 
-app.get('/test-voice', async (req, res) => {
+app.post('/chat-with-voice', async (req, res) => {
   try {
-    const text = "Bonjour, je suis Nyra. Le backend voix et le cerveau IA sont en cours d’intégration.";
-    const audioBuffer = await synthesizeWithElevenLabs(text);
+    const message = req.body.message;
 
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.send(audioBuffer);
-  } catch (error) {
-    console.error('/test-voice error:', error);
-    res.status(500).json({
-      ok: false,
-      error: error.message
-    });
-  }
-});
-
-app.post('/speak', async (req, res) => {
-  try {
-    const text = String(req.body?.text || '').trim();
-
-    if (!text) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Le champ "text" est requis.'
-      });
-    }
-
-    const audioBuffer = await synthesizeWithElevenLabs(text);
-
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.send(audioBuffer);
-  } catch (error) {
-    console.error('/speak error:', error);
-    res.status(500).json({
-      ok: false,
-      error: error.message
-    });
-  }
-});
-
-app.get('/speak-file', async (req, res) => {
-  try {
-    const text = String(req.query?.text || '').trim();
-
-    if (!text) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Le paramètre query "text" est requis.'
-      });
-    }
-
-    const audioBuffer = await synthesizeWithElevenLabs(text);
-
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('Content-Disposition', 'inline; filename="nyra.mp3"');
-    res.send(audioBuffer);
-  } catch (error) {
-    console.error('/speak-file GET error:', error);
-    res.status(500).json({
-      ok: false,
-      error: error.message
-    });
-  }
-});
-
-app.post('/speak-file', async (req, res) => {
-  try {
-    const text = String(req.body?.text || '').trim();
-
-    if (!text) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Le champ "text" est requis.'
-      });
-    }
-
-    const audioBuffer = await synthesizeWithElevenLabs(text);
-
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('Content-Disposition', 'inline; filename="nyra.mp3"');
-    res.send(audioBuffer);
-  } catch (error) {
-    console.error('/speak-file POST error:', error);
-    res.status(500).json({
-      ok: false,
-      error: error.message
-    });
-  }
-});
-
-app.post('/chat', async (req, res) => {
-  try {
-    const message = String(req.body?.message || '').trim();
-    const conversation = Array.isArray(req.body?.conversation) ? req.body.conversation : [];
-
-    if (!message) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Le champ "message" est requis.'
-      });
-    }
-
-    if (!openai) {
-      const fallbackReply = getFallbackNyraReply(message);
-
-      return res.json({
-        ok: true,
-        source: 'fallback-no-openai-key',
-        reply: fallbackReply
-      });
-    }
-
-    const systemPrompt = buildNyraSystemPrompt();
+    const memory = getMemory();
 
     const messages = [
-      {
-        role: 'system',
-        content: systemPrompt
-      },
-      ...conversation
-        .filter((item) => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string')
-        .slice(-12)
-        .map((item) => ({
-          role: item.role,
-          content: item.content
-        })),
-      {
-        role: 'user',
-        content: message
-      }
+      { role: 'system', content: buildSystemPrompt() },
+      ...memory,
+      { role: 'user', content: message }
     ];
 
     const completion = await openai.chat.completions.create({
       model: OPENAI_MODEL,
       messages,
-      temperature: 0.85,
-      max_tokens: 500
+      temperature: 0.85
     });
 
-    const reply = completion.choices?.[0]?.message?.content?.trim();
+    const reply = completion.choices[0].message.content;
 
-    if (!reply) {
-      return res.status(500).json({
-        ok: false,
-        error: 'Aucune réponse texte générée par OpenAI.'
-      });
-    }
+    // 💾 sauvegarde mémoire
+    saveToMemory({ role: 'user', content: message });
+    saveToMemory({ role: 'assistant', content: reply });
 
-    return res.json({
-      ok: true,
-      source: 'openai',
-      model: OPENAI_MODEL,
-      reply
-    });
-  } catch (error) {
-    console.error('/chat error:', error);
-
-    return res.status(500).json({
-      ok: false,
-      error: error.message || 'Erreur serveur sur /chat'
-    });
-  }
-});
-
-app.post('/chat-with-voice', async (req, res) => {
-  try {
-    const message = String(req.body?.message || '').trim();
-    const conversation = Array.isArray(req.body?.conversation) ? req.body.conversation : [];
-
-    if (!message) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Le champ "message" est requis.'
-      });
-    }
-
-    let reply = '';
-
-    if (!openai) {
-      reply = getFallbackNyraReply(message);
-    } else {
-      const systemPrompt = buildNyraSystemPrompt();
-
-      const messages = [
-        {
-          role: 'system',
-          content: systemPrompt
-        },
-        ...conversation
-          .filter((item) => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string')
-          .slice(-12)
-          .map((item) => ({
-            role: item.role,
-            content: item.content
-          })),
-        {
-          role: 'user',
-          content: message
-        }
-      ];
-
-      const completion = await openai.chat.completions.create({
-        model: OPENAI_MODEL,
-        messages,
-        temperature: 0.85,
-        max_tokens: 500
-      });
-
-      reply = completion.choices?.[0]?.message?.content?.trim() || '';
-    }
-
-    if (!reply) {
-      return res.status(500).json({
-        ok: false,
-        error: 'Aucune réponse générée.'
-      });
-    }
-
-    const audioBuffer = await synthesizeWithElevenLabs(reply);
+    const audio = await synthesize(reply);
 
     res.setHeader('X-Nyra-Reply', encodeURIComponent(reply));
     res.setHeader('Content-Type', 'audio/mpeg');
-    res.send(audioBuffer);
-  } catch (error) {
-    console.error('/chat-with-voice error:', error);
-    res.status(500).json({
-      ok: false,
-      error: error.message || 'Erreur serveur sur /chat-with-voice'
-    });
+    res.send(audio);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Nyra backend lancé sur le port ${PORT}`);
+  console.log(`Server running on ${PORT}`);
 });
