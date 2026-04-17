@@ -169,6 +169,8 @@ Très important :
 - Écris comme quelqu'un qui parle vraiment
 - Favorise les phrases qui sonnent bien à l'oral
 - Évite les parenthèses, les deux-points, les formulations lourdes
+- Quand tu poses une question, elle doit être très naturelle, courte et parlable
+- Évite les formulations de question trop longues ou trop cérébrales
 `
     : '';
 
@@ -221,18 +223,66 @@ function getAudioCachePath(text) {
   return path.join(AUDIO_CACHE_DIR, `${hash}.mp3`);
 }
 
-function normalizeTextForSpeech(text) {
-  if (!text || typeof text !== 'string') return '';
+function splitIntoSpeechUnits(text) {
+  return text
+    .split(/(?<=[.!?])\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
 
-  let cleaned = text.trim();
+function isLikelyQuestion(sentence) {
+  const trimmed = sentence.trim();
 
-  cleaned = cleaned
+  if (trimmed.endsWith('?')) return true;
+
+  const lower = trimmed.toLowerCase();
+
+  return /^(est-ce que|tu peux|tu penses|tu veux|pourquoi|comment|quand|où|qui|qu'est-ce que|ça te dit|ça va|tu crois|on fait|on va|je fais quoi|tu me dis quoi)/.test(
+    lower
+  );
+}
+
+function makeSentenceMoreSpeakable(sentence) {
+  let s = sentence.trim();
+
+  s = s
     .replace(/\*\*(.*?)\*\*/g, '$1')
     .replace(/\*(.*?)\*/g, '$1')
     .replace(/__(.*?)__/g, '$1')
     .replace(/`{1,3}(.*?)`{1,3}/g, '$1')
     .replace(/#{1,6}\s*/g, '')
     .replace(/\[(.*?)\]\((.*?)\)/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  s = s
+    .replace(/\s*:\s*/g, '. ')
+    .replace(/\s*;\s*/g, ', ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  if (isLikelyQuestion(s)) {
+    s = s.replace(/\?+$/g, '').trim();
+
+    s = s
+      .replace(/^est-ce que\s+/i, 'est-ce que ')
+      .replace(/^tu peux me dire si\s+/i, 'tu penses que ')
+      .replace(/^pourrais-tu\s+/i, 'tu peux ')
+      .trim();
+
+    return `${s} ?`;
+  }
+
+  s = s.replace(/[!?]+$/g, '').trim();
+  return `${s}.`;
+}
+
+function normalizeTextForSpeech(text) {
+  if (!text || typeof text !== 'string') return '';
+
+  let cleaned = text.trim();
+
+  cleaned = cleaned
     .replace(/\n{3,}/g, '\n\n')
     .replace(/[•●▪◦]/g, '-')
     .trim();
@@ -244,23 +294,16 @@ function normalizeTextForSpeech(text) {
 
   cleaned = lines.join(' ');
 
-  cleaned = cleaned
-    .replace(/\s*:\s*/g, '. ')
-    .replace(/\s*;\s*/g, '. ')
-    .replace(/\s{2,}/g, ' ')
-    .replace(/\.{2,}/g, '.')
-    .replace(/!{2,}/g, '!')
-    .replace(/\?{2,}/g, '?')
-    .trim();
+  const speechUnits = splitIntoSpeechUnits(cleaned).map(makeSentenceMoreSpeakable);
 
-  cleaned = cleaned
-    .replace(/([a-zàâçéèêëîïôûùüÿñæœ0-9])\s*\?\s*/giu, '$1 ? ')
-    .replace(/([a-zàâçéèêëîïôûùüÿñæœ0-9])\s*!\s*/giu, '$1 ! ')
-    .replace(/([a-zàâçéèêëîïôûùüÿñæœ0-9])\s*\.\s*/giu, '$1. ')
+  let finalText = speechUnits.join(' ');
+
+  finalText = finalText
+    .replace(/\. (\bmais\b|\bet\b|\bou\b|\bdonc\b)/gi, ', $1')
     .replace(/\s{2,}/g, ' ')
     .trim();
 
-  return cleaned;
+  return finalText;
 }
 
 async function synthesizeWithElevenLabs(text) {
@@ -293,9 +336,9 @@ async function synthesizeWithElevenLabs(text) {
         model_id: 'eleven_multilingual_v2',
         optimize_streaming_latency: 4,
         voice_settings: {
-          stability: 0.34,
-          similarity_boost: 0.82,
-          style: 0.38,
+          stability: 0.26,
+          similarity_boost: 0.86,
+          style: 0.52,
           use_speaker_boost: true
         }
       })
@@ -459,7 +502,7 @@ app.post('/memory/reset', (req, res) => {
 
 app.get('/test-voice', async (req, res) => {
   try {
-    const text = 'Bonjour. Je suis Nyra. Est-ce que tu m’entends mieux comme ça ?';
+    const text = 'Bonjour. Je suis Nyra. Tu trouves ça plus naturel, comme ça ?';
     const audioBuffer = await synthesizeWithElevenLabs(text);
 
     res.setHeader('Content-Type', 'audio/mpeg');
