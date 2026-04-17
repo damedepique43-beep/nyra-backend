@@ -1,19 +1,18 @@
 {
   "name": "nyra-backend",
   "version": "1.0.0",
-  "description": "Backend voix de Nyra avec ElevenLabs",
+  "description": "Backend voix + cerveau IA de Nyra avec ElevenLabs et OpenAI",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
-  "type": "commonjs",
+  "license": "MIT",
   "dependencies": {
-    "axios": "^1.15.0",
     "cors": "^2.8.5",
-    "dotenv": "^17.4.2",
-    "express": "^5.1.0"
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "openai": "^5.12.2"
   }
 }
