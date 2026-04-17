@@ -100,6 +100,31 @@ app.get("/test-voice", async (req, res) => {
   }
 });
 
+app.get("/speak", async (req, res) => {
+  try {
+    const text = String(req.query.text || "").trim();
+
+    if (!text) {
+      return res.status(400).json({
+        ok: false,
+        error: "Le paramètre 'text' est requis",
+      });
+    }
+
+    const audioBuffer = await synthesizeSpeech(text);
+
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Content-Length", audioBuffer.length);
+    return res.send(audioBuffer);
+  } catch (error) {
+    console.error("Erreur GET /speak :", error);
+    return res.status(500).json({
+      ok: false,
+      error: error.message || "Erreur inconnue",
+    });
+  }
+});
+
 app.post("/speak", async (req, res) => {
   try {
     const { text } = req.body || {};
@@ -117,7 +142,37 @@ app.post("/speak", async (req, res) => {
     res.setHeader("Content-Length", audioBuffer.length);
     return res.send(audioBuffer);
   } catch (error) {
-    console.error("Erreur /speak :", error);
+    console.error("Erreur POST /speak :", error);
+    return res.status(500).json({
+      ok: false,
+      error: error.message || "Erreur inconnue",
+    });
+  }
+});
+
+app.get("/speak-file", async (req, res) => {
+  try {
+    const text = String(req.query.text || "").trim();
+
+    if (!text) {
+      return res.status(400).json({
+        ok: false,
+        error: "Le paramètre 'text' est requis",
+      });
+    }
+
+    const audioBuffer = await synthesizeSpeech(text);
+
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader(
+      "Content-Disposition",
+      'attachment; filename="nyra-response.mp3"'
+    );
+    res.setHeader("Content-Length", audioBuffer.length);
+
+    return res.send(audioBuffer);
+  } catch (error) {
+    console.error("Erreur GET /speak-file :", error);
     return res.status(500).json({
       ok: false,
       error: error.message || "Erreur inconnue",
@@ -147,7 +202,7 @@ app.post("/speak-file", async (req, res) => {
 
     return res.send(audioBuffer);
   } catch (error) {
-    console.error("Erreur /speak-file :", error);
+    console.error("Erreur POST /speak-file :", error);
     return res.status(500).json({
       ok: false,
       error: error.message || "Erreur inconnue",
