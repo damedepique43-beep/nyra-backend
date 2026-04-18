@@ -71,18 +71,14 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function uniqStrings(arr) {
-  return [...new Set((arr || []).filter(Boolean).map((x) => String(x).trim()).filter(Boolean))];
+function safeArray(value) {
+  return Array.isArray(value) ? value : [];
 }
 
 function normalizeText(value) {
   return String(value || '')
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-function safeArray(value) {
-  return Array.isArray(value) ? value : [];
 }
 
 function createEmptyStructuredMemory() {
@@ -283,98 +279,297 @@ function extractRelevantMemory(structuredMemory) {
   };
 }
 
-function scoreKeywordHits(text, keywords) {
+function countKeywordMatches(text, keywords) {
   const lower = text.toLowerCase();
   let score = 0;
-  for (const word of keywords) {
-    if (lower.includes(word)) score += 1;
+
+  for (const keyword of keywords) {
+    if (lower.includes(keyword.toLowerCase())) {
+      score += 1;
+    }
   }
+
   return score;
 }
 
+function countWeightedMatches(text, patterns) {
+  const lower = text.toLowerCase();
+  let score = 0;
+
+  for (const pattern of patterns) {
+    if (lower.includes(pattern.phrase.toLowerCase())) {
+      score += pattern.weight;
+    }
+  }
+
+  return score;
+}
+
+function hasAny(text, patterns) {
+  const lower = text.toLowerCase();
+  return patterns.some((pattern) => lower.includes(pattern.toLowerCase()));
+}
+
 function analyzeUserState(message, structuredMemory) {
-  const text = normalizeText(message).toLowerCase();
+  const text = normalizeText(message);
+  const lower = text.toLowerCase();
   const relevantMemory = extractRelevantMemory(structuredMemory);
 
-  const vulnerabilityHits = scoreKeywordHits(text, [
-    'je suis mal', 'je vais mal', 'je craque', 'je n’y arrive plus', 'j’en peux plus',
-    'je me sens vide', 'je me sens seule', 'je me sens nul', 'je me sens nulle',
-    'j’ai peur', 'je suis perdue', 'je suis perdu', 'je me sens fragile',
-    'je pleure', 'ça me fait mal', 'ça me détruit'
-  ]);
+  const strongVulnerabilityPatterns = [
+    { phrase: 'je me sens mal', weight: 0.45 },
+    { phrase: 'je vais mal', weight: 0.5 },
+    { phrase: 'j’en peux plus', weight: 0.6 },
+    { phrase: 'j en peux plus', weight: 0.6 },
+    { phrase: 'je craque', weight: 0.55 },
+    { phrase: 'je suis perdue', weight: 0.45 },
+    { phrase: 'je suis perdu', weight: 0.45 },
+    { phrase: 'je me sens seule', weight: 0.42 },
+    { phrase: 'je me sens vide', weight: 0.5 },
+    { phrase: 'ça me fait mal', weight: 0.35 },
+    { phrase: 'ça me détruit', weight: 0.65 },
+    { phrase: 'je suis au bout', weight: 0.7 }
+  ];
 
-  const ruminationHits = scoreKeywordHits(text, [
-    'je pense à', 'je repense', 'en boucle', 'obsède', 'obsession', 'je tourne en rond',
-    'je me demande', 'et si', 'pourquoi il', 'pourquoi elle', 'je n’arrête pas de penser'
-  ]);
+  const strongRuminationPatterns = [
+    { phrase: 'je tourne en boucle', weight: 0.72 },
+    { phrase: 'je suis en boucle', weight: 0.68 },
+    { phrase: 'je n’arrive pas à décrocher', weight: 0.58 },
+    { phrase: 'je n\'arrive pas à décrocher', weight: 0.58 },
+    { phrase: 'je n’arrive pas à lâcher', weight: 0.55 },
+    { phrase: 'je n\'arrive pas à lâcher', weight: 0.55 },
+    { phrase: 'je repense sans arrêt', weight: 0.62 },
+    { phrase: 'je pense à ça en boucle', weight: 0.7 },
+    { phrase: 'ça m’obsède', weight: 0.65 },
+    { phrase: 'ça m\'obsède', weight: 0.65 },
+    { phrase: 'je rumine', weight: 0.62 },
+    { phrase: 'je me demande sans arrêt', weight: 0.55 }
+  ];
 
-  const dispersionHits = scoreKeywordHits(text, [
-    'je pars dans tous les sens', 'je m’éparpille', 'je saute du coq à l’âne',
-    'je n’arrive pas à me concentrer', 'je procrastine', 'je bloque', 'je me disperse'
-  ]);
+  const strongDispersionPatterns = [
+    { phrase: 'je pars dans tous les sens', weight: 0.78 },
+    { phrase: 'je m’éparpille', weight: 0.68 },
+    { phrase: 'je m\'éparpille', weight: 0.68 },
+    { phrase: 'je me disperse', weight: 0.62 },
+    { phrase: 'je ne sais plus par quoi commencer', weight: 0.68 },
+    { phrase: 'je sais plus par quoi commencer', weight: 0.68 },
+    { phrase: 'je bloque sur tout', weight: 0.55 },
+    { phrase: 'je n’arrive pas à me concentrer', weight: 0.55 },
+    { phrase: 'je n\'arrive pas à me concentrer', weight: 0.55 },
+    { phrase: 'je saute du coq à l’âne', weight: 0.6 },
+    { phrase: 'je saute du coq à l\'âne', weight: 0.6 }
+  ];
 
-  const avoidanceHits = scoreKeywordHits(text, [
-    'je fuis', 'j’évite', 'je n’ose pas', 'plus tard', 'demain peut-être',
-    'je sais pas par où commencer', 'j’ai pas envie de faire', 'je reporte'
-  ]);
+  const strongAvoidancePatterns = [
+    { phrase: 'j’évite', weight: 0.48 },
+    { phrase: 'j\'évite', weight: 0.48 },
+    { phrase: 'je fuis', weight: 0.52 },
+    { phrase: 'je reporte', weight: 0.5 },
+    { phrase: 'je procrastine', weight: 0.48 },
+    { phrase: 'plus tard', weight: 0.22 },
+    { phrase: 'demain peut-être', weight: 0.4 },
+    { phrase: 'je n’ose pas', weight: 0.42 },
+    { phrase: 'je n\'ose pas', weight: 0.42 },
+    { phrase: 'j’ai pas envie de faire', weight: 0.45 },
+    { phrase: 'j\'ai pas envie de faire', weight: 0.45 }
+  ];
 
-  const urgencyHits = scoreKeywordHits(text, [
-    'vite', 'urgent', 'rapidement', 'tout de suite', 'immédiatement',
-    'au plus vite', 'j’ai besoin maintenant'
-  ]);
+  const strongUrgencyPatterns = [
+    { phrase: 'urgent', weight: 0.75 },
+    { phrase: 'vite', weight: 0.45 },
+    { phrase: 'rapidement', weight: 0.4 },
+    { phrase: 'tout de suite', weight: 0.6 },
+    { phrase: 'immédiatement', weight: 0.7 },
+    { phrase: 'immédiat', weight: 0.6 },
+    { phrase: 'au plus vite', weight: 0.72 },
+    { phrase: 'maintenant', weight: 0.25 },
+    { phrase: 'j’ai besoin maintenant', weight: 0.72 },
+    { phrase: 'j\'ai besoin maintenant', weight: 0.72 }
+  ];
 
-  const activationHits = scoreKeywordHits(text, [
-    'go', 'on y va', 'je suis chaude', 'je suis motivée', 'je veux avancer',
-    'je veux qu’on fasse', 'on fonce'
-  ]);
+  const strongActivationPatterns = [
+    { phrase: 'je suis chaude', weight: 0.82 },
+    { phrase: 'on avance', weight: 0.48 },
+    { phrase: 'go', weight: 0.22 },
+    { phrase: 'on y va', weight: 0.52 },
+    { phrase: 'je suis motivée', weight: 0.65 },
+    { phrase: 'je suis motivé', weight: 0.65 },
+    { phrase: 'je veux avancer', weight: 0.55 },
+    { phrase: 'je veux qu’on fasse', weight: 0.52 },
+    { phrase: 'je veux qu\'on fasse', weight: 0.52 },
+    { phrase: 'je veux quelque chose de propre', weight: 0.38 },
+    { phrase: 'premium', weight: 0.18 },
+    { phrase: 'concret', weight: 0.18 }
+  ];
 
-  const emotionalIntensityHits = scoreKeywordHits(text, [
-    'jamais', 'toujours', 'catastrophe', 'insupportable', 'horrible',
-    'je déteste', 'je souffre', 'ça m’explose', 'ça m’obsède', 'je suis détruite'
-  ]);
+  const strongIntensityPatterns = [
+    { phrase: 'catastrophe', weight: 0.55 },
+    { phrase: 'insupportable', weight: 0.55 },
+    { phrase: 'horrible', weight: 0.45 },
+    { phrase: 'je déteste', weight: 0.38 },
+    { phrase: 'je souffre', weight: 0.55 },
+    { phrase: 'ça m’explose', weight: 0.62 },
+    { phrase: 'ça m\'explose', weight: 0.62 },
+    { phrase: 'ça m’obsède', weight: 0.58 },
+    { phrase: 'ça m\'obsède', weight: 0.58 },
+    { phrase: 'je suis détruite', weight: 0.72 },
+    { phrase: 'je suis détruit', weight: 0.72 },
+    { phrase: 'jamais', weight: 0.08 },
+    { phrase: 'toujours', weight: 0.08 }
+  ];
 
-  const state = {
-    vulnerability: clamp(vulnerabilityHits * 0.18, 0, 1),
-    rumination: clamp(ruminationHits * 0.16, 0, 1),
-    dispersion: clamp(dispersionHits * 0.2, 0, 1),
-    avoidance: clamp(avoidanceHits * 0.2, 0, 1),
-    urgency: clamp(urgencyHits * 0.25, 0, 1),
-    activation: clamp(activationHits * 0.22, 0, 1),
-    emotional_intensity: clamp(emotionalIntensityHits * 0.16, 0, 1)
-  };
+  const vulnerabilityLight = countKeywordMatches(lower, [
+    'mal', 'peur', 'fragile', 'seule', 'vide', 'triste', 'pleure', 'douleur'
+  ]) * 0.05;
+
+  const ruminationLight = countKeywordMatches(lower, [
+    'boucle', 'obsède', 'obsession', 'repense', 'pourquoi', 'et si', 'rumine'
+  ]) * 0.06;
+
+  const dispersionLight = countKeywordMatches(lower, [
+    'éparpille', 'disperse', 'concentrer', 'bloque', 'commencer'
+  ]) * 0.07;
+
+  const avoidanceLight = countKeywordMatches(lower, [
+    'évite', 'fuis', 'reporte', 'procrastine', 'plus tard'
+  ]) * 0.06;
+
+  const urgencyLight = countKeywordMatches(lower, [
+    'urgent', 'vite', 'rapidement', 'maintenant'
+  ]) * 0.06;
+
+  const activationLight = countKeywordMatches(lower, [
+    'avance', 'go', 'motiv', 'propre', 'premium', 'concret'
+  ]) * 0.06;
+
+  const intensityLight = countKeywordMatches(lower, [
+    'catastrophe', 'horrible', 'insupportable', 'détruit', 'souffre'
+  ]) * 0.06;
+
+  let vulnerability =
+    countWeightedMatches(lower, strongVulnerabilityPatterns) + vulnerabilityLight;
+
+  let rumination =
+    countWeightedMatches(lower, strongRuminationPatterns) + ruminationLight;
+
+  let dispersion =
+    countWeightedMatches(lower, strongDispersionPatterns) + dispersionLight;
+
+  let avoidance =
+    countWeightedMatches(lower, strongAvoidancePatterns) + avoidanceLight;
+
+  let urgency =
+    countWeightedMatches(lower, strongUrgencyPatterns) + urgencyLight;
+
+  let activation =
+    countWeightedMatches(lower, strongActivationPatterns) + activationLight;
+
+  let emotionalIntensity =
+    countWeightedMatches(lower, strongIntensityPatterns) + intensityLight;
+
+  const wordCount = lower.split(/\s+/).filter(Boolean).length;
+
+  if (wordCount >= 12 && hasAny(lower, ['je', 'j’ai', 'j\'ai'])) {
+    emotionalIntensity += 0.04;
+  }
+
+  if (rumination > 0.5 && vulnerability > 0.25) {
+    vulnerability += 0.12;
+    emotionalIntensity += 0.08;
+  }
+
+  if (dispersion > 0.5 && activation > 0.25) {
+    activation += 0.12;
+  }
+
+  if (avoidance > 0.35 && vulnerability > 0.2) {
+    vulnerability += 0.08;
+  }
+
+  if (urgency > 0.4 && activation > 0.25) {
+    activation += 0.08;
+  }
 
   const memoryBoosts = relevantMemory.top_risk_patterns.map((x) => x.label.toLowerCase());
   const memorySupports = relevantMemory.top_support_patterns.map((x) => x.label.toLowerCase());
+  const memoryNeeds = relevantMemory.top_needs.map((x) => x.label.toLowerCase());
 
   if (memoryBoosts.some((x) => x.includes('boucle') || x.includes('rumination') || x.includes('obsession'))) {
-    state.rumination = clamp(state.rumination + 0.1, 0, 1);
+    rumination += 0.12;
   }
 
-  if (memoryBoosts.some((x) => x.includes('dispersion') || x.includes('éparpillement'))) {
-    state.dispersion = clamp(state.dispersion + 0.08, 0, 1);
+  if (memoryBoosts.some((x) => x.includes('dispersion') || x.includes('éparpillement') || x.includes('éparpille'))) {
+    dispersion += 0.12;
   }
 
-  if (memoryBoosts.some((x) => x.includes('évitement') || x.includes('fuite'))) {
-    state.avoidance = clamp(state.avoidance + 0.08, 0, 1);
+  if (memoryBoosts.some((x) => x.includes('évitement') || x.includes('fuite') || x.includes('procrastination'))) {
+    avoidance += 0.12;
   }
 
-  if (memorySupports.some((x) => x.includes('recadrage') || x.includes('structure'))) {
-    state.activation = clamp(state.activation + 0.04, 0, 1);
+  if (memorySupports.some((x) => x.includes('recadrage') || x.includes('structure') || x.includes('cadrage'))) {
+    activation += 0.08;
   }
+
+  if (memoryNeeds.some((x) => x.includes('rassurance') || x.includes('sécurité') || x.includes('apaisement'))) {
+    vulnerability += 0.06;
+  }
+
+  vulnerability = clamp(Number(vulnerability.toFixed(3)), 0, 1);
+  rumination = clamp(Number(rumination.toFixed(3)), 0, 1);
+  dispersion = clamp(Number(dispersion.toFixed(3)), 0, 1);
+  avoidance = clamp(Number(avoidance.toFixed(3)), 0, 1);
+  urgency = clamp(Number(urgency.toFixed(3)), 0, 1);
+  activation = clamp(Number(activation.toFixed(3)), 0, 1);
+  emotionalIntensity = clamp(Number(emotionalIntensity.toFixed(3)), 0, 1);
 
   let responseMode = 'clarifying';
 
-  if (state.vulnerability >= 0.45 && state.emotional_intensity >= 0.35) {
+  if (vulnerability >= 0.55 && emotionalIntensity >= 0.32) {
     responseMode = 'grounding';
-  } else if (state.rumination >= 0.45) {
+  } else if (rumination >= 0.55) {
     responseMode = 'firm_support';
-  } else if (state.dispersion >= 0.4 || state.avoidance >= 0.4) {
+  } else if (dispersion >= 0.55 || avoidance >= 0.55) {
     responseMode = 'directive';
-  } else if (state.vulnerability >= 0.28) {
+  } else if (activation >= 0.55) {
+    responseMode = 'directive';
+  } else if (vulnerability >= 0.35) {
     responseMode = 'supportive';
-  } else if (state.activation >= 0.35 && state.urgency >= 0.2) {
-    responseMode = 'directive';
   }
+
+  let primaryState = 'stable';
+  let secondaryState = null;
+
+  const stateEntries = [
+    ['vulnerability', vulnerability],
+    ['rumination', rumination],
+    ['dispersion', dispersion],
+    ['avoidance', avoidance],
+    ['urgency', urgency],
+    ['activation', activation],
+    ['emotional_intensity', emotionalIntensity]
+  ].sort((a, b) => b[1] - a[1]);
+
+  if (stateEntries[0][1] >= 0.35) {
+    primaryState = stateEntries[0][0];
+  }
+
+  if (stateEntries[1][1] >= 0.3) {
+    secondaryState = stateEntries[1][0];
+  }
+
+  const shouldRecadre =
+    rumination >= 0.5 ||
+    dispersion >= 0.5 ||
+    avoidance >= 0.5 ||
+    activation >= 0.65;
+
+  const shouldReduceCognitiveLoad =
+    vulnerability >= 0.45 ||
+    emotionalIntensity >= 0.4;
+
+  const shouldPushToAction =
+    activation >= 0.45 ||
+    dispersion >= 0.45 ||
+    avoidance >= 0.45;
 
   const responseDirectives = {
     grounding: {
@@ -410,8 +605,21 @@ function analyzeUserState(message, structuredMemory) {
   };
 
   return {
-    state,
+    state: {
+      vulnerability,
+      rumination,
+      dispersion,
+      avoidance,
+      urgency,
+      activation,
+      emotional_intensity: emotionalIntensity
+    },
+    primary_state: primaryState,
+    secondary_state: secondaryState,
     response_mode: responseMode,
+    should_recadre: shouldRecadre,
+    should_reduce_cognitive_load: shouldReduceCognitiveLoad,
+    should_push_to_action: shouldPushToAction,
     directives: responseDirectives[responseMode]
   };
 }
@@ -445,7 +653,7 @@ Règles de style :
 }
 
 function buildBehaviorPrompt(userStateAnalysis) {
-  const { state, response_mode, directives } = userStateAnalysis;
+  const { state, primary_state, secondary_state, response_mode, should_recadre, should_reduce_cognitive_load, should_push_to_action, directives } = userStateAnalysis;
 
   return `
 ÉTAT UTILISATRICE DÉTECTÉ :
@@ -457,12 +665,24 @@ function buildBehaviorPrompt(userStateAnalysis) {
 - activation: ${state.activation}
 - emotional_intensity: ${state.emotional_intensity}
 
-MODE DE RÉPONSE À ADOPTER :
+SYNTHÈSE COMPORTEMENTALE :
+- primary_state: ${primary_state}
+- secondary_state: ${secondary_state || 'none'}
 - response_mode: ${response_mode}
+- should_recadre: ${should_recadre}
+- should_reduce_cognitive_load: ${should_reduce_cognitive_load}
+- should_push_to_action: ${should_push_to_action}
+
+MODE DE RÉPONSE À ADOPTER :
 - tone: ${directives.tone}
 - structure: ${directives.structure}
 - recadrage_level: ${directives.recadrage_level}
 - priority: ${directives.priority}
+
+Consignes d’exécution :
+- si should_reduce_cognitive_load = true, simplifie la réponse et évite de surcharger
+- si should_recadre = true, recadre avec chaleur mais sans tourner autour du pot
+- si should_push_to_action = true, donne une action simple, claire, faisable immédiatement
 `.trim();
 }
 
