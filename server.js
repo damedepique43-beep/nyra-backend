@@ -17,38 +17,19 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || '';
-const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || 'Ka6yOFdNGhzFuCVW6VyO';
-
 const DATA_DIR = path.join(__dirname, 'data');
-const AUDIO_CACHE_DIR = path.join(__dirname, 'audio_cache');
-
-const MEMORY_RAW_PATH = path.join(DATA_DIR, 'memory.json');
-const MEMORY_SUMMARY_PATH = path.join(DATA_DIR, 'memory_summary.json');
 const MEMORY_STRUCTURED_PATH = path.join(DATA_DIR, 'memory_structured.json');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
-if (!fs.existsSync(AUDIO_CACHE_DIR)) fs.mkdirSync(AUDIO_CACHE_DIR);
 
-if (!fs.existsSync(MEMORY_RAW_PATH)) fs.writeFileSync(MEMORY_RAW_PATH, JSON.stringify({ messages: [] }, null, 2));
-if (!fs.existsSync(MEMORY_SUMMARY_PATH)) fs.writeFileSync(MEMORY_SUMMARY_PATH, JSON.stringify({ summary: '' }, null, 2));
 if (!fs.existsSync(MEMORY_STRUCTURED_PATH)) {
   fs.writeFileSync(MEMORY_STRUCTURED_PATH, JSON.stringify({
-    identity: {},
-    preferences: [],
-    projects: [],
-    constraints: [],
     emotional_patterns: [],
-    relationships: [],
-    active_contexts: [],
-    decisions: [],
-    insights: [],
-    conversation_style: {},
     triggers: [],
     needs: [],
-    regulation_strategies: [],
-    risk_patterns: [],
-    support_patterns: []
+    insights: [],
+    active_contexts: [],
+    decisions: []
   }, null, 2));
 }
 
@@ -60,39 +41,19 @@ function writeJSON(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
-function addMessage(role, content) {
-  const memory = readJSON(MEMORY_RAW_PATH);
-  memory.messages.push({ role, content, ts: Date.now() });
-  if (memory.messages.length > 40) memory.messages.shift();
-  writeJSON(MEMORY_RAW_PATH, memory);
+function safeParseJSON(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    try {
+      const match = text.match(/\{[\s\S]*\}/);
+      if (match) return JSON.parse(match[0]);
+    } catch {}
+  }
+  return {};
 }
 
-function normalizeForSpeech(text) {
-  return text.replace(/\n+/g, '\n').trim();
-}
-
-function buildPrompt(summary, structured) {
-  return `
-Tu es Nyra, une IA personnelle intelligente, naturelle, profonde.
-
-Résumé mémoire :
-${summary}
-
-Mémoire structurée :
-${JSON.stringify(structured, null, 2)}
-
-Comportement :
-- naturel
-- humain
-- subtil mais ferme
-- jamais robotique
-- adapte ton ton
-
-Réponds comme Nyra.
-`;
-}
-
-function normalizeString(str) {
+function normalize(str) {
   return str.toLowerCase().trim();
 }
 
@@ -104,8 +65,9 @@ function mergeMemory(existing, update) {
 
     if (Array.isArray(update[key])) {
       update[key].forEach(item => {
-        const exists = existing[key].some(e => normalizeString(e) === normalizeString(item));
-        if (!exists) existing[key].push(item);
+        if (!existing[key].some(e => normalize(e) === normalize(item))) {
+          existing[key].push(item);
+        }
       });
     }
   });
@@ -113,22 +75,16 @@ function mergeMemory(existing, update) {
   return existing;
 }
 
-async function extractMemoryUpdate(message, currentMemory) {
-  try {
-    const prompt = `
-Tu es un système d’analyse mémoire avancé.
+async function extractMemory(message) {
+  const prompt = `
+Analyse ce message et transforme-le en patterns psychologiques GÉNÉRAUX.
 
-OBJECTIF :
-Transformer un message en PATTERNS GÉNÉRALISÉS.
+IMPORTANT :
+- ne reste pas littéral
+- concepts courts uniquement
+- JSON uniquement
 
-NE PAS rester littéral.
-
-Exemples :
-"il répond pas" → "silence relationnel"
-"je veux checker" → "comportement de surveillance"
-
-Réponds uniquement en JSON :
-
+Format :
 {
   "emotional_patterns": [],
   "triggers": [],
@@ -142,17 +98,12 @@ Message :
 ${message}
 `;
 
-    const res = await openai.responses.create({
-      model: "gpt-4.1-mini",
-      input: prompt
-    });
+  const res = await openai.responses.create({
+    model: "gpt-4.1-mini",
+    input: prompt
+  });
 
-    return JSON.parse(res.output_text.trim());
-
-  } catch (err) {
-    console.log("memory error", err.message);
-    return {};
-  }
+  return safeParseJSON(res.output_text);
 }
 
 app.get('/memory/structured', (req, res) => {
@@ -163,36 +114,22 @@ app.post('/chat', async (req, res) => {
   try {
     const message = req.body.message;
 
-    addMessage('user', message);
+    let memory = readJSON(MEMORY_STRUCTURED_PATH);
 
-    let structured = readJSON(MEMORY_STRUCTURED_PATH);
-
-    const update = await extractMemoryUpdate(message, structured);
+    const update = await extractMemory(message);
 
     if (Object.keys(update).length > 0) {
-      structured = mergeMemory(structured, update);
-      writeJSON(MEMORY_STRUCTURED_PATH, structured);
+      memory = mergeMemory(memory, update);
+      writeJSON(MEMORY_STRUCTURED_PATH, memory);
     }
-
-    const raw = readJSON(MEMORY_RAW_PATH);
-    const summary = readJSON(MEMORY_SUMMARY_PATH).summary;
-
-    const history = raw.messages.map(m => `${m.role}: ${m.content}`).join('\n');
-
-    const prompt = buildPrompt(summary, structured) + `\n\nConversation:\n${history}`;
 
     const ai = await openai.responses.create({
       model: "gpt-4.1",
-      input: prompt
+      input: message
     });
 
-    const reply = ai.output_text;
-
-    addMessage('assistant', reply);
-
     res.json({
-      reply,
-      speech_text: normalizeForSpeech(reply),
+      reply: ai.output_text,
       memory_update_applied: Object.keys(update).length > 0
     });
 
@@ -203,5 +140,5 @@ app.post('/chat', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log("Nyra running on port", PORT);
+  console.log("server running");
 });
