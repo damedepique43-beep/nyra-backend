@@ -25,7 +25,7 @@ if (!ELEVENLABS_API_KEY) {
 }
 
 const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
+  apiKey: OPENAI_API_KEY
 });
 
 const DATA_DIR = path.join(__dirname, 'data');
@@ -56,7 +56,12 @@ ensureJsonFile(MEMORY_STRUCTURED_PATH, {
   active_contexts: [],
   decisions: [],
   insights: [],
-  conversation_style: {}
+  conversation_style: {},
+  triggers: [],
+  needs: [],
+  regulation_strategies: [],
+  risk_patterns: [],
+  support_patterns: []
 });
 
 function ensureDir(dirPath) {
@@ -117,7 +122,12 @@ function getStructuredMemory() {
     active_contexts: [],
     decisions: [],
     insights: [],
-    conversation_style: {}
+    conversation_style: {},
+    triggers: [],
+    needs: [],
+    regulation_strategies: [],
+    risk_patterns: [],
+    support_patterns: []
   });
 }
 
@@ -251,6 +261,120 @@ Consignes :
   }
 }
 
+async function extractMemoryUpdate(userMessage, currentStructuredMemory) {
+  try {
+    const prompt = `
+Tu es un système d’analyse mémoire pour une IA personnelle.
+
+Ta mission :
+Analyser le message utilisateur et retourner UNIQUEMENT les éléments nouveaux et utiles à ajouter dans la mémoire structurée.
+
+Tu peux enrichir seulement ces champs :
+- emotional_patterns
+- triggers
+- needs
+- insights
+- active_contexts
+- decisions
+
+RÈGLES IMPORTANTES :
+- Réponds UNIQUEMENT en JSON valide
+- N’invente rien
+- Ne reformule pas inutilement
+- Ne retourne QUE les nouvelles infos utiles
+- Évite les doublons exacts ou quasi doublons
+- Si rien d’utile à ajouter, retourne {}
+- Sois sobre et précis
+
+Mémoire structurée actuelle :
+${safeStringify(currentStructuredMemory)}
+
+Message utilisateur :
+${userMessage}
+
+Format autorisé :
+{
+  "emotional_patterns": [],
+  "triggers": [],
+  "needs": [],
+  "insights": [],
+  "active_contexts": [],
+  "decisions": []
+}
+`.trim();
+
+    const response = await openai.responses.create({
+      model: 'gpt-4.1-mini',
+      input: prompt
+    });
+
+    const rawText = (response.output_text || '').trim();
+
+    if (!rawText) {
+      return {};
+    }
+
+    return JSON.parse(rawText);
+  } catch (error) {
+    console.error('Erreur extraction mémoire automatique :', error.message);
+    return {};
+  }
+}
+
+function normalizeStringForCompare(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function pushUniqueStrings(targetArray, incomingArray) {
+  if (!Array.isArray(targetArray) || !Array.isArray(incomingArray)) return targetArray;
+
+  incomingArray.forEach((item) => {
+    if (typeof item !== 'string') return;
+
+    const normalizedItem = normalizeStringForCompare(item);
+    const alreadyExists = targetArray.some(
+      (existing) => normalizeStringForCompare(existing) === normalizedItem
+    );
+
+    if (!alreadyExists) {
+      targetArray.push(item.trim());
+    }
+  });
+
+  return targetArray;
+}
+
+function mergeStructuredMemory(existing, update) {
+  const next = { ...existing };
+
+  const arrayKeys = [
+    'emotional_patterns',
+    'triggers',
+    'needs',
+    'insights',
+    'active_contexts',
+    'decisions'
+  ];
+
+  arrayKeys.forEach((key) => {
+    if (!Array.isArray(next[key])) {
+      next[key] = [];
+    }
+
+    if (Array.isArray(update[key])) {
+      next[key] = pushUniqueStrings(next[key], update[key]);
+    }
+  });
+
+  return next;
+}
+
 function hashText(text) {
   return crypto.createHash('sha256').update(text).digest('hex');
 }
@@ -300,7 +424,12 @@ app.post('/memory/structured', (req, res) => {
       active_contexts: Array.isArray(incoming.active_contexts) ? incoming.active_contexts : current.active_contexts ?? [],
       decisions: Array.isArray(incoming.decisions) ? incoming.decisions : current.decisions ?? [],
       insights: Array.isArray(incoming.insights) ? incoming.insights : current.insights ?? [],
-      conversation_style: incoming.conversation_style ?? current.conversation_style ?? {}
+      conversation_style: incoming.conversation_style ?? current.conversation_style ?? {},
+      triggers: Array.isArray(incoming.triggers) ? incoming.triggers : current.triggers ?? [],
+      needs: Array.isArray(incoming.needs) ? incoming.needs : current.needs ?? [],
+      regulation_strategies: Array.isArray(incoming.regulation_strategies) ? incoming.regulation_strategies : current.regulation_strategies ?? [],
+      risk_patterns: Array.isArray(incoming.risk_patterns) ? incoming.risk_patterns : current.risk_patterns ?? [],
+      support_patterns: Array.isArray(incoming.support_patterns) ? incoming.support_patterns : current.support_patterns ?? []
     };
 
     setStructuredMemory(next);
@@ -332,7 +461,12 @@ app.post('/memory/reset', (req, res) => {
       active_contexts: [],
       decisions: [],
       insights: [],
-      conversation_style: {}
+      conversation_style: {},
+      triggers: [],
+      needs: [],
+      regulation_strategies: [],
+      risk_patterns: [],
+      support_patterns: []
     });
 
     res.json({
@@ -359,9 +493,16 @@ app.post('/chat', async (req, res) => {
 
     addMessageToRawMemory('user', userMessage);
 
+    let structuredMemory = getStructuredMemory();
+
+    const memoryUpdate = await extractMemoryUpdate(userMessage, structuredMemory);
+    if (memoryUpdate && Object.keys(memoryUpdate).length > 0) {
+      structuredMemory = mergeStructuredMemory(structuredMemory, memoryUpdate);
+      setStructuredMemory(structuredMemory);
+    }
+
     const rawMemory = getRawMemory();
     const summaryMemory = getSummaryMemory();
-    const structuredMemory = getStructuredMemory();
 
     const systemPrompt = buildSystemPrompt(summaryMemory.summary, structuredMemory);
     const recentMessages = formatRecentMessages(rawMemory.messages);
@@ -383,7 +524,7 @@ Réponds comme Nyra.
       input
     });
 
-    const assistantMessage = (response.output_text || '').trim() || "Je suis là.";
+    const assistantMessage = (response.output_text || '').trim() || 'Je suis là.';
 
     addMessageToRawMemory('assistant', assistantMessage);
 
@@ -393,7 +534,8 @@ Réponds comme Nyra.
 
     res.json({
       reply: assistantMessage,
-      speech_text: normalizeForSpeech(assistantMessage)
+      speech_text: normalizeForSpeech(assistantMessage),
+      memory_update_applied: memoryUpdate && Object.keys(memoryUpdate).length > 0
     });
   } catch (error) {
     console.error('Erreur /chat :', error);
