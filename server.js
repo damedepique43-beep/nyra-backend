@@ -603,6 +603,24 @@ function analyzeUserState(message, structuredMemory) {
   activation = clamp(Number(activation.toFixed(3)), 0, 1);
   emotionalIntensity = clamp(Number(emotionalIntensity.toFixed(3)), 0, 1);
 
+  const shouldRecadre =
+    rumination >= 0.45 ||
+    dispersion >= 0.5 ||
+    avoidance >= 0.5 ||
+    activation >= 0.65 ||
+    urgency >= 0.7;
+
+  const shouldReduceCognitiveLoad =
+    vulnerability >= 0.4 ||
+    emotionalIntensity >= 0.38 ||
+    hasAny(lower, ['sans me noyer', 'sans me brusquer']);
+
+  const shouldPushToAction =
+    activation >= 0.45 ||
+    dispersion >= 0.45 ||
+    avoidance >= 0.45 ||
+    urgency >= 0.65;
+
   let responseMode = 'clarifying';
 
   if (
@@ -610,7 +628,10 @@ function analyzeUserState(message, structuredMemory) {
     hasAny(lower, ['j’en peux plus', 'j en peux plus', 'je craque', 'ça s’arrête dans ma tête', 'ça s\'arrête dans ma tête'])
   ) {
     responseMode = 'grounding';
-  } else if (rumination >= 0.55 && vulnerability >= 0.2) {
+  } else if (
+    rumination >= 0.68 ||
+    (rumination >= 0.55 && shouldRecadre)
+  ) {
     responseMode = 'firm_support';
   } else if (dispersion >= 0.55 || avoidance >= 0.55) {
     responseMode = 'directive';
@@ -648,25 +669,6 @@ function analyzeUserState(message, structuredMemory) {
       secondaryState = stateEntries[1][0];
     }
   }
-
-  const shouldRecadre =
-    rumination >= 0.45 ||
-    dispersion >= 0.5 ||
-    avoidance >= 0.5 ||
-    activation >= 0.65 ||
-    urgency >= 0.7;
-
-  const shouldReduceCognitiveLoad =
-    vulnerability >= 0.4 ||
-    emotionalIntensity >= 0.38 ||
-    responseMode === 'grounding' ||
-    hasAny(lower, ['sans me noyer', 'sans me brusquer']);
-
-  const shouldPushToAction =
-    activation >= 0.45 ||
-    dispersion >= 0.45 ||
-    avoidance >= 0.45 ||
-    urgency >= 0.65;
 
   const responseDirectives = {
     grounding: {
@@ -715,7 +717,8 @@ function analyzeUserState(message, structuredMemory) {
     secondary_state: secondaryState,
     response_mode: responseMode,
     should_recadre: shouldRecadre,
-    should_reduce_cognitive_load: shouldReduceCognitiveLoad,
+    should_reduce_cognitive_load:
+      shouldReduceCognitiveLoad || responseMode === 'grounding',
     should_push_to_action: shouldPushToAction,
     directives: responseDirectives[responseMode]
   };
@@ -839,25 +842,31 @@ function computeBehaviorTrend(recentStates) {
   const dominant = computeDominantState(states);
   const repeated = computeConsecutivePrimaryState(states);
 
-  const firstRumination = computeRecentHalfAverage(states, 'rumination', 'first');
-  const lastRumination = computeRecentHalfAverage(states, 'rumination', 'last');
+  let ruminationTrend = 'stable';
+  let vulnerabilityTrend = 'stable';
+  let activationTrend = 'stable';
 
-  const firstVulnerability = computeRecentHalfAverage(states, 'vulnerability', 'first');
-  const lastVulnerability = computeRecentHalfAverage(states, 'vulnerability', 'last');
+  if (states.length >= 3) {
+    const firstRumination = computeRecentHalfAverage(states, 'rumination', 'first');
+    const lastRumination = computeRecentHalfAverage(states, 'rumination', 'last');
 
-  const firstActivation = computeRecentHalfAverage(states, 'activation', 'first');
-  const lastActivation = computeRecentHalfAverage(states, 'activation', 'last');
+    const firstVulnerability = computeRecentHalfAverage(states, 'vulnerability', 'first');
+    const lastVulnerability = computeRecentHalfAverage(states, 'vulnerability', 'last');
 
-  function classifyTrend(first, last) {
-    const diff = last - first;
-    if (diff >= 0.12) return 'increasing';
-    if (diff <= -0.12) return 'decreasing';
-    return 'stable';
+    const firstActivation = computeRecentHalfAverage(states, 'activation', 'first');
+    const lastActivation = computeRecentHalfAverage(states, 'activation', 'last');
+
+    function classifyTrend(first, last) {
+      const diff = last - first;
+      if (diff >= 0.12) return 'increasing';
+      if (diff <= -0.12) return 'decreasing';
+      return 'stable';
+    }
+
+    ruminationTrend = classifyTrend(firstRumination, lastRumination);
+    vulnerabilityTrend = classifyTrend(firstVulnerability, lastVulnerability);
+    activationTrend = classifyTrend(firstActivation, lastActivation);
   }
-
-  const ruminationTrend = classifyTrend(firstRumination, lastRumination);
-  const vulnerabilityTrend = classifyTrend(firstVulnerability, lastVulnerability);
-  const activationTrend = classifyTrend(firstActivation, lastActivation);
 
   const avgVulnerability = computeAverageScore(states, 'vulnerability');
   const avgRumination = computeAverageScore(states, 'rumination');
