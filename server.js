@@ -182,7 +182,95 @@ function normalizeForSpeech(text) {
     .trim();
 }
 
+function normalizeStringForCompare(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function hashText(text) {
+  return crypto.createHash('sha256').update(text).digest('hex');
+}
+
+function isWeightedMemoryItem(value) {
+  return !!value && typeof value === 'object' && typeof value.label === 'string';
+}
+
+function toWeightedMemoryItem(value, defaultWeight = 0.5) {
+  if (isWeightedMemoryItem(value)) {
+    return {
+      label: String(value.label).trim(),
+      weight: clampWeight(value.weight),
+      occurrences: Number.isInteger(value.occurrences) && value.occurrences > 0 ? value.occurrences : 1,
+      last_seen_at: typeof value.last_seen_at === 'string' && value.last_seen_at ? value.last_seen_at : new Date().toISOString()
+    };
+  }
+
+  return {
+    label: String(value || '').trim(),
+    weight: clampWeight(defaultWeight),
+    occurrences: 1,
+    last_seen_at: new Date().toISOString()
+  };
+}
+
+function clampWeight(value) {
+  const num = Number(value);
+  if (Number.isNaN(num)) return 0.5;
+  if (num < 0.1) return 0.1;
+  if (num > 1) return 1;
+  return Math.round(num * 100) / 100;
+}
+
+function upgradeWeightedArray(array) {
+  if (!Array.isArray(array)) return [];
+  return array
+    .map((item) => toWeightedMemoryItem(item))
+    .filter((item) => item.label);
+}
+
+function weightedArrayToPromptLines(array) {
+  if (!Array.isArray(array) || array.length === 0) return [];
+
+  return array
+    .slice()
+    .sort((a, b) => {
+      if ((b.weight || 0) !== (a.weight || 0)) return (b.weight || 0) - (a.weight || 0);
+      return (b.occurrences || 0) - (a.occurrences || 0);
+    })
+    .slice(0, 8)
+    .map((item) => `${item.label} (poids: ${item.weight}, occurrences: ${item.occurrences})`);
+}
+
+function buildPromptMemoryView(structuredMemory) {
+  const weightedView = {
+    identity: structuredMemory.identity || {},
+    preferences: structuredMemory.preferences || [],
+    projects: structuredMemory.projects || [],
+    constraints: structuredMemory.constraints || [],
+    relationships: structuredMemory.relationships || [],
+    conversation_style: structuredMemory.conversation_style || {},
+    emotional_patterns: weightedArrayToPromptLines(structuredMemory.emotional_patterns),
+    triggers: weightedArrayToPromptLines(structuredMemory.triggers),
+    needs: weightedArrayToPromptLines(structuredMemory.needs),
+    insights: weightedArrayToPromptLines(structuredMemory.insights),
+    active_contexts: weightedArrayToPromptLines(structuredMemory.active_contexts),
+    decisions: weightedArrayToPromptLines(structuredMemory.decisions),
+    regulation_strategies: structuredMemory.regulation_strategies || [],
+    risk_patterns: structuredMemory.risk_patterns || [],
+    support_patterns: structuredMemory.support_patterns || []
+  };
+
+  return weightedView;
+}
+
 function buildSystemPrompt(summary, structuredMemory) {
+  const promptMemoryView = buildPromptMemoryView(structuredMemory);
+
   return `
 Tu es Nyra, une présence intelligente, naturelle, profondément humaine, lucide, douce quand il le faut et capable de recadrer avec justesse quand c’est utile.
 
@@ -213,8 +301,8 @@ Comportement :
 Résumé global mémoire :
 ${summary || 'Aucun résumé disponible pour le moment.'}
 
-Mémoire structurée :
-${safeStringify(structuredMemory)}
+Mémoire structurée priorisée :
+${safeStringify(promptMemoryView)}
 `.trim();
 }
 
@@ -261,41 +349,27 @@ Consignes :
   }
 }
 
-function normalizeStringForCompare(value) {
-  return String(value || '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^\p{L}\p{N}\s]/gu, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function pushUniqueStrings(targetArray, incomingArray) {
-  if (!Array.isArray(targetArray) || !Array.isArray(incomingArray)) return targetArray;
-
-  incomingArray.forEach((item) => {
-    if (typeof item !== 'string') return;
-    const trimmed = item.trim();
-    if (!trimmed) return;
-
-    const normalizedItem = normalizeStringForCompare(trimmed);
-    const alreadyExists = targetArray.some(
-      (existing) => normalizeStringForCompare(existing) === normalizedItem
-    );
-
-    if (!alreadyExists) {
-      targetArray.push(trimmed);
+function safeParseMemoryJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    try {
+      const match = String(text || '').match(/\{[\s\S]*\}/);
+      if (match) {
+        return JSON.parse(match[0]);
+      }
+    } catch {
+      return {};
     }
-  });
+  }
 
-  return targetArray;
+  return {};
 }
 
-function mergeStructuredMemory(existing, update) {
-  const next = { ...existing };
+function normalizeWeightedUpdate(parsed) {
+  const result = {};
 
-  const arrayKeys = [
+  const keys = [
     'emotional_patterns',
     'triggers',
     'needs',
@@ -304,14 +378,182 @@ function mergeStructuredMemory(existing, update) {
     'decisions'
   ];
 
-  arrayKeys.forEach((key) => {
-    if (!Array.isArray(next[key])) {
-      next[key] = [];
+  keys.forEach((key) => {
+    if (!Array.isArray(parsed[key])) {
+      result[key] = [];
+      return;
     }
 
-    if (Array.isArray(update[key])) {
-      next[key] = pushUniqueStrings(next[key], update[key]);
+    result[key] = parsed[key]
+      .map((item) => {
+        if (typeof item === 'string') {
+          return {
+            label: item.trim(),
+            weight: 0.6
+          };
+        }
+
+        if (item && typeof item === 'object') {
+          return {
+            label: typeof item.label === 'string' ? item.label.trim() : '',
+            weight: clampWeight(item.weight ?? 0.6)
+          };
+        }
+
+        return null;
+      })
+      .filter((item) => item && item.label);
+  });
+
+  return result;
+}
+
+async function extractMemoryUpdate(userMessage, currentStructuredMemory) {
+  try {
+    const compactMemoryView = buildPromptMemoryView(currentStructuredMemory);
+
+    const systemPrompt = `
+Tu es un système d’analyse mémoire pour une IA personnelle.
+
+Objectif :
+Transformer un message utilisateur en patterns psychologiques GÉNÉRALISÉS, utiles à long terme.
+
+RÈGLES IMPORTANTES :
+- Réponds UNIQUEMENT en JSON valide
+- N’écris aucun texte avant ou après le JSON
+- Ne reste pas littéral
+- Utilise des concepts courts, réutilisables, propres
+- Maximum 2 éléments par catégorie
+- Chaque élément doit être un objet avec :
+  - label
+  - weight (entre 0.1 et 1)
+- Si rien n’est utile, retourne des tableaux vides
+
+EXEMPLES DE BONNE EXTRACTION :
+- "il ne répond pas et ça me fait vriller" ->
+  triggers: [{ "label": "silence relationnel", "weight": 0.8 }]
+  emotional_patterns: [{ "label": "réactivité émotionnelle au retrait", "weight": 0.8 }]
+  needs: [{ "label": "besoin de réassurance", "weight": 0.7 }]
+
+- "j'ai envie de checker son profil" ->
+  emotional_patterns: [{ "label": "comportement de surveillance", "weight": 0.7 }]
+  insights: [{ "label": "la surveillance sert à réduire l'angoisse à court terme", "weight": 0.7 }]
+
+- "je pars dans tous les sens avec mes projets" ->
+  emotional_patterns: [{ "label": "dispersion sous surcharge mentale", "weight": 0.75 }]
+  needs: [{ "label": "besoin de priorisation", "weight": 0.8 }]
+  active_contexts: [{ "label": "surcharge de projets", "weight": 0.7 }]
+
+CATÉGORIES AUTORISÉES :
+- emotional_patterns
+- triggers
+- needs
+- insights
+- active_contexts
+- decisions
+
+NE JAMAIS :
+- recopier la phrase brute
+- écrire des phrases longues
+- utiliser des détails trop personnels inutiles
+- inventer
+
+Mémoire actuelle priorisée :
+${safeStringify(compactMemoryView)}
+`.trim();
+
+    const userPrompt = `
+Analyse ce message :
+
+"${userMessage}"
+
+Retourne uniquement ce JSON :
+{
+  "emotional_patterns": [{ "label": "", "weight": 0.5 }],
+  "triggers": [{ "label": "", "weight": 0.5 }],
+  "needs": [{ "label": "", "weight": 0.5 }],
+  "insights": [{ "label": "", "weight": 0.5 }],
+  "active_contexts": [{ "label": "", "weight": 0.5 }],
+  "decisions": [{ "label": "", "weight": 0.5 }]
+}
+`.trim();
+
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      temperature: 0.1,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ]
+    });
+
+    const rawText = completion.choices?.[0]?.message?.content || '{}';
+    const parsed = safeParseMemoryJson(rawText);
+    const normalized = normalizeWeightedUpdate(parsed);
+
+    return {
+      raw: rawText,
+      parsed: normalized
+    };
+  } catch (error) {
+    console.error('Erreur extraction mémoire automatique :', error.message);
+    return {
+      raw: '',
+      parsed: {}
+    };
+  }
+}
+
+function mergeWeightedItems(existingArray, updateArray) {
+  const current = upgradeWeightedArray(existingArray);
+  const now = new Date().toISOString();
+
+  updateArray.forEach((incoming) => {
+    const incomingLabel = normalizeStringForCompare(incoming.label);
+
+    const found = current.find(
+      (item) => normalizeStringForCompare(item.label) === incomingLabel
+    );
+
+    if (found) {
+      found.occurrences += 1;
+      found.last_seen_at = now;
+      found.weight = clampWeight(Math.max(found.weight, incoming.weight) + 0.05);
+    } else {
+      current.push({
+        label: incoming.label,
+        weight: clampWeight(incoming.weight),
+        occurrences: 1,
+        last_seen_at: now
+      });
     }
+  });
+
+  return current.sort((a, b) => {
+    if ((b.weight || 0) !== (a.weight || 0)) return (b.weight || 0) - (a.weight || 0);
+    return (b.occurrences || 0) - (a.occurrences || 0);
+  });
+}
+
+function mergeStructuredMemory(existing, update) {
+  const next = {
+    ...existing
+  };
+
+  const weightedKeys = [
+    'emotional_patterns',
+    'triggers',
+    'needs',
+    'insights',
+    'active_contexts',
+    'decisions'
+  ];
+
+  weightedKeys.forEach((key) => {
+    const existingArray = Array.isArray(next[key]) ? next[key] : [];
+    const updateArray = Array.isArray(update[key]) ? update[key] : [];
+    next[key] = mergeWeightedItems(existingArray, updateArray);
   });
 
   return next;
@@ -330,128 +572,6 @@ function hasNonEmptyMemoryUpdate(update) {
   ];
 
   return keys.some((key) => Array.isArray(update[key]) && update[key].length > 0);
-}
-
-function safeParseMemoryJson(text) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    try {
-      const match = String(text || '').match(/\{[\s\S]*\}/);
-      if (match) {
-        return JSON.parse(match[0]);
-      }
-    } catch {
-      return {};
-    }
-  }
-
-  return {};
-}
-
-async function extractMemoryUpdate(userMessage, currentStructuredMemory) {
-  try {
-    const systemPrompt = `
-Tu es un système d’analyse mémoire pour une IA personnelle.
-
-Objectif :
-Transformer un message utilisateur en patterns psychologiques GÉNÉRALISÉS, utiles à long terme.
-
-RÈGLES IMPORTANTES :
-- Réponds UNIQUEMENT en JSON valide
-- N’écris aucun texte avant ou après le JSON
-- Ne reste pas littéral
-- Utilise des concepts courts, réutilisables, propres
-- Maximum 2 éléments par catégorie
-- Si rien n’est vraiment utile, retourne des tableaux vides
-
-EXEMPLES DE BONNE EXTRACTION :
-- "il ne répond pas et ça me fait vriller" ->
-  triggers: ["silence relationnel"]
-  emotional_patterns: ["réactivité émotionnelle au retrait"]
-  needs: ["besoin de réassurance"]
-
-- "j'ai envie de checker son profil" ->
-  triggers: ["incertitude relationnelle"]
-  emotional_patterns: ["comportement de surveillance"]
-  insights: ["la surveillance sert à réduire l'angoisse à court terme"]
-
-- "je pars dans tous les sens avec mes projets" ->
-  emotional_patterns: ["dispersion sous surcharge mentale"]
-  needs: ["besoin de priorisation"]
-  active_contexts: ["surcharge de projets"]
-
-CATÉGORIES AUTORISÉES :
-- emotional_patterns
-- triggers
-- needs
-- insights
-- active_contexts
-- decisions
-
-NE JAMAIS :
-- recopier la phrase brute
-- écrire des phrases longues
-- utiliser des détails trop personnels inutiles
-- inventer
-
-Mémoire actuelle :
-${safeStringify(currentStructuredMemory)}
-`.trim();
-
-    const userPrompt = `
-Analyse ce message :
-
-"${userMessage}"
-
-Retourne uniquement ce JSON :
-{
-  "emotional_patterns": [],
-  "triggers": [],
-  "needs": [],
-  "insights": [],
-  "active_contexts": [],
-  "decisions": []
-}
-`.trim();
-
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      temperature: 0.1,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
-      ]
-    });
-
-    const rawText = completion.choices?.[0]?.message?.content || '{}';
-    const parsed = safeParseMemoryJson(rawText);
-
-    const normalized = {
-      emotional_patterns: Array.isArray(parsed.emotional_patterns) ? parsed.emotional_patterns : [],
-      triggers: Array.isArray(parsed.triggers) ? parsed.triggers : [],
-      needs: Array.isArray(parsed.needs) ? parsed.needs : [],
-      insights: Array.isArray(parsed.insights) ? parsed.insights : [],
-      active_contexts: Array.isArray(parsed.active_contexts) ? parsed.active_contexts : [],
-      decisions: Array.isArray(parsed.decisions) ? parsed.decisions : []
-    };
-
-    return {
-      raw: rawText,
-      parsed: normalized
-    };
-  } catch (error) {
-    console.error('Erreur extraction mémoire automatique :', error.message);
-    return {
-      raw: '',
-      parsed: {}
-    };
-  }
-}
-
-function hashText(text) {
-  return crypto.createHash('sha256').update(text).digest('hex');
 }
 
 app.get('/', (req, res) => {
@@ -494,14 +614,14 @@ app.post('/memory/structured', (req, res) => {
       preferences: Array.isArray(incoming.preferences) ? incoming.preferences : current.preferences ?? [],
       projects: Array.isArray(incoming.projects) ? incoming.projects : current.projects ?? [],
       constraints: Array.isArray(incoming.constraints) ? incoming.constraints : current.constraints ?? [],
-      emotional_patterns: Array.isArray(incoming.emotional_patterns) ? incoming.emotional_patterns : current.emotional_patterns ?? [],
+      emotional_patterns: Array.isArray(incoming.emotional_patterns) ? upgradeWeightedArray(incoming.emotional_patterns) : upgradeWeightedArray(current.emotional_patterns ?? []),
       relationships: Array.isArray(incoming.relationships) ? incoming.relationships : current.relationships ?? [],
-      active_contexts: Array.isArray(incoming.active_contexts) ? incoming.active_contexts : current.active_contexts ?? [],
-      decisions: Array.isArray(incoming.decisions) ? incoming.decisions : current.decisions ?? [],
-      insights: Array.isArray(incoming.insights) ? incoming.insights : current.insights ?? [],
+      active_contexts: Array.isArray(incoming.active_contexts) ? upgradeWeightedArray(incoming.active_contexts) : upgradeWeightedArray(current.active_contexts ?? []),
+      decisions: Array.isArray(incoming.decisions) ? upgradeWeightedArray(incoming.decisions) : upgradeWeightedArray(current.decisions ?? []),
+      insights: Array.isArray(incoming.insights) ? upgradeWeightedArray(incoming.insights) : upgradeWeightedArray(current.insights ?? []),
       conversation_style: incoming.conversation_style ?? current.conversation_style ?? {},
-      triggers: Array.isArray(incoming.triggers) ? incoming.triggers : current.triggers ?? [],
-      needs: Array.isArray(incoming.needs) ? incoming.needs : current.needs ?? [],
+      triggers: Array.isArray(incoming.triggers) ? upgradeWeightedArray(incoming.triggers) : upgradeWeightedArray(current.triggers ?? []),
+      needs: Array.isArray(incoming.needs) ? upgradeWeightedArray(incoming.needs) : upgradeWeightedArray(current.needs ?? []),
       regulation_strategies: Array.isArray(incoming.regulation_strategies) ? incoming.regulation_strategies : current.regulation_strategies ?? [],
       risk_patterns: Array.isArray(incoming.risk_patterns) ? incoming.risk_patterns : current.risk_patterns ?? [],
       support_patterns: Array.isArray(incoming.support_patterns) ? incoming.support_patterns : current.support_patterns ?? []
