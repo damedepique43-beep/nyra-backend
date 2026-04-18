@@ -4,7 +4,6 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const OpenAI = require('openai');
 
 const app = express();
@@ -18,12 +17,12 @@ const openai = new OpenAI({
 });
 
 const DATA_DIR = path.join(__dirname, 'data');
-const MEMORY_STRUCTURED_PATH = path.join(DATA_DIR, 'memory_structured.json');
+const MEMORY_PATH = path.join(DATA_DIR, 'memory_structured.json');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
-if (!fs.existsSync(MEMORY_STRUCTURED_PATH)) {
-  fs.writeFileSync(MEMORY_STRUCTURED_PATH, JSON.stringify({
+if (!fs.existsSync(MEMORY_PATH)) {
+  fs.writeFileSync(MEMORY_PATH, JSON.stringify({
     emotional_patterns: [],
     triggers: [],
     needs: [],
@@ -33,24 +32,12 @@ if (!fs.existsSync(MEMORY_STRUCTURED_PATH)) {
   }, null, 2));
 }
 
-function readJSON(file) {
-  return JSON.parse(fs.readFileSync(file, 'utf-8'));
+function readMemory() {
+  return JSON.parse(fs.readFileSync(MEMORY_PATH, 'utf-8'));
 }
 
-function writeJSON(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
-}
-
-function safeParseJSON(text) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    try {
-      const match = text.match(/\{[\s\S]*\}/);
-      if (match) return JSON.parse(match[0]);
-    } catch {}
-  }
-  return {};
+function writeMemory(data) {
+  fs.writeFileSync(MEMORY_PATH, JSON.stringify(data, null, 2));
 }
 
 function normalize(str) {
@@ -76,15 +63,38 @@ function mergeMemory(existing, update) {
 }
 
 async function extractMemory(message) {
-  const prompt = `
-Analyse ce message et transforme-le en patterns psychologiques GÉNÉRAUX.
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0.2,
+      messages: [
+        {
+          role: "system",
+          content: `
+Tu es un système d’analyse mémoire.
+
+Objectif :
+Extraire des patterns psychologiques utiles et généralisés.
 
 IMPORTANT :
-- ne reste pas littéral
-- concepts courts uniquement
-- JSON uniquement
+- Ne reste pas littéral
+- Utilise des concepts courts
+- Max 2 éléments par catégorie
 
-Format :
+Exemples :
+"il répond pas" → "silence relationnel"
+"je check" → "comportement de surveillance"
+
+Réponds UNIQUEMENT en JSON valide.
+`
+        },
+        {
+          role: "user",
+          content: `
+Message :
+${message}
+
+Format attendu :
 {
   "emotional_patterns": [],
   "triggers": [],
@@ -93,43 +103,58 @@ Format :
   "active_contexts": [],
   "decisions": []
 }
+`
+        }
+      ]
+    });
 
-Message :
-${message}
-`;
+    let text = response.choices[0].message.content;
 
-  const res = await openai.responses.create({
-    model: "gpt-4.1-mini",
-    input: prompt
-  });
+    // Nettoyage si l'IA ajoute du texte autour
+    const match = text.match(/\{[\s\S]*\}/);
+    if (match) text = match[0];
 
-  return safeParseJSON(res.output_text);
+    return JSON.parse(text);
+
+  } catch (err) {
+    console.log("extract error", err.message);
+    return {};
+  }
 }
 
 app.get('/memory/structured', (req, res) => {
-  res.json(readJSON(MEMORY_STRUCTURED_PATH));
+  res.json(readMemory());
 });
 
 app.post('/chat', async (req, res) => {
   try {
     const message = req.body.message;
 
-    let memory = readJSON(MEMORY_STRUCTURED_PATH);
+    let memory = readMemory();
 
     const update = await extractMemory(message);
 
     if (Object.keys(update).length > 0) {
       memory = mergeMemory(memory, update);
-      writeJSON(MEMORY_STRUCTURED_PATH, memory);
+      writeMemory(memory);
     }
 
-    const ai = await openai.responses.create({
-      model: "gpt-4.1",
-      input: message
+    const ai = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        {
+          role: "system",
+          content: "Tu es Nyra, une IA naturelle, subtile, humaine, profonde."
+        },
+        {
+          role: "user",
+          content: message
+        }
+      ]
     });
 
     res.json({
-      reply: ai.output_text,
+      reply: ai.choices[0].message.content,
       memory_update_applied: Object.keys(update).length > 0
     });
 
