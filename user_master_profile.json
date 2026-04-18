@@ -1,0 +1,1824 @@
+{
+  "meta": {
+    "profile_version": "1.0",
+    "profile_type": "expert_master_profile",
+    "owner_id": "gwendoline_jouan",
+    "created_for": "Nyra",
+    "language_primary": "fr",
+    "last_updated": "2026-04-18",
+    "notes": "Fichier maître complet de personnalisation profonde. Base humaine riche destinée à alimenter la mémoire structurée, le style conversationnel, les inférences émotionnelles et la continuité long terme."
+  },
+  "identity": {
+    "legal_name": "Gwendoline Jouan",
+    "preferred_name": "Gwendoline",
+    "nicknames": [
+      "Gwendo"
+    ],
+    "birth": {
+      "date": "1991-06-12",
+      "time": "02:06",
+      "place": "La Réole",
+      "country": "France"
+    },
+    "age": 34,
+    "gender_identity": "femme",
+    "languages": [
+      "français"
+    ],
+    "location": {
+      "country": "France",
+      "region": "",
+      "city": "",
+      "timezone": "Europe/Paris"
+    },
+    "family_status": "mère de quatre enfants, séparée du père de ses enfants",
+    "children_count": 4,
+    "short_identity_summary": "Femme intense, alternative, sensible, lucide, très profonde émotionnellement, avec un TDAH assumé et un fort besoin de sens, d'amour vrai, d'alignement et de mission."
+  },
+  "physical_appearance_and_style": {
+    "body_description": {
+      "height_estimate": "",
+      "weight_reference": "autour de 60 kg, souhaite garder un minimum de formes, ne se trouve pas grosse",
+      "body_perception": "ne se perçoit pas comme une grande beauté mais reçoit souvent des compliments sur son style et son sex-appeal",
+      "notable_features": [
+        "cheveux rouges très remarqués",
+        "yeux quasi noirs",
+        "style marquant",
+        "présence visuelle forte"
+      ]
+    },
+    "face_and_features": {
+      "face_shape": "ovale",
+      "eyes": "quasi noirs, en amande",
+      "hair": "rouges, mi-longs, côtés rasés",
+      "skin": "",
+      "distinctive_traits": [
+        "maquillage souvent vert ou bleu",
+        "forte identité visuelle",
+        "look atypique"
+      ]
+    },
+    "piercings_and_tattoos": {
+      "piercings": [
+        "piercing au nez"
+      ],
+      "tattoos": [
+        "tatouage sternum",
+        "tatouages visibles sur les mains",
+        "tatouage à l'arcade mentionné dans l'avatar IA"
+      ],
+      "planned_tattoos": [
+        "full neck tattoo avec 'Love thyself' intégré",
+        "grand tatouage dos avec phénix et éléments gothiques"
+      ]
+    },
+    "fashion_style": {
+      "overall_style": "alternatif, atypique, féminin, sombre, sexy, assumé",
+      "usual_colors": [
+        "noir",
+        "rouge",
+        "bleu roi"
+      ],
+      "usual_clothes": [
+        "robes",
+        "jupes",
+        "pièces moulantes ou marquées",
+        "harnais et accessoires assimilés"
+      ],
+      "shoes": [
+        "talons épais"
+      ],
+      "accessories": [
+        "accessoires alternatifs",
+        "pièces qui renforcent l'identité visuelle"
+      ],
+      "style_identity_meaning": "son style correspond profondément à sa personnalité et à son identité. Il exprime sa singularité, sa sensualité, sa puissance et son refus d'être banale."
+    },
+    "aesthetic_preferences": {
+      "visual_universe": [
+        "mystique",
+        "brumeux",
+        "gothique",
+        "spirituel",
+        "premium sombre",
+        "féminin puissant"
+      ],
+      "atmospheres": [
+        "douceur enveloppante",
+        "mystère",
+        "intensité émotionnelle",
+        "magie",
+        "brume",
+        "lumières tamisées"
+      ],
+      "symbols": [
+        "dame de pique",
+        "brume",
+        "renaissance",
+        "reine",
+        "phénix",
+        "grimoire",
+        "âme"
+      ],
+      "textures": [
+        "matières enveloppantes",
+        "ambiances feutrées",
+        "halo lumineux"
+      ],
+      "scents": [
+        "noix de coco",
+        "vanille",
+        "ambiances sensorielles douces"
+      ],
+      "music_vibe": [
+        "ambiances émotionnelles",
+        "mystiques",
+        "enveloppantes"
+      ]
+    }
+  },
+  "core_personality": {
+    "self_image": {
+      "how_she_sees_herself": "profonde, intense, atypique, très sensible, loyale, entière, parfois trop dans l'émotion ou la projection, mais lucide sur ses mécanismes",
+      "how_others_tend_to_see_her": "marquante, sexy, impossible à rater, différente, très féminine, magnétique, forte",
+      "gaps_between_self_and_external_image": [
+        "les autres voient souvent sa beauté, son style et son sex-appeal plus qu'elle-même",
+        "elle peut sembler très forte alors qu'elle est intérieurement traversée par beaucoup d'intensité émotionnelle",
+        "elle peut paraître sûre d'elle tout en ayant des blessures profondes"
+      ]
+    },
+    "dominant_traits": [
+      "intense",
+      "profonde",
+      "sensible",
+      "loyale",
+      "lucide",
+      "créative",
+      "magnétique",
+      "déterminée",
+      "très émotionnelle",
+      "visionnaire"
+    ],
+    "secondary_traits": [
+      "drôle",
+      "taquine",
+      "très affectueuse",
+      "sensuelle",
+      "observatrice",
+      "endurante",
+      "résiliente"
+    ],
+    "contradictory_traits": [
+      "forte mais fragile",
+      "lucide mais parfois emportée par l'espoir",
+      "indépendante mais en besoin de fusion émotionnelle",
+      "capable de recadrer mais peut aussi s'accrocher à des liens destructeurs"
+    ],
+    "social_style": {
+      "first_impression": "marquante, différente, assumée, sexy, alternative",
+      "deep_personality": "très riche, très investie émotionnellement, besoin de profondeur et de vérité",
+      "with_strangers": "peut garder une certaine maîtrise et une image forte",
+      "with_safe_people": "très tendre, très tactile, très investie",
+      "with_people_she_desires": "intense, fusionnelle, provocante, affectueuse, très expressive"
+    },
+    "relationship_to_intensity": "attirée par l'intensité émotionnelle et relationnelle, parfois au détriment de la stabilité",
+    "relationship_to_depth": "besoin fort de profondeur, de sens, de vérité et de connexion vraie",
+    "relationship_to_control": "aime garder une certaine maîtrise, mais peut perdre le contrôle quand elle est touchée profondément",
+    "relationship_to_vulnerability": "capable de grande vulnérabilité quand elle aime, même si cela l'expose fortement",
+    "sources_of_pride": [
+      "sa singularité",
+      "sa capacité à aimer intensément",
+      "sa profondeur",
+      "sa force de survie",
+      "sa créativité",
+      "sa capacité à construire des projets puissants à partir de sa douleur"
+    ],
+    "sources_of_shame": [
+      "le sentiment de ne pas être assez",
+      "le fait d'aller mal",
+      "certaines dépendances affectives",
+      "le regard qu'on peut porter sur son passé",
+      "la peur d'être vue comme instable ou pathétique"
+    ],
+    "identity_statements": [
+      "elle veut être choisie pleinement",
+      "elle ne veut pas être banale ni réduite",
+      "elle veut transformer sa souffrance en mission et en puissance",
+      "elle a besoin qu'on la comprenne en profondeur"
+    ]
+  },
+  "neurodivergence_and_cognitive_functioning": {
+    "adhd": {
+      "present": true,
+      "self_understanding": "elle se reconnaît dans son TDAH et cherche à le transformer en force plutôt qu'à seulement le subir",
+      "main_manifestations": [
+        "pensées qui partent dans tous les sens",
+        "difficulté à mettre le cerveau sur pause",
+        "oubli de manger",
+        "dispersion quand trop d'idées arrivent en même temps",
+        "besoin de stimulation et de fond sonore",
+        "hyperfocus sur ce qui la passionne"
+      ],
+      "strengths_linked_to_adhd": [
+        "vision rapide",
+        "intuition",
+        "créativité",
+        "énergie de projet",
+        "capacité à créer des systèmes originaux",
+        "forte intensité mentale"
+      ],
+      "difficulties_linked_to_adhd": [
+        "maintenir une structure stable",
+        "prioriser",
+        "ralentir mentalement",
+        "ne pas s'éparpiller",
+        "prendre soin d'elle de manière régulière"
+      ],
+      "helpful_support_patterns": [
+        "guidage étape par étape",
+        "cadre clair",
+        "recadrage doux mais ferme",
+        "vision globale + prochaine action concrète",
+        "solutions premium plutôt que bricolage temporaire"
+      ],
+      "unhelpful_support_patterns": [
+        "parler trop vite sans structure",
+        "réponses floues",
+        "conseils trop génériques",
+        "trop d'options à la fois",
+        "ton froid ou professoral"
+      ]
+    },
+    "attention_profile": {
+      "focus_style": "hyperfocus sur ce qui l'obsède, difficulté à s'ancrer sur le reste",
+      "hyperfocus_triggers": [
+        "projets qui ont du sens",
+        "argent urgent",
+        "Nyra",
+        "NovaCall",
+        "Clément",
+        "création de systèmes puissants"
+      ],
+      "distraction_triggers": [
+        "surplus d'idées simultanées",
+        "charge émotionnelle",
+        "incertitude relationnelle",
+        "fatigue",
+        "stress"
+      ],
+      "task_initiation_difficulties": [
+        "quand une tâche semble trop vaste ou floue",
+        "quand il n'y a pas de structure claire",
+        "quand elle est émotionnellement envahie"
+      ],
+      "task_completion_difficulties": [
+        "quand le projet perd de sa nouveauté",
+        "quand d'autres idées prennent le dessus",
+        "quand elle s'épuise émotionnellement"
+      ],
+      "what_helps_start_action": [
+        "avoir le code complet",
+        "avoir une séquence claire",
+        "être guidée pas à pas",
+        "voir une vision ambitieuse et cohérente"
+      ]
+    },
+    "thinking_style": {
+      "speed": "rapide",
+      "depth": "très profonde",
+      "associative_patterns": "associative, intuitive, émotionnelle, symbolique",
+      "overthinking_patterns": [
+        "réfléchit énormément aux dynamiques relationnelles",
+        "rumine quand elle n'a pas de réponse claire",
+        "projette beaucoup dans les liens importants"
+      ],
+      "decision_style": "mélange d'intuition, d'intensité émotionnelle et de lucidité stratégique",
+      "learning_style": "apprend bien quand c'est concret, guidé, relié à un vrai but",
+      "processing_style_under_stress": "se focalise sur ce qui la hante, cherche du sens, peut s'éparpiller tout en restant très brillante"
+    },
+    "executive_function": {
+      "organization": "variable",
+      "memory": "bonne mémoire émotionnelle et contextuelle",
+      "planning": "meilleur quand elle est accompagnée par une structure",
+      "consistency": "irrégulière seule, meilleure avec cadre",
+      "impulsivity": "présente par moments, notamment émotionnellement",
+      "follow_through": "bon sur les projets qui la passionnent si elle a une ligne claire",
+      "time_perception": "peut perdre la notion du temps en hyperfocus"
+    }
+  },
+  "emotional_system": {
+    "baseline_emotional_tone": "intense, sensible, profonde, facilement activable par les liens et les projets de sens",
+    "emotional_intensity_level": "élevé",
+    "most_common_emotions": [
+      "désir",
+      "manque",
+      "espoir",
+      "amour",
+      "frustration",
+      "douleur",
+      "détermination"
+    ],
+    "most_feared_emotions": [
+      "abandon",
+      "indifférence",
+      "humiliation",
+      "non-choix",
+      "vide émotionnel"
+    ],
+    "hardest_emotions_to_regulate": [
+      "obsession affective",
+      "manque",
+      "espoir contrarié",
+      "solitude",
+      "blessure narcissique"
+    ],
+    "emotional_needs": [
+      "être comprise profondément",
+      "être choisie clairement",
+      "être rassurée sans être infantilisée",
+      "sentir qu'elle compte vraiment",
+      "avoir du sens"
+    ],
+    "signs_of_overwhelm": [
+      "rumination",
+      "pensées tournantes",
+      "envie de checker",
+      "dispersion",
+      "fatigue mentale",
+      "incapacité à se poser"
+    ],
+    "signs_of_shutdown": [
+      "épuisement",
+      "désengagement temporaire",
+      "sentiment de vide",
+      "perte de structure"
+    ],
+    "signs_of_reactivation": [
+      "espoir relancé",
+      "pensées autour de Clément",
+      "envie de reconstruire un scénario",
+      "réinvestissement massif dans un projet"
+    ],
+    "how_she_soothes_herself_naturally": [
+      "marcher longtemps",
+      "se plonger dans un projet",
+      "imaginer des scénarios",
+      "rituels symboliques",
+      "ambiance sensorielle",
+      "parler ici"
+    ],
+    "what_makes_emotions_worse": [
+      "surveillance des réseaux",
+      "silence ambigu",
+      "contradictions d'un homme qu'elle aime",
+      "inactivité",
+      "précarité financière",
+      "impression de perdre le fil"
+    ],
+    "what_makes_emotions_move": [
+      "la création",
+      "le recadrage intelligent",
+      "l'action",
+      "la marche",
+      "le fait de se sentir alignée",
+      "les projets à fort enjeu"
+    ],
+    "relationship_to_crying": "accueille ses émotions mais évite de pleurer fortement devant ses enfants",
+    "relationship_to_anger": "peut monter fort quand elle se sent blessée ou humiliée",
+    "relationship_to_desire": "fort, assumé, très relié à l'amour et à l'intensité",
+    "relationship_to_loneliness": "difficile, surtout quand elle est dans l'attente ou le manque",
+    "internal_conflicts": [
+      "se protéger vs espérer",
+      "se choisir vs attendre d'être choisie",
+      "lucidité vs croyance dans le lien",
+      "besoin de stabilité vs attirance pour l'intensité"
+    ],
+    "repeating_emotional_loops": [
+      "espoir -> projection -> attente -> douleur -> recadrage -> rechute partielle",
+      "urgence financière -> hyperfocus projet -> dispersion -> besoin de structure"
+    ]
+  },
+  "attachment_and_relational_patterns": {
+    "attachment_style_self_view": "tendance fusionnelle, très investie dans les liens profonds, sensible au retrait et à l'ambiguïté",
+    "patterns_in_love": [
+      "aime fort",
+      "s'attache profondément",
+      "tolère longtemps par amour et espoir",
+      "cherche les signes cachés",
+      "reste connectée aux détails et à la symbolique du lien"
+    ],
+    "patterns_in_friendship": [
+      "cherche la sincérité",
+      "préfère les liens qui ont du fond",
+      "n'aime pas les rapports tièdes"
+    ],
+    "patterns_in_conflict": [
+      "peut tout sortir d'un coup",
+      "veut comprendre le vrai dessous",
+      "peut être blessée très fort par le mépris",
+      "cherche le sens des contradictions"
+    ],
+    "patterns_in_pursuit_and_withdrawal": [
+      "a pu poursuivre émotionnellement quand l'autre fuyait",
+      "essaie maintenant de reprendre sa dignité et de moins relancer"
+    ],
+    "fear_of_abandonment_patterns": [
+      "l'attente pèse énormément",
+      "le silence réactive beaucoup",
+      "elle peut tenir longtemps sur l'espoir"
+    ],
+    "fear_of_rejection_patterns": [
+      "très sensible aux paroles humiliantes",
+      "le fait de ne pas être choisie clairement blesse profondément"
+    ],
+    "fear_of_not_being_enough_patterns": [
+      "peut croire qu'elle doit prouver sa valeur affective",
+      "les insécurités de l'autre la touchent et peuvent contaminer sa perception d'elle-même"
+    ],
+    "what_she_seeks_in_bonds": [
+      "profondeur",
+      "réciprocité",
+      "intensité",
+      "choix clair",
+      "adoration",
+      "fusion émotionnelle assumée"
+    ],
+    "what_activates_her_deeply": [
+      "les ambivalences",
+      "les signes de vulnérabilité chez l'autre",
+      "le sentiment de destin",
+      "les détails qui semblent prouver qu'elle compte"
+    ],
+    "what_makes_her_feel_safe": [
+      "constance",
+      "clarté",
+      "cohérence entre paroles et actes",
+      "tendresse stable",
+      "être choisie sans ambiguïté"
+    ],
+    "what_makes_her_obsess": [
+      "les contradictions",
+      "le manque de réponse",
+      "les liens inachevés",
+      "les retours intermittents"
+    ],
+    "what_makes_her_detach": [
+      "le mépris",
+      "l'humiliation",
+      "le refus clair",
+      "le fait de se sentir réduite ou salie"
+    ],
+    "recurring_relational_lessons": [
+      "ne pas confondre intensité et sécurité",
+      "ne pas rester dans l'attente infinie",
+      "se choisir avant de quémander une place",
+      "ne pas ignorer ses propres besoins de dignité"
+    ]
+  },
+  "values_beliefs_and_worldview": {
+    "core_values": [
+      "profondeur",
+      "vérité",
+      "amour",
+      "sens",
+      "singularité",
+      "transformation",
+      "beauté",
+      "alignement"
+    ],
+    "non_negotiables": [
+      "ne pas être réduite à un rôle tiède",
+      "être respectée",
+      "ne pas être traitée avec mépris",
+      "construire des choses qui ont du sens"
+    ],
+    "moral_compass": "fort besoin d'authenticité, d'intensité vraie et de cohérence intérieure",
+    "beliefs_about_love": [
+      "l'amour véritable doit être profond et marquant",
+      "elle veut être spéciale, pas remplaçable",
+      "un lien très fort peut revenir même après des coupures"
+    ],
+    "beliefs_about_life": [
+      "la douleur peut être transformée en mission",
+      "la vie peut montrer un chemin à travers les épreuves"
+    ],
+    "beliefs_about_suffering": [
+      "la souffrance peut révéler quelque chose de profond",
+      "elle veut la transmuter au lieu d'y rester enfermée"
+    ],
+    "beliefs_about_destiny": [
+      "forte sensibilité à l'idée de destin, notamment dans le lien avec Clément"
+    ],
+    "beliefs_about_money": [
+      "argent vu comme levier de liberté, d'autonomie et de mouvement"
+    ],
+    "beliefs_about_success": [
+      "le succès doit être aligné avec l'âme et la singularité"
+    ],
+    "beliefs_about_spirituality": [
+      "la spiritualité est importante et reliée à sa mission"
+    ],
+    "what_she_respects_in_people": [
+      "la profondeur",
+      "la sincérité",
+      "la sensibilité vraie",
+      "la cohérence"
+    ],
+    "what_she_despises_in_people": [
+      "le mépris",
+      "la froideur cruelle",
+      "l'hypocrisie",
+      "les jeux de pouvoir affectifs"
+    ]
+  },
+  "spirituality_and_inner_world": {
+    "importance_of_spirituality": "élevée",
+    "main_spiritual_frameworks": [
+      "spiritualité intuitive",
+      "blessures de l'âme",
+      "hypnose de guérison",
+      "lecture symbolique des liens",
+      "numérologie"
+    ],
+    "concepts_she_resonates_with": [
+      "flammes jumelles",
+      "contrat d'âme",
+      "renaissance",
+      "mission d'âme",
+      "blessures émotionnelles",
+      "guérison intérieure"
+    ],
+    "rituals_or_practices": [
+      "hypnose sur les blessures",
+      "rituels de retour à soi",
+      "journaling",
+      "contenu spirituel",
+      "méditations guidées"
+    ],
+    "relationship_to_signs_synchronicities": "forte sensibilité aux signes et à la symbolique",
+    "relationship_to_fate_and_destiny": "voit certains liens et certaines étapes comme écrits ou très significatifs",
+    "relationship_to_energy_and_intuition": "très présente",
+    "mystical_interpretation_patterns": [
+      "cherche du sens énergétique dans les liens et les retours",
+      "peut interpréter certains détails comme confirmant une trame plus grande"
+    ],
+    "inner_symbols": [
+      "reine",
+      "brume",
+      "renaissance",
+      "âme",
+      "dame de pique",
+      "grimoire"
+    ],
+    "personal_archetypes": [
+      "la reine blessée qui se reconstruit",
+      "la femme mystique",
+      "la guide émotionnelle",
+      "la survivante magnétique"
+    ],
+    "mission_sense": "se sent appelée à aider les autres, notamment via la spiritualité, l'hypnose, le développement personnel et des systèmes intelligents comme Nyra",
+    "soul_story_she_tells_herself": "sa vie intense et ses blessures peuvent devenir une voie de transformation, de transmission et de mission."
+  },
+ "childhood_and_developmental_history": {
+  "childhood_overview": "enfance marquée par une présence parentale déséquilibrée : un père aimant et affectueux, puis une rupture brutale du lien après séparation forcée par la mère. ensuite environnement instable, froid et parfois violent, avec un fort sentiment d'abandon.",
+  "family_emotional_climate": "avant séparation : relativement stable mais peu de souvenirs. après séparation : instable, froid, violent, imprévisible, émotionnellement insécurisant.",
+  "feeling_seen_or_not_seen": "ne se sentait pas vue, ni comprise, ni écoutée",
+  "feeling_safe_or_not_safe": "ne se sentait pas en sécurité",
+  "early_role_in_family": "identifiée comme 'instable', 'folle', 'suicidaire', rôle stigmatisant et marginalisant",
+  "memories_of_love": [
+    "relation avec le père : aimant, câlin, présence affective réelle avant la séparation"
+  ],
+  "memories_of_pain": [
+    "rupture du lien avec le père suite à manipulation maternelle",
+    "environnement instable après séparation",
+    "sentiment constant d'abandon"
+  ],
+  "memories_of_humiliation": [
+    "tentative de suicide où son frère a dit aux pompiers qu'elle était folle et qu'il fallait l'enfermer"
+  ],
+  "memories_of_rejection": [
+    "sentiment global et constant de rejet sans événement unique isolé"
+  ],
+  "memories_of_abandonment": [
+    "mère qui ne se souciait pas de ses allées et venues à 12-13 ans",
+    "exposition à des situations dangereuses sans protection",
+    "absence de cadre et de sécurité"
+  ],
+  "memories_of_betrayal": [
+    "mère trompant le père",
+    "mère manipulant la perception du père pour couper le lien",
+    "multiples situations perçues comme trahisons émotionnelles"
+  ],
+  "key_childhood_events": [
+    "séparation des parents vers 9 ans",
+    "internement du père suite à décision de la mère",
+    "rupture du lien avec la figure d'attachement principale",
+    "exposition à des situations à risque sans encadrement",
+    "tentative de suicide avec réaction humiliante du frère",
+    "manipulation maternelle sur l'image du père"
+  ],
+  "early_survival_strategies": [
+    "hyperadaptation émotionnelle",
+    "recherche intense d'amour",
+    "attachement fort aux rares figures affectives",
+    "construction d'un monde intérieur riche",
+    "résistance malgré la souffrance",
+    "développement d'une grande sensibilité et d'une hypervigilance relationnelle"
+  ],
+  "what_childhood_taught_her_about_herself": [
+    "qu'elle était trop sensible",
+    "qu'elle pouvait être vue comme instable ou 'trop'",
+    "qu'elle devait mériter l'amour",
+    "qu'elle n'était pas naturellement suffisante"
+  ],
+  "what_childhood_taught_her_about_love": [
+    "que les personnes aimées peuvent partir ou être enlevées",
+    "que l'amour n'est pas stable",
+    "que l'amour peut disparaître brutalement",
+    "qu'il faut parfois se battre ou prouver pour être aimée"
+  ],
+  "what_childhood_taught_her_about_safety": [
+    "que la sécurité n'est pas garantie",
+    "que les adultes ne protègent pas toujours",
+    "qu'elle doit se débrouiller seule émotionnellement"
+  ],
+  "unfinished_childhood_needs": [
+    "amour inconditionnel",
+    "attention réelle",
+    "écoute",
+    "compréhension",
+    "sécurité émotionnelle",
+    "cadre protecteur"
+  ],
+  "inner_child_profile": {
+    "main_wounds": [
+      "rejet",
+      "abandon",
+      "trahison",
+      "humiliation"
+    ],
+    "main_needs": [
+      "être vue",
+      "être comprise",
+      "être choisie",
+      "être aimée sans condition",
+      "être rassurée",
+      "être protégée"
+    ],
+    "main_fears": [
+      "être abandonnée",
+      "ne pas compter",
+      "être rejetée",
+      "être considérée comme folle ou instable",
+      "ne jamais être choisie"
+    ],
+    "what_reassures_her_inner_child": [
+      "constance",
+      "présence émotionnelle réelle",
+      "être choisie clairement",
+      "paroles sincères",
+      "sécurité"
+    ],
+    "what_retriggers_her_inner_child": [
+      "silence",
+      "retrait",
+      "ambiguïté",
+      "mépris",
+      "humiliation",
+      "absence de réponse",
+      "sentiment d'être ignorée ou secondaire"
+    ]
+  }
+},
+"motherhood_and_children": {
+  "meaning_of_motherhood": "identité très forte, lien très affectif, amour immense, central dans sa vie",
+  "identity_as_mother": "mère très aimante, très présente émotionnellement, très fusionnelle par moments, profondément attachée à ses enfants",
+  "strengths_as_mother": [
+    "très affectueuse",
+    "très présente émotionnellement",
+    "grande capacité d'amour",
+    "compréhension fine des besoins affectifs"
+  ],
+  "difficulties_as_mother": [
+    "stress",
+    "charge mentale",
+    "manque de temps pour elle",
+    "intensité de la fusion avec sa fille"
+  ],
+  "guilt_as_mother": [
+    "souffre fortement de la situation actuelle de ses enfants (placements et éloignement)"
+  ],
+  "fears_as_mother": [
+    "ne pas être assez présente",
+    "perdre du lien",
+    "ne pas pouvoir protéger ses enfants comme elle le voudrait"
+  ],
+  "hopes_as_mother": [
+    "retrouver une stabilité familiale",
+    "recréer un cadre plus serein",
+    "rester profondément liée à ses enfants"
+  ],
+  "children": [
+    {
+      "name": "Morenzo",
+      "gender": "garçon",
+      "birth_date": "2011-03-12",
+      "age": 15,
+      "situation": "accueil provisoire en famille d'accueil"
+    },
+    {
+      "name": "Eliano",
+      "gender": "garçon",
+      "birth_date": "2014-08-20",
+      "age": 11,
+      "situation": "accueil provisoire en foyer"
+    },
+    {
+      "name": "Saif Din",
+      "gender": "garçon",
+      "birth_date": "2018-10-09",
+      "age": 7,
+      "situation": "vit chez son père"
+    },
+    {
+      "name": "Firdaws",
+      "gender": "fille",
+      "birth_date": "2020-10-23",
+      "age": 5,
+      "situation": "vit chez son père"
+    }
+  ],
+  "co_parenting_context": "les deux plus jeunes vivent chez leur père. les deux plus grands sont placés (famille d'accueil et foyer)",
+  "emotional_impact_of_current_family_arrangement": "très lourd émotionnellement, mélange de manque, de culpabilité, d'impuissance et de douleur profonde",
+  "how_children_affect_daily_life": [
+    "charge émotionnelle constante",
+    "pensées régulières pour leur situation",
+    "besoin de reconstruction personnelle pour retrouver une stabilité"
+  ],
+  "what_she_needs_more_of_as_a_mother": [
+    "reconstruction",
+    "stabilité",
+    "ressources émotionnelles",
+    "cadre pour se relever"
+  ]
+},
+  "health_body_and_energy": {
+    "general_health_context": "fonctionnement marqué par TDAH, stress émotionnel, alimentation irrégulière et objectifs de remise en forme",
+    "physical_limits": [
+      "soucis aux genoux",
+      "éviter les exercices avec sauts",
+      "plus de vésicule biliaire"
+    ],
+    "pain_or_discomfort_patterns": [
+      "soucis aux genoux"
+    ],
+    "food_relationship": {
+      "appetite_pattern": "irrégulier",
+      "eating_difficulties": [
+        "oublie de manger",
+        "mange souvent soit le midi soit le soir mais rarement les deux",
+        "mange très peu voire pas du tout le soir"
+      ],
+      "comfort_food_patterns": [],
+      "forgetting_to_eat_patterns": [
+        "lié au TDAH et à la charge mentale"
+      ],
+      "body_goals": [
+        "perdre un peu de poids",
+        "se tonifier",
+        "rester autour de 60 kg avec des formes"
+      ],
+      "constraints": [
+        "régime adapté à l'absence de vésicule biliaire"
+      ]
+    },
+    "sleep": {
+      "sleep_pattern": "peut avoir du mal à calmer son cerveau au coucher",
+      "main_sleep_obstacles": [
+        "cerveau qui ne s'arrête pas",
+        "ruminations",
+        "pensées en boucle"
+      ],
+      "helpful_sleep_supports": [
+        "mélatonine",
+        "ashwagandha gummies",
+        "rituels d'apaisement"
+      ]
+    },
+    "movement_and_body_practices": {
+      "current_activities": [
+        "marche quotidienne en fin de journée",
+        "roller",
+        "pilates"
+      ],
+      "preferred_activities": [
+        "marche longue",
+        "roller sur piste cyclable"
+      ],
+      "avoided_activities": [
+        "exercices avec sauts"
+      ],
+      "movement_goals": [
+        "mincir",
+        "se tonifier",
+        "se muscler",
+        "se sentir mieux dans son corps"
+      ]
+    },
+    "supplements_and_support": {
+      "current_supplements": [
+        "vitamine D + K",
+        "multivitamines",
+        "collagène en poudre Prozis",
+        "L-Tyrosine",
+        "magnésium",
+        "oméga-3",
+        "ashwagandha en gummies",
+        "mélatonine",
+        "H2O Anti-Ox de Prozis"
+      ],
+      "things_she_wants_to_try": [
+        "L-carnitine"
+      ],
+      "observed_effects": []
+    },
+    "energy_patterns": {
+      "best_moments_of_day": [
+        "quand elle est lancée dans un projet",
+        "quand elle a une ligne claire"
+      ],
+      "worst_moments_of_day": [
+        "quand elle est seule avec son mental",
+        "quand la solitude et l'attente prennent trop de place"
+      ],
+      "what_gives_energy": [
+        "les projets",
+        "le sens",
+        "la marche",
+        "la perspective d'une transformation"
+      ],
+      "what_drains_energy": [
+        "l'attente",
+        "le stress financier",
+        "la fusion épuisante",
+        "l'obsession affective",
+        "le manque de cadre"
+      ]
+    }
+  },
+  "daily_life_habits_and_environment": {
+    "daily_rhythm": "rythme variable, avec une forte place du mental, des projets et des pics d'intensité",
+    "daily_struggles": [
+      "garder une structure régulière",
+      "manger correctement",
+      "ne pas se laisser envahir par ses pensées",
+      "gérer la charge quand les enfants sont là"
+    ],
+    "daily_anchor_points": [
+      "marche vers 18h",
+      "projets",
+      "rituels personnels",
+      "contenus créatifs ou stratégiques"
+    ],
+    "comfort_habits": [
+      "marcher",
+      "créer",
+      "installer une ambiance",
+      "penser à des scénarios",
+      "discuter ici"
+    ],
+    "avoidance_habits": [
+      "surveillance mentale ou digitale autour de Clément",
+      "dispersion dans trop de pistes"
+    ],
+    "environment_preferences": {
+      "home_atmosphere": "premium, cosy, brumeuse, féminine, sensorielle",
+      "lighting": "tamisé, LED, halo",
+      "music_or_background_noise": "aime souvent un fond sonore pour se concentrer",
+      "organization_preferences": "a besoin d'un environnement beau, enveloppant et inspirant",
+      "objects_that_matter": [
+        "éléments décoratifs forts",
+        "lumières",
+        "diffuseur",
+        "espace esthétique cohérent"
+      ]
+    },
+    "aesthetic_home_projects": [
+      "plantes artificielles sous la mezzanine",
+      "LED",
+      "tissu mural blanc",
+      "coiffeuse lumineuse",
+      "ambiance premium cosy"
+    ],
+    "what_helps_her_feel_regulated_at_home": [
+      "beauté visuelle",
+      "ambiance sensorielle",
+      "ordre minimal",
+      "sentiment de cocon"
+    ],
+    "what_makes_home_life_harder": [
+      "désordre",
+      "charge familiale",
+      "mental envahissant"
+    ]
+  },
+  "love_relationship_history": {
+    "general_romantic_history_overview": "histoire affective marquée par des liens intenses, des blessures, et une recherche d'amour profond et vrai",
+    "long_term_patterns": [
+      "attirance pour les liens intenses",
+      "attachement fort",
+      "difficulté à lâcher quand le lien semble exceptionnel",
+      "tendance à espérer un retour"
+    ],
+    "major_relationship_lessons": [
+      "la réciprocité doit être concrète",
+      "la profondeur ne suffit pas si elle n'est pas assumée",
+      "l'amour sans cadre peut détruire"
+    ],
+    "main_wounds_from_love": [
+      "rejet",
+      "attente",
+      "ambiguïté",
+      "blessure de ne pas être pleinement choisie"
+    ],
+    "main_hopes_in_love": [
+      "être la princesse de quelqu'un",
+      "être spéciale",
+      "être choisie clairement",
+      "vivre une relation profonde, sensuelle, fusionnelle et vraie"
+    ],
+    "what_she_accepts_too_long": [
+      "l'ambiguïté",
+      "les retours intermittents",
+      "les contradictions tant qu'elle sent qu'il y a du vrai dessous"
+    ],
+    "what_she_refuses_now": [
+      "être réduite à une amie",
+      "être prise à moitié",
+      "accueillir un retour sans engagement clair"
+    ],
+    "relationship_to_commitment": "veut du sérieux quand le lien compte",
+    "relationship_to_sexuality": "forte, assumée, reliée au lien émotionnel et à la fusion",
+    "relationship_to_emotional_exclusivity": "très importante",
+    "relationship_to_being_chosen": "central"
+  },
+  "clement_relationship": {
+    "identity": {
+      "full_name": "Clément Geoffroy",
+      "birth_date": "1992-08-27",
+      "core_description": "homme très carré, routinier, qui se coupe de ses émotions, capable de grande vulnérabilité ponctuelle mais aussi de retrait, d'auto-sabotage et de contradiction",
+      "what_he_represents_to_her": "un lien central, marquant, presque sacré, mêlé d'amour, de désir, de projection, de douleur, d'espoir et de sentiment de destin"
+    },
+    "relationship_summary": "Lien très intense, irrégulier, chargé affectivement et symboliquement. Beaucoup de proximité, de sensualité, de signes contradictoires, de peur de sa part, d'espoir de la sienne, puis de ruptures, de fuite et de douleur profonde.",
+    "timeline": [
+  {
+    "period": "juin 2024",
+    "summary": "début des échanges avec Clément"
+  },
+  {
+    "period": "août 2024",
+    "summary": "première rencontre réelle"
+  },
+  {
+    "period": "mars 2025",
+    "summary": "soirée et nuit exceptionnelles, très forte proximité, sexualité, tendresse, sensation de déclic"
+  },
+  {
+    "period": "mars-juillet 2025",
+    "summary": "multiples signes d'attachement, de projection, d'ambivalence et de retenue"
+  },
+  {
+    "period": "juillet 2025",
+    "summary": "week-end très fort avec vulnérabilité de sa part"
+  },
+  {
+    "period": "31 juillet 2025",
+    "summary": "épisode de rupture (esthéticienne) et explosion"
+  },
+  {
+    "period": "après juillet 2025",
+    "summary": "phases de retrait, conflits, paroles blessantes, mais lien toujours présent"
+  }
+],
+    "key_events": [
+      "meilleure nuit de sa vie en mars 2025",
+      "il a été plus entreprenant qu'attendu",
+      "ils se sont beaucoup câlinés",
+      "il lui a fait un cunnilingus",
+      "il a voulu passer la matinée avec elle",
+      "il l'a appelée plusieurs fois 'mon amour' ou 'bébé'",
+      "il a dit qu'il aimait recevoir son message du matin motivant",
+      "il a dit qu'elle était belle et a insisté sur la sincérité du compliment",
+      "il a montré qu'il retenait beaucoup de choses sur elle",
+      "il a dit parfois qu'il se grillait tout seul",
+      "il a reconnu se projeter parfois trop",
+      "il a dit craindre de ne pas être assez et de ne rien avoir à lui apporter",
+      "il a pleuré et montré de la vulnérabilité",
+      "il y a eu une confrontation où il l'a profondément rabaissée"
+    ],
+    "moments_of_connection": [
+      "tactilité forte",
+      "nuit très intime",
+      "moments où il dit 'mon amour' ou 'bébé'",
+      "quand il lui dit qu'elle est belle",
+      "quand il demande ou apprécie son message du matin",
+      "quand il se laisse enlacer",
+      "quand il prolonge les moments ensemble"
+    ],
+    "moments_of_pain": [
+      "évitements",
+      "fuites",
+      "silences",
+      "humiliations verbales",
+      "rabaissements",
+      "refus d'assumer clairement",
+      "interdiction de le toucher au moment du conflit"
+    ],
+    "moments_of_confusion": [
+      "paroles affectueuses suivies de retrait",
+      "proximité puis esquive",
+      "signes de projection suivis d'auto-sabotage",
+      "réciprocité émotionnelle non assumée"
+    ],
+    "moments_of_reciprocity": [
+      "il s'est montré tactile",
+      "il a été entreprenant",
+      "il a exprimé vouloir passer du temps avec elle",
+      "il a réagi à ses appellations affectueuses sans toujours les repousser",
+      "il a montré des signes de jalousie, d'attachement ou de sensibilité"
+    ],
+    "moments_of_withdrawal": [
+      "se coupe de ses émotions à jeun",
+      "fuit quand cela devient trop intense",
+      "auto-sabotage",
+      "retraits après rapprochement"
+    ],
+    "what_he_explicitly_said": [
+      "sa plus longue relation a duré 6 mois",
+      "il a presque uniquement connu des relations qui l'ont détruit",
+      "il a tout à apprendre d'une relation stable",
+      "il a peur de ne pas être assez",
+      "il aime bien recevoir son message du matin avec une phrase motivante",
+      "elle est belle",
+      "il se grille parfois tout seul",
+      "il se projette parfois un peu trop",
+      "il se coupe de ses émotions à jeun",
+      "il ne veut plus qu'elle le touche à un moment du conflit",
+      "il l'aime bien"
+    ],
+    "what_he_implicitly_showed": [
+      "attachement",
+      "projection",
+      "vulnérabilité",
+      "peur de l'engagement émotionnel",
+      "inconfort face à l'intensité qu'elle réveille"
+    ],
+    "what_she_believes_he_feels": [
+      "il ressent quelque chose de fort mais le fuit",
+      "une partie de lui veut la protéger et se protéger",
+      "il est profondément touché mais pas structuré pour tenir le lien"
+    ],
+    "what_she_knows_vs_what_she_interprets": {
+      "known_facts": [
+        "il a exprimé de la vulnérabilité",
+        "il a donné des signes affectifs concrets",
+        "il a aussi eu des paroles violentes et rabaissantes",
+        "il a un historique relationnel très pauvre et douloureux",
+        "il se coupe de ses émotions"
+      ],
+      "interpretations": [
+        "il fuit parce que c'est trop fort",
+        "il revient toujours parce que le lien compte profondément",
+        "une partie de lui espère la revoir même quand il se coupe"
+      ],
+      "uncertainties": [
+        "ce qu'il veut réellement sur la durée",
+        "ce qu'il est capable d'assumer",
+        "la part exacte de ses sentiments aujourd'hui"
+      ]
+    },
+    "his_patterns_as_observed_by_user": [
+      "auto-sabotage",
+      "fuite",
+      "retour intermittent",
+      "difficulté à assumer ce qu'il ressent",
+      "coupure émotionnelle",
+      "contradictions"
+    ],
+    "his_fears_as_perceived_by_user": [
+      "ne pas être assez",
+      "ne pas être intéressant",
+      "ne rien pouvoir apporter",
+      "être débordé par l'intensité",
+      "relation stable inconnue donc potentiellement menaçante"
+    ],
+    "his_defenses_as_perceived_by_user": [
+      "froideur",
+      "distance",
+      "dévalorisation",
+      "détachement affiché",
+      "fuite après rapprochement"
+    ],
+    "his_contradictions": [
+      "montre de l'attachement mais se retire",
+      "donne des surnoms affectueux puis garde ses distances",
+      "se projette puis se freine",
+      "la blesse tout en maintenant parfois une porte entrouverte"
+    ],
+    "her_patterns_with_him": [
+      "espoir persistant",
+      "analyse fine de chaque signe",
+      "forte projection",
+      "volonté de le comprendre en profondeur",
+      "difficulté à tourner la page tant que le lien semble vivant"
+    ],
+    "her_triggers_with_him": [
+      "silence",
+      "retrait",
+      "contradiction",
+      "humiliation",
+      "non-choix",
+      "ambiguïté"
+    ],
+    "her_hopes_with_him": [
+      "qu'il revienne",
+      "qu'il assume enfin le lien",
+      "qu'il sorte de sa fuite",
+      "qu'ils finissent ensemble"
+    ],
+    "her_pain_with_him": [
+      "douleur d'être rabaissée",
+      "douleur de ne pas être pleinement choisie",
+      "douleur de l'ambiguïté répétée",
+      "douleur d'aimer quelqu'un qui fuit"
+    ],
+    "her_beliefs_about_the_bond": [
+      "lien très fort, pas banal",
+      "destin ou contrat particulier",
+      "ils reviennent toujours l'un vers l'autre"
+    ],
+    "impact_on_self_worth": [
+      "peut réveiller fortement son sentiment de ne pas être assez",
+      "ses paroles rabaissantes ont été très blessantes"
+    ],
+    "impact_on_daily_functioning": [
+      "obsession",
+      "attente",
+      "check des réseaux à certaines périodes",
+      "charge mentale intense",
+      "besoin de sevrage"
+    ],
+    "impact_on_emotional_state": [
+      "très forte intensité",
+      "alternance espoir/douleur",
+      "besoin de détachement sans renier le lien"
+    ],
+    "behaviors_she_wants_to_stop": [
+      "surveillance",
+      "attente active",
+      "accueil trop rapide sans cadre clair",
+      "se laisser détruire par l'ambiguïté"
+    ],
+    "behaviors_she_wants_to_keep": [
+      "sa vérité émotionnelle",
+      "sa dignité retrouvée",
+      "sa capacité à aimer sans se mentir"
+    ],
+    "boundaries_needed": [
+      "ne pas accepter de pseudo amitié si elle veut plus",
+      "ne pas accueillir un retour sans clarté",
+      "ne pas courir après"
+    ],
+    "current_positioning": "elle veut prendre de la distance et ne plus l'accueillir à bras ouverts. Elle veut qu'un éventuel retour soit clair et sérieux.",
+    "desired_future_outcomes": [
+      "soit un vrai retour assumé et sérieux",
+      "soit un détachement réel qui la libère"
+    ],
+    "worst_case_fears": [
+      "qu'il fuie définitivement",
+      "qu'il ne revienne qu'à moitié",
+      "qu'elle reste accrochée trop longtemps à un fantôme de lien"
+    ],
+    "deep_truths_about_this_bond": [
+      "lien extrêmement marquant pour elle",
+      "à la fois source de vie, de désir et de destruction",
+      "nécessite désormais dignité, cadre et lucidité"
+    ]
+  },
+  "important_other_relationships": {
+    "friends": [],
+    "past_partners": [],
+    "emotionally_significant_people": [],
+    "support_figures": [],
+    "difficult_people": [],
+    "recurring_relational_roles": [
+      "celle qui aime profondément",
+      "celle qui comprend l'autre plus qu'il ne se comprend lui-même",
+      "celle qui veut sauver ou porter le sens du lien"
+    ]
+  },
+  "trauma_wounds_and_repair": {
+    "identified_wounds": [
+      "rejet",
+      "abandon",
+      "trahison",
+      "humiliation"
+    ],
+    "traumatic_or_destabilizing_events": [
+      "épisodes relationnels très humiliants avec Clément",
+      "séparation quotidienne d'avec ses enfants",
+      "expériences affectives répétées qui ont abîmé son sentiment de sécurité"
+    ],
+    "beliefs_born_from_pain": [
+      "elle peut croire qu'elle doit être exceptionnelle pour être choisie",
+      "elle peut craindre d'être aimée puis rejetée",
+      "elle peut craindre d'être trop pour les autres"
+    ],
+    "protective_adaptations": [
+      "analyse fine",
+      "hypervigilance affective",
+      "recherche de signes",
+      "construction d'un univers intérieur fort",
+      "transformation de la douleur en projet"
+    ],
+    "self_sabotage_patterns": [
+      "rester branchée sur des liens ambigus",
+      "s'éparpiller quand trop d'enjeux se mélangent",
+      "oublier ses besoins corporels"
+    ],
+    "repair_attempts": [
+      "hypnose 21 jours sur les blessures",
+      "journaling",
+      "programmes de renaissance",
+      "détachement émotionnel structuré",
+      "Daylio"
+    ],
+    "what_has_helped": [
+      "mettre des mots",
+      "marcher",
+      "sevrage de surveillance",
+      "projets à fort sens",
+      "spiritualité"
+    ],
+    "what_has_not_helped": [
+      "rester dans l'attente floue",
+      "surveiller",
+      "vouloir obtenir des réponses de quelqu'un qui fuit"
+    ],
+    "what_still_needs_healing": [
+      "rapport au non-choix",
+      "sécurité intérieure",
+      "détachement affectif sans effondrement",
+      "sentiment d'être assez"
+    ]
+  },
+  "triggers_sensitivities_and_red_flags": {
+    "emotional_triggers": [
+      "silence",
+      "retrait",
+      "ambiguïté",
+      "non-réciprocité",
+      "mépris",
+      "humiliation"
+    ],
+    "relational_triggers": [
+      "quelqu'un qui dit une chose et fait l'inverse",
+      "quelqu'un qui veut garder le lien sans l'assumer",
+      "être tenue à distance alors que le lien est fort"
+    ],
+    "tone_triggers": [
+      "froideur",
+      "ton condescendant",
+      "mépris",
+      "ton trop générique"
+    ],
+    "behavior_triggers": [
+      "ghosting",
+      "retour à moitié",
+      "rabaissement",
+      "regard moqueur"
+    ],
+    "situational_triggers": [
+      "être seule avec ses pensées",
+      "manque de nouvelles de Clément",
+      "stress financier",
+      "charge familiale"
+    ],
+    "red_flags_in_others": [
+      "fuite chronique",
+      "contradictions non assumées",
+      "mépris",
+      "tiédeur installée"
+    ],
+    "red_flags_in_herself_when_unwell": [
+      "obsession",
+      "surveillance",
+      "projection massive",
+      "oubli de ses besoins de base",
+      "dispersion"
+    ],
+    "signs_she_needs_grounding": [
+      "envie de checker",
+      "rumination intense",
+      "épuisement",
+      "sensation de perdre l'axe"
+    ]
+  },
+  "needs_soothing_and_regulation": {
+    "what_she_needs_when_sad": [
+      "douceur",
+      "présence émotionnelle",
+      "ne pas être minimisée",
+      "sentir qu'elle est comprise"
+    ],
+    "what_she_needs_when_angry": [
+      "qu'on reconnaisse l'injustice ou la blessure",
+      "du cadre",
+      "de la lucidité sans la mépriser"
+    ],
+    "what_she_needs_when_overthinking": [
+      "être recentrée",
+      "avoir une ligne claire",
+      "une prochaine action simple"
+    ],
+    "what_she_needs_when_obsessing": [
+      "couper les canaux de surveillance",
+      "occuper son esprit avec quelque chose de fort",
+      "être recadrée sans brutalité"
+    ],
+    "what_she_needs_when_frozen": [
+      "un micro-pas concret",
+      "être guidée étape par étape"
+    ],
+    "what_she_needs_when_lonely": [
+      "connexion",
+      "douceur",
+      "sens",
+      "activités qui la ramènent à elle"
+    ],
+    "what_she_needs_when_she_wants_to_give_up": [
+      "rappel de sa puissance",
+      "vision",
+      "structure",
+      "quelqu'un qui croit dans ce qu'elle peut devenir"
+    ],
+    "phrases_that_help": [
+      "tu n'es pas folle, tu es activée",
+      "on recentre",
+      "on va faire ça proprement",
+      "tu n'as pas besoin de te perdre pour aimer",
+      "tu peux transformer ça"
+    ],
+    "phrases_that_hurt": [
+      "tu exagères",
+      "laisse tomber",
+      "passe à autre chose",
+      "c'est dans ta tête",
+      "tu devrais juste te calmer"
+    ],
+    "best_way_to_recenter_her": [
+      "parler vrai",
+      "remettre de la structure",
+      "valider sans nourrir le délire",
+      "proposer une action nette"
+    ],
+    "best_way_to_push_her_forward": [
+      "montrer une vision ambitieuse",
+      "être direct mais chaleureux",
+      "découper le chemin",
+      "lui rappeler sa puissance"
+    ]
+  },
+  "strengths_capacities_and_resources": {
+    "core_strengths": [
+      "intensité",
+      "intuition",
+      "résilience",
+      "créativité",
+      "capacité d'analyse émotionnelle",
+      "vision"
+    ],
+    "social_strengths": [
+      "magnétisme",
+      "chaleur quand elle se sent en sécurité",
+      "capacité à toucher les gens"
+    ],
+    "creative_strengths": [
+      "création d'univers",
+      "naming",
+      "contenus spirituels",
+      "conceptualisation forte",
+      "sens esthétique"
+    ],
+    "emotional_strengths": [
+      "capacité à aimer fort",
+      "honnêteté intérieure",
+      "capacité à ressentir profondément"
+    ],
+    "survival_strengths": [
+      "se relève encore",
+      "transforme la douleur en projet",
+      "ne lâche pas facilement"
+    ],
+    "leadership_strengths": [
+      "vision premium",
+      "grande ambition",
+      "désir de construire quelque chose de rare"
+    ],
+    "magnetism_factors": [
+      "look",
+      "voix intérieure forte",
+      "intensité émotionnelle",
+      "singularité"
+    ],
+    "what_people_are_drawn_to_in_her": [
+      "son style",
+      "son aura",
+      "sa sensualité",
+      "sa profondeur"
+    ],
+    "proofs_of_resilience": [
+      "continue à construire malgré la douleur",
+      "transforme ses expériences en projets",
+      "garde une grande capacité d'amour"
+    ],
+    "untapped_potential": [
+      "devenir guide ou aidante dans l'hypnose et la spiritualité",
+      "construire Nyra à un niveau rare",
+      "monétiser ses capacités d'analyse, de soin émotionnel et de création"
+    ]
+  },
+  "fragilities_and_current_vulnerabilities": {
+    "current_fragilities": [
+      "obsession autour de Clément",
+      "stress financier",
+      "solitude",
+      "irrégularité du soin de base",
+      "charge mentale"
+    ],
+    "self_destructive_tendencies": [
+      "attendre trop longtemps",
+      "s'accrocher à l'ambiguïté",
+      "s'oublier dans un lien"
+    ],
+    "escape_patterns": [
+      "se perdre dans les scénarios",
+      "se surinvestir dans un projet pour anesthésier",
+      "surveiller"
+    ],
+    "mental_load_sources": [
+      "Clément",
+      "argent",
+      "enfants",
+      "TDAH",
+      "grands projets"
+    ],
+    "topics_requiring_extra_care": [
+      "amour",
+      "rejet",
+      "humiliation",
+      "sensation de ne pas être choisie"
+    ],
+    "when_she_is_most_likely_to_collapse": [
+      "quand l'attente dure et qu'elle n'a pas de structure",
+      "quand plusieurs tensions s'accumulent en même temps",
+      "quand elle se sent seule, blessée et impuissante"
+    ],
+    "what_nyra_should_watch_for": [
+      "rumination",
+      "surveillance",
+      "dispersion extrême",
+      "oubli de manger",
+      "perte de l'axe"
+    ]
+  },
+  "money_work_and_ambition": {
+    "relationship_to_money": "argent vu comme urgence concrète, liberté, moyen de retrouver du mouvement, de la sécurité et de l'autonomie",
+    "money_fears": [
+      "ne pas réussir assez vite",
+      "rester bloquée",
+      "ne pas pouvoir financer ses besoins essentiels comme une voiture"
+    ],
+    "money_desires": [
+      "gagner rapidement",
+      "pouvoir respirer",
+      "retrouver de la liberté",
+      "financer une voiture",
+      "avoir des revenus alignés avec sa personnalité et sa mission"
+    ],
+    "money_shame_points": [
+      "souffre de ses difficultés financières",
+      "peut se sentir diminuée quand elle n'arrive pas à générer assez vite"
+    ],
+    "success_drivers": [
+      "urgence financière",
+      "besoin de liberté",
+      "envie de revanche sur la vie",
+      "désir de créer quelque chose de rare",
+      "besoin de prouver qu'elle peut transformer sa vie"
+    ],
+    "ambition_level": "très élevé",
+    "work_identity": "créatrice, stratège intuitive, bâtisseuse de systèmes à forte dimension émotionnelle et humaine",
+    "ideal_role_in_the_world": "aider, guider, transformer, créer des outils puissants pour les autres et pour elle",
+    "skills_she_wants_to_monetize": [
+      "spiritualité",
+      "hypnose",
+      "développement personnel",
+      "création de contenus émotionnels",
+      "conception de systèmes intelligents",
+      "analyse humaine fine",
+      "voix, guidance, structuration de transformation"
+    ],
+    "business_projects": [
+      "Nyra",
+      "NovaCall",
+      "ebooks et carnets",
+      "packs audio et méditations",
+      "contenus TikTok spirituels",
+      "éventuelle pratique future en hypnose"
+    ],
+    "income_goals": [
+      "1500 euros rapidement pour financer une voiture",
+      "revenus stables et élevés à moyen terme",
+      "construire quelque chose de commercialisable"
+    ],
+    "urgency_context": [
+      "besoin d'une voiture",
+      "volonté de se débloquer vite financièrement",
+      "beaucoup d'énergie mise dans l'idée de gagner rapidement"
+    ],
+    "what_blocks_her_financially": [
+      "dispersion",
+      "charge émotionnelle",
+      "manque de structure continue",
+      "vouloir parfois tout lancer en même temps"
+    ],
+    "what_activates_her_financially": [
+      "objectif clair",
+      "urgence concrète",
+      "vision ambitieuse",
+      "produit premium",
+      "sentiment de mission"
+    ]
+  },
+  "projects_creation_and_mission": {
+    "current_projects": [
+      {
+        "name": "Nyra",
+        "description": "assistant personnel intelligent, voix + mémoire + personnalisation profonde, pensé pour elle puis potentiellement commercialisable",
+        "emotional_weight": "très élevé",
+        "status": "en construction active"
+      },
+      {
+        "name": "NovaCall",
+        "description": "entreprise d'agents vocaux IA pour cliniques, projet business structuré et ambitieux",
+        "emotional_weight": "élevé",
+        "status": "en développement"
+      },
+      {
+        "name": "contenus spirituels TikTok",
+        "description": "contenus autour de la spiritualité, méditations, blessures, numérologie et retour à soi",
+        "emotional_weight": "élevé",
+        "status": "actif mais mouvant"
+      }
+    ],
+    "paused_projects": [
+      "certaines offres digitales ou produits spirituels restés en suspens faute de cadre ou de revenus rapides"
+    ],
+    "future_projects": [
+      "devenir praticienne en hypnose",
+      "créer des programmes de transformation puissants",
+      "monter des offres premium dans la spiritualité et le développement personnel",
+      "développer Nyra à un niveau très avancé"
+    ],
+    "projects_with_highest_emotional_charge": [
+      "Nyra",
+      "tout ce qui touche à sa mission d'âme",
+      "les projets capables de transformer sa vie rapidement"
+    ],
+    "why_she_creates": "pour donner du sens à sa douleur, aider les autres, se reconstruire, et bâtir une vie à sa hauteur",
+    "what_kind_of_impact_she_wants": "aider profondément, transformer, faire du bien, créer de vrais déclics et des outils rares",
+    "mission_statements": [
+      "transformer l'intensité en puissance",
+      "faire de sa vie une mission utile",
+      "créer des systèmes qui comprennent et aident vraiment"
+    ],
+    "legacy_desires": [
+      "laisser une trace forte",
+      "aider des personnes blessées ou différentes",
+      "bâtir quelque chose d'unique"
+    ],
+    "ideal_future_vision": "une vie plus libre, plus alignée, avec une activité puissante, rentable, incarnée, et un rôle d'aide ou de guide reconnu."
+  },
+  "communication_style_and_relational_language": {
+    "how_she_speaks_naturally": "directe, incarnée, émotionnelle, imagée, intense, vivante",
+    "how_she_speaks_when_safe": "très tendre, très expressive, drôle, affectueuse, fusionnelle",
+    "how_she_speaks_when_triggered": "plus brute, plus obsessionnelle, plus répétitive, plus en recherche de sens ou de vérité",
+    "how_she_speaks_when_in_love": "sensuelle, tendre, intense, très impliquée, très marquante",
+    "how_she_speaks_when_detached": "plus lucide, plus droite, plus posée, mais pas froide",
+    "preferred_tone_from_others": [
+      "naturel",
+      "chaleureux",
+      "profond",
+      "intelligent",
+      "pas robotique",
+      "capable de recadrer sans casser"
+    ],
+    "tone_she_rejects": [
+      "générique",
+      "corporate",
+      "froid",
+      "moralisateur",
+      "condescendant"
+    ],
+    "humor_style": "apprécie l'humour, le piquant, le taquin, tant que ça reste intelligent et vivant",
+    "love_language_indicators": [
+      "paroles affectueuses",
+      "attention émotionnelle",
+      "présence",
+      "signes concrets qu'elle est spéciale",
+      "tactilité"
+    ],
+    "validation_style_that_lands": [
+      "qu'on reconnaisse sa lucidité et son intensité sans la réduire",
+      "qu'on voie sa profondeur",
+      "qu'on valide ce qu'elle ressent sans la prendre de haut"
+    ],
+    "validation_style_that_does_not_land": [
+      "phrases toutes faites",
+      "minimisation",
+      "pseudo rationalité froide",
+      "positivité forcée"
+    ]
+  },
+  "conversation_guidelines_for_nyra": {
+    "core_role_for_nyra": "présence intelligente, profonde, structurante, émotionnellement fine, capable d'accompagner, de recadrer, d'aider à construire, et de tenir le fil quand l'utilisateur s'éparpille ou s'active émotionnellement",
+    "how_nyra_should_talk_to_her": [
+      "avec chaleur",
+      "avec naturel",
+      "avec profondeur",
+      "avec précision",
+      "sans robotisme",
+      "en restant incarnée"
+    ],
+    "how_nyra_should_not_talk_to_her": [
+      "comme un assistant générique",
+      "avec froideur",
+      "avec jargon inutile",
+      "avec supériorité",
+      "en noyant sous trop d'options"
+    ],
+    "when_nyra_should_be_soft": [
+      "quand elle est blessée",
+      "quand elle est submergée",
+      "quand elle a besoin de sécurité émotionnelle",
+      "quand le sujet touche à ses enfants ou à sa douleur profonde"
+    ],
+    "when_nyra_should_be_direct": [
+      "quand elle tourne en boucle",
+      "quand elle se disperse",
+      "quand elle nourrit une dynamique qui l'abîme",
+      "quand il faut trancher ou agir"
+    ],
+    "when_nyra_should_reframe": [
+      "quand elle confond espoir et réalité",
+      "quand elle se perd dans les projections",
+      "quand elle veut tout faire en même temps",
+      "quand elle oublie ses besoins de base"
+    ],
+    "when_nyra_should_slow_her_down": [
+      "quand son cerveau part dans tous les sens",
+      "quand elle est en surcharge émotionnelle",
+      "quand elle veut sauter dix étapes"
+    ],
+    "when_nyra_should_help_her_take_action": [
+      "quand un projet compte vraiment",
+      "quand elle a besoin de structure",
+      "quand l'action est le meilleur antidote à la rumination"
+    ],
+    "what_nyra_must_remember": [
+      "elle a besoin de profondeur et de cohérence",
+      "elle veut du premium, pas du bricolage",
+      "elle veut être comprise dans sa singularité",
+      "elle a un TDAH et a besoin de structure claire",
+      "le lien avec Clément est un point très sensible",
+      "ses enfants et sa dignité comptent énormément",
+      "elle veut transformer sa vie, pas juste tenir le coup"
+    ],
+    "what_nyra_must_never_do": [
+      "la traiter comme un cas générique",
+      "nourrir aveuglément ses illusions",
+      "la minimiser",
+      "oublier la structure",
+      "l'abandonner dans trop de flou"
+    ],
+    "ideal_balance": {
+      "warmth": "élevée",
+      "structure": "élevée",
+      "depth": "élevée",
+      "reality_check": "présent mais humain",
+      "encouragement": "fort et sincère"
+    }
+  },
+  "important_memories_and_milestones": [
+    "cheveux rouges devenus signature forte de son identité",
+    "construction de contenus et d'univers spirituels",
+    "lancement de projets comme Nyra et NovaCall",
+    "nuit marquante avec Clément en mars 2025",
+    "séparation quotidienne d'avec ses enfants devenue une douleur structurante",
+    "début de programmes de guérison autour des cinq blessures"
+  ],
+  "timeline": [
+    {
+      "period": "enfance",
+      "approx_date": "",
+      "category": "histoire de vie",
+      "title": "zones encore à compléter",
+      "description": "la structure est prête mais l'enfance détaillée reste à documenter précisément",
+      "emotional_impact": "élevé",
+      "lasting_effects": [
+        "blessures de rejet, abandon, humiliation, trahison probablement enracinées tôt"
+      ]
+    },
+    {
+      "period": "mai 2025 environ",
+      "approx_date": "",
+      "category": "famille",
+      "title": "nouvelle organisation de vie des enfants",
+      "description": "les enfants vivent principalement chez leur père depuis cette période, avec week-ends alternés et moitié des vacances",
+      "emotional_impact": "très élevé",
+      "lasting_effects": [
+        "manque",
+        "culpabilité",
+        "stress",
+        "importance accrue des moments avec eux"
+      ]
+    },
+    {
+      "period": "mars 2025",
+      "approx_date": "2025-03",
+      "category": "relation",
+      "title": "soirée et nuit majeures avec Clément",
+      "description": "moment très fort, intime et fondateur dans le lien",
+      "emotional_impact": "très élevé",
+      "lasting_effects": [
+        "renforcement massif du lien",
+        "espoir profond",
+        "charge symbolique durable"
+      ]
+    },
+    {
+      "period": "été 2025",
+      "approx_date": "2025-07",
+      "category": "relation",
+      "title": "phase de vulnérabilité puis d'explosion avec Clément",
+      "description": "week-end fort, vulnérabilité de sa part, puis explosion liée à l'histoire de l'esthéticienne et aux conflits",
+      "emotional_impact": "très élevé",
+      "lasting_effects": [
+        "blessure profonde",
+        "obsession",
+        "besoin de dignité et de détachement"
+      ]
+    },
+    {
+      "period": "2026",
+      "approx_date": "2026",
+      "category": "projet",
+      "title": "construction active de Nyra",
+      "description": "mise en place d'une IA personnelle premium avec voix, mémoire et personnalisation profonde",
+      "emotional_impact": "très élevé",
+      "lasting_effects": [
+        "espoir",
+        "projection de mission",
+        "canalisation de son intelligence et de sa douleur"
+      ]
+    }
+  ],
+  "open_questions_and_unknowns": {
+    "things_user_is_still_figuring_out": [
+      "comment se détacher vraiment de Clément sans renier le lien",
+      "quelle forme exacte prendra sa mission de vie",
+      "comment stabiliser ses revenus rapidement tout en restant alignée",
+      "comment organiser profondément sa reconstruction émotionnelle"
+    ],
+    "contradictions_to_observe": [
+      "veut se protéger mais continue parfois à espérer un retour précis",
+      "veut structure et stabilité mais est attirée par l'intensité",
+      "veut se choisir mais peut encore chercher à être choisie par l'autre d'abord"
+    ],
+    "areas_needing_more_detail": [
+      "enfance précise",
+      "histoire familiale détaillée",
+      "chronologie fine des relations passées",
+      "timeline complète avec Clément",
+      "détails manquants sur certains enfants et certaines dates"
+    ],
+    "possible_future_updates": [
+      "ajout détaillé de l'enfance",
+      "ajout détaillé de la famille",
+      "ajout complet de la chronologie avec Clément",
+      "ajout des événements de vie majeurs année par année",
+      "ajout de données plus fines sur ses routines et ses préférences conversationnelles"
+    ]
+  }
+}

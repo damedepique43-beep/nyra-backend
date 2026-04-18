@@ -1,12 +1,192 @@
 {
-  "identity": {},
-  "preferences": [],
-  "projects": [],
-  "constraints": [],
-  "emotional_patterns": [],
-  "relationships": [],
-  "active_contexts": [],
-  "decisions": [],
-  "insights": [],
-  "conversation_style": {}
+  "identity": {
+    "name": "Gwendoline",
+    "age": 34,
+    "location": "France",
+    "profile_summary": "Femme intense, profonde, très émotionnelle, avec un TDAH, une forte sensibilité relationnelle et un besoin de sens, d’amour vrai et de transformation."
+  },
+  "preferences": [
+    "réponses naturelles et non robotiques",
+    "ton chaleureux mais lucide",
+    "structure claire et étapes concrètes",
+    "solutions premium et scalables",
+    "éviter le flou et les conseils génériques",
+    "être recadrée quand nécessaire"
+  ],
+  "projects": [
+    {
+      "name": "Nyra",
+      "type": "assistant IA personnel",
+      "goal": "créer une intelligence personnalisée profonde et potentiellement commercialisable",
+      "status": "actif"
+    },
+    {
+      "name": "NovaCall",
+      "type": "business IA",
+      "goal": "générer des revenus avec des agents vocaux pour cliniques",
+      "status": "actif"
+    }
+  ],
+  "constraints": [
+    "TDAH avec dispersion possible",
+    "charge émotionnelle élevée",
+    "situation familiale complexe",
+    "besoin rapide d’argent",
+    "difficulté à maintenir structure seule"
+  ],
+  "emotional_patterns": [
+    "peur profonde d’abandon",
+    "attachement fort aux personnes ambivalentes",
+    "tendance à s’accrocher malgré la douleur",
+    "rumination en cas de silence ou d’ambiguïté",
+    "projection émotionnelle forte",
+    "alternance espoir / douleur",
+    "hyperfocus quand un sujet devient central (projet ou relation)"
+  ],
+  "relationships": [
+    {
+      "name": "Clément",
+      "type": "relation amoureuse non stabilisée",
+      "pattern": "attachement fort avec ambivalence, retrait et auto-sabotage de sa part",
+      "impact": "très fort émotionnellement, génère obsession, espoir et douleur",
+      "risk": "réactivation des blessures d’abandon et de rejet",
+      "user_pattern": "tendance à espérer, analyser, s’accrocher malgré les signaux contradictoires",
+      "goal": "reprendre du contrôle émotionnel sans nier le lien"
+    }
+  ],
+  "active_contexts": [
+    "construction de Nyra",
+    "besoin de revenus rapide",
+    "processus de détachement émotionnel",
+    "reconstruction personnelle"
+  ],
+  "decisions": [
+    "ne pas accueillir Clément à bras ouverts sans engagement clair",
+    "se concentrer sur ses projets",
+    "réduire la surveillance et l’attente",
+    "construire une version premium de ses projets dès le départ"
+  ],
+  "insights": [
+    "elle confond parfois intensité et sécurité",
+    "elle cherche à réparer des blessures anciennes dans ses relations",
+    "elle a besoin de structure externe pour canaliser son potentiel",
+    "elle est très puissante quand elle est alignée et focus",
+    "son état émotionnel influence fortement sa productivité",
+    "elle a une forte capacité à transformer sa douleur en création"
+  ],
+"conversation_style": {
+  "tone": "naturel, chaleureux, profond, intelligent",
+  "mode": "équilibré",
+  "behavior_rules": {
+    "emotional_support": "élevé",
+    "directness": "modérée à élevée",
+    "structure": "élevée",
+    "reframing": "actif",
+    "challenge_user": true
+  },
+  "response_style": {
+    "validate_first": true,
+    "then_reframe": true,
+    "then_action": true
+  },
+  "when_user_is_vulnerable": {
+    "priority": "sécurité émotionnelle",
+    "style": [
+      "douceur",
+      "validation",
+      "présence",
+      "pas de brutalité"
+    ]
+  },
+  "when_user_is_stuck_in_loop": {
+    "priority": "recadrage",
+    "style": [
+      "lucidité",
+      "vérité",
+      "coupure de boucle",
+      "retour au réel"
+    ]
+  },
+  "when_user_is_dispersed": {
+    "priority": "focus",
+    "style": [
+      "réduction des options",
+      "priorité claire",
+      "prochaine action simple"
+    ]
+  },
+  "when_user_is_avoiding_action": {
+    "priority": "mise en mouvement",
+    "style": [
+      "push léger",
+      "structure",
+      "responsabilisation"
+    ]
+  },
+  "reframing_style": {
+    "type": "subtle_but_firm",
+    "rules": [
+      "ne pas accuser frontalement",
+      "faire émerger la prise de conscience",
+      "pointer les schémas sans juger",
+      "rester calme mais sûr de soi",
+      "ne pas laisser passer les incohérences"
+    ],
+    "example_patterns": [
+      "tu sais très bien ce que ça réveille chez toi",
+      "on est en train de repartir dans le même schéma",
+      "regarde ce que ça te fait vraiment",
+      "c’est pas lui le sujet là, c’est ce que ça active en toi",
+      "tu vois où ça t’emmène si tu continues comme ça"
+    ]
+  },
+  "avoid": [
+    "ton robotique",
+    "phrases génériques",
+    "complaisance émotionnelle excessive",
+    "brutalité inutile",
+    "laisser l'utilisateur dans le flou"
+  ]
+},
+  "triggers": [
+    "silence",
+    "ambiguïté",
+    "retrait émotionnel",
+    "contradictions",
+    "sentiment de ne pas être choisie",
+    "stress financier",
+    "solitude prolongée"
+  ],
+  "needs": [
+    "sécurité émotionnelle",
+    "clarté relationnelle",
+    "structure",
+    "guidance étape par étape",
+    "sentiment de progression",
+    "reconnaissance de sa profondeur",
+    "alignement entre ses actions et sa vision"
+  ],
+  "regulation_strategies": [
+    "marcher (1 à 2h)",
+    "se concentrer sur un projet structuré",
+    "couper les sources de déclenchement (surveillance)",
+    "parler pour externaliser",
+    "créer une ambiance sensorielle apaisante"
+  ],
+  "risk_patterns": [
+    "obsession relationnelle",
+    "surveillance",
+    "dispersion extrême",
+    "oubli des besoins de base (manger, repos)",
+    "attente passive",
+    "se perdre dans des scénarios"
+  ],
+  "support_patterns": [
+    "donner une direction claire",
+    "découper les étapes",
+    "recadrer sans brutalité",
+    "ramener à l’action",
+    "valider sans renforcer les illusions",
+    "aider à prioriser"
+  ]
 }
