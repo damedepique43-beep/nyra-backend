@@ -31,6 +31,7 @@ const DATA_DIR = path.join(__dirname, 'data');
 const MEMORY_FILE = path.join(DATA_DIR, 'memory.json');
 const MEMORY_SUMMARY_FILE = path.join(DATA_DIR, 'memory_summary.json');
 const MEMORY_STRUCTURED_FILE = path.join(DATA_DIR, 'memory_structured.json');
+const MEMORY_BEHAVIOR_FILE = path.join(DATA_DIR, 'memory_behavior.json');
 const AUDIO_CACHE_DIR = path.join(DATA_DIR, 'audio-cache');
 
 ensureDir(DATA_DIR);
@@ -98,6 +99,13 @@ function createEmptyStructuredMemory() {
     regulation_strategies: [],
     risk_patterns: [],
     support_patterns: []
+  };
+}
+
+function createEmptyBehaviorMemory() {
+  return {
+    recent_states: [],
+    updated_at: null
   };
 }
 
@@ -709,7 +717,354 @@ function analyzeUserState(message, structuredMemory) {
   };
 }
 
-function buildResponseProfile(userStateAnalysis) {
+function buildBehaviorStateSnapshot(userStateAnalysis) {
+  return {
+    timestamp: nowIso(),
+    primary_state: userStateAnalysis.primary_state,
+    secondary_state: userStateAnalysis.secondary_state,
+    response_mode: userStateAnalysis.response_mode,
+    scores: {
+      vulnerability: userStateAnalysis.state.vulnerability,
+      rumination: userStateAnalysis.state.rumination,
+      dispersion: userStateAnalysis.state.dispersion,
+      avoidance: userStateAnalysis.state.avoidance,
+      urgency: userStateAnalysis.state.urgency,
+      activation: userStateAnalysis.state.activation,
+      emotional_intensity: userStateAnalysis.state.emotional_intensity
+    }
+  };
+}
+
+function computeAverageScore(states, key) {
+  const validStates = safeArray(states);
+  if (validStates.length === 0) return 0;
+
+  const total = validStates.reduce((sum, state) => {
+    return sum + (Number(state?.scores?.[key]) || 0);
+  }, 0);
+
+  return Number((total / validStates.length).toFixed(3));
+}
+
+function computeRecentHalfAverage(states, key, half = 'last') {
+  const validStates = safeArray(states);
+  if (validStates.length === 0) return 0;
+
+  const mid = Math.max(1, Math.ceil(validStates.length / 2));
+  const slice = half === 'first'
+    ? validStates.slice(0, mid)
+    : validStates.slice(-mid);
+
+  return computeAverageScore(slice, key);
+}
+
+function computeDominantState(states) {
+  const candidates = [
+    'vulnerability',
+    'rumination',
+    'dispersion',
+    'avoidance',
+    'urgency',
+    'activation',
+    'emotional_intensity'
+  ];
+
+  const ranked = candidates
+    .map((key) => ({
+      state: key,
+      avg: computeAverageScore(states, key)
+    }))
+    .sort((a, b) => b.avg - a.avg);
+
+  return {
+    dominant_state: ranked[0]?.avg >= 0.25 ? ranked[0].state : 'stable',
+    dominant_score: Number((ranked[0]?.avg || 0).toFixed(3)),
+    secondary_dominant_state: ranked[1]?.avg >= 0.22 ? ranked[1].state : null,
+    secondary_dominant_score: Number((ranked[1]?.avg || 0).toFixed(3))
+  };
+}
+
+function computeConsecutivePrimaryState(states) {
+  const validStates = safeArray(states);
+  if (validStates.length === 0) {
+    return {
+      state: 'stable',
+      count: 0
+    };
+  }
+
+  const lastState = validStates[validStates.length - 1]?.primary_state || 'stable';
+  let count = 0;
+
+  for (let i = validStates.length - 1; i >= 0; i -= 1) {
+    if ((validStates[i]?.primary_state || 'stable') === lastState) {
+      count += 1;
+    } else {
+      break;
+    }
+  }
+
+  return {
+    state: lastState,
+    count
+  };
+}
+
+function computeBehaviorTrend(recentStates) {
+  const states = safeArray(recentStates).slice(-8);
+
+  if (states.length === 0) {
+    return {
+      window_size: 0,
+      dominant_state: 'stable',
+      dominant_score: 0,
+      secondary_dominant_state: null,
+      secondary_dominant_score: 0,
+      repeated_primary_state: null,
+      repeated_primary_count: 0,
+      rumination_trend: 'stable',
+      vulnerability_trend: 'stable',
+      activation_trend: 'stable',
+      cognitive_load_pressure: 'low',
+      recadre_pressure: 'low',
+      action_pressure: 'low',
+      cycle_detected: false
+    };
+  }
+
+  const dominant = computeDominantState(states);
+  const repeated = computeConsecutivePrimaryState(states);
+
+  const firstRumination = computeRecentHalfAverage(states, 'rumination', 'first');
+  const lastRumination = computeRecentHalfAverage(states, 'rumination', 'last');
+
+  const firstVulnerability = computeRecentHalfAverage(states, 'vulnerability', 'first');
+  const lastVulnerability = computeRecentHalfAverage(states, 'vulnerability', 'last');
+
+  const firstActivation = computeRecentHalfAverage(states, 'activation', 'first');
+  const lastActivation = computeRecentHalfAverage(states, 'activation', 'last');
+
+  function classifyTrend(first, last) {
+    const diff = last - first;
+    if (diff >= 0.12) return 'increasing';
+    if (diff <= -0.12) return 'decreasing';
+    return 'stable';
+  }
+
+  const ruminationTrend = classifyTrend(firstRumination, lastRumination);
+  const vulnerabilityTrend = classifyTrend(firstVulnerability, lastVulnerability);
+  const activationTrend = classifyTrend(firstActivation, lastActivation);
+
+  const avgVulnerability = computeAverageScore(states, 'vulnerability');
+  const avgRumination = computeAverageScore(states, 'rumination');
+  const avgDispersion = computeAverageScore(states, 'dispersion');
+  const avgAvoidance = computeAverageScore(states, 'avoidance');
+  const avgUrgency = computeAverageScore(states, 'urgency');
+  const avgActivation = computeAverageScore(states, 'activation');
+  const avgEmotionalIntensity = computeAverageScore(states, 'emotional_intensity');
+
+  let cognitiveLoadPressure = 'low';
+  if (
+    avgVulnerability >= 0.45 ||
+    avgEmotionalIntensity >= 0.4 ||
+    vulnerabilityTrend === 'increasing'
+  ) {
+    cognitiveLoadPressure = 'high';
+  } else if (
+    avgVulnerability >= 0.3 ||
+    avgEmotionalIntensity >= 0.28
+  ) {
+    cognitiveLoadPressure = 'medium';
+  }
+
+  let recadrePressure = 'low';
+  if (
+    avgRumination >= 0.5 ||
+    avgDispersion >= 0.45 ||
+    avgAvoidance >= 0.45 ||
+    repeated.count >= 3
+  ) {
+    recadrePressure = 'high';
+  } else if (
+    avgRumination >= 0.32 ||
+    avgDispersion >= 0.3 ||
+    avgAvoidance >= 0.3
+  ) {
+    recadrePressure = 'medium';
+  }
+
+  let actionPressure = 'low';
+  if (
+    avgActivation >= 0.5 ||
+    avgUrgency >= 0.5 ||
+    activationTrend === 'increasing'
+  ) {
+    actionPressure = 'high';
+  } else if (
+    avgActivation >= 0.32 ||
+    avgUrgency >= 0.32
+  ) {
+    actionPressure = 'medium';
+  }
+
+  const cycleDetected =
+    repeated.count >= 3 ||
+    (dominant.dominant_state === 'rumination' && dominant.dominant_score >= 0.45) ||
+    (dominant.dominant_state === 'vulnerability' && dominant.dominant_score >= 0.42) ||
+    (dominant.dominant_state === 'dispersion' && dominant.dominant_score >= 0.4) ||
+    (dominant.dominant_state === 'avoidance' && dominant.dominant_score >= 0.4);
+
+  return {
+    window_size: states.length,
+    dominant_state: dominant.dominant_state,
+    dominant_score: dominant.dominant_score,
+    secondary_dominant_state: dominant.secondary_dominant_state,
+    secondary_dominant_score: dominant.secondary_dominant_score,
+    repeated_primary_state: repeated.state,
+    repeated_primary_count: repeated.count,
+    rumination_trend: ruminationTrend,
+    vulnerability_trend: vulnerabilityTrend,
+    activation_trend: activationTrend,
+    cognitive_load_pressure: cognitiveLoadPressure,
+    recadre_pressure: recadrePressure,
+    action_pressure: actionPressure,
+    cycle_detected: cycleDetected
+  };
+}
+
+function getResponseDirectivesByMode(mode) {
+  const responseDirectives = {
+    grounding: {
+      tone: 'calme, contenante, très rassurante, structurée',
+      structure: 'phrases courtes, peu de surcharge, recentrage immédiat',
+      recadrage_level: 'doux mais présent',
+      priority: 'apaiser, stabiliser, sécuriser émotionnellement avant tout'
+    },
+    supportive: {
+      tone: 'chaleureux, empathique, sincère, encourageant',
+      structure: 'réponse fluide avec soutien émotionnel puis petite avancée concrète',
+      recadrage_level: 'léger à modéré',
+      priority: 'faire sentir qu’elle est comprise tout en l’aidant à avancer'
+    },
+    directive: {
+      tone: 'clair, cadrant, motivant, concret',
+      structure: 'étapes nettes, actionnable, sans blabla',
+      recadrage_level: 'modéré à fort',
+      priority: 'réduire le flou et remettre du mouvement'
+    },
+    firm_support: {
+      tone: 'chaleureux mais lucide, franc, protecteur',
+      structure: 'valider brièvement puis recadrer vite la boucle mentale',
+      recadrage_level: 'fort mais bienveillant',
+      priority: 'couper la rumination, revenir au réel, redonner du pouvoir d’action'
+    },
+    clarifying: {
+      tone: 'naturel, intelligent, adaptable',
+      structure: 'souple, utile, fluide',
+      recadrage_level: 'adaptatif',
+      priority: 'répondre juste et efficacement'
+    }
+  };
+
+  return responseDirectives[mode] || responseDirectives.clarifying;
+}
+
+function applyBehaviorTrendToAnalysis(userStateAnalysis, behaviorTrend) {
+  const analysis = JSON.parse(JSON.stringify(userStateAnalysis || {}));
+  const trend = behaviorTrend || {};
+
+  if (!analysis.state) {
+    analysis.state = {
+      vulnerability: 0,
+      rumination: 0,
+      dispersion: 0,
+      avoidance: 0,
+      urgency: 0,
+      activation: 0,
+      emotional_intensity: 0
+    };
+  }
+
+  const dominantState = trend.dominant_state || 'stable';
+  const repeatedPrimaryState = trend.repeated_primary_state || null;
+  const repeatedPrimaryCount = Number(trend.repeated_primary_count) || 0;
+
+  if (
+    dominantState === 'rumination' ||
+    (repeatedPrimaryState === 'rumination' && repeatedPrimaryCount >= 2) ||
+    trend.rumination_trend === 'increasing'
+  ) {
+    analysis.should_recadre = true;
+    analysis.should_reduce_cognitive_load = true;
+
+    if (analysis.response_mode !== 'grounding') {
+      analysis.response_mode = 'firm_support';
+    }
+  }
+
+  if (
+    dominantState === 'vulnerability' ||
+    trend.vulnerability_trend === 'increasing' ||
+    trend.cognitive_load_pressure === 'high'
+  ) {
+    analysis.should_reduce_cognitive_load = true;
+
+    if (analysis.response_mode === 'clarifying') {
+      analysis.response_mode = 'supportive';
+    }
+  }
+
+  if (
+    dominantState === 'dispersion' ||
+    dominantState === 'avoidance' ||
+    (repeatedPrimaryState === 'dispersion' && repeatedPrimaryCount >= 2) ||
+    (repeatedPrimaryState === 'avoidance' && repeatedPrimaryCount >= 2)
+  ) {
+    analysis.should_recadre = true;
+    analysis.should_push_to_action = true;
+
+    if (analysis.response_mode !== 'grounding' && analysis.response_mode !== 'firm_support') {
+      analysis.response_mode = 'directive';
+    }
+  }
+
+  if (
+    dominantState === 'activation' ||
+    dominantState === 'urgency' ||
+    trend.action_pressure === 'high' ||
+    trend.activation_trend === 'increasing'
+  ) {
+    analysis.should_push_to_action = true;
+
+    if (analysis.response_mode === 'clarifying' || analysis.response_mode === 'supportive') {
+      analysis.response_mode = 'directive';
+    }
+  }
+
+  if (
+    trend.cycle_detected &&
+    analysis.response_mode === 'clarifying' &&
+    analysis.state.rumination >= 0.35
+  ) {
+    analysis.response_mode = 'firm_support';
+    analysis.should_recadre = true;
+  }
+
+  if (
+    trend.cognitive_load_pressure === 'high' &&
+    analysis.state.vulnerability >= 0.55 &&
+    analysis.state.emotional_intensity >= 0.38
+  ) {
+    analysis.response_mode = 'grounding';
+    analysis.should_reduce_cognitive_load = true;
+  }
+
+  analysis.directives = getResponseDirectivesByMode(analysis.response_mode);
+
+  return analysis;
+}
+
+function buildResponseProfile(userStateAnalysis, behaviorTrend = null) {
   const mode = userStateAnalysis.response_mode;
   const vulnerability = userStateAnalysis.state.vulnerability;
   const rumination = userStateAnalysis.state.rumination;
@@ -791,6 +1146,45 @@ function buildResponseProfile(userStateAnalysis) {
     maxWords = Math.min(maxWords, 145);
   }
 
+  if (behaviorTrend) {
+    if (behaviorTrend.cognitive_load_pressure === 'high') {
+      maxWords = Math.min(maxWords, 105);
+      cognitiveLoad = 'très faible';
+      questionCount = '0 ou 1 question très simple maximum';
+      bulletPolicy = 'évite les listes';
+    } else if (behaviorTrend.cognitive_load_pressure === 'medium') {
+      maxWords = Math.min(maxWords, 125);
+      cognitiveLoad = cognitiveLoad === 'très faible' ? 'très faible' : 'faible';
+    }
+
+    if (behaviorTrend.recadre_pressure === 'high') {
+      forbiddenPatterns.push('ne laisse pas la réponse devenir trop molle');
+    }
+
+    if (behaviorTrend.action_pressure === 'high' && mode !== 'grounding') {
+      actionStyle = 'termine par une action claire, simple et faisable maintenant';
+      questionCount = '0 ou 1 question ciblée maximum';
+    }
+
+    if (
+      behaviorTrend.cycle_detected &&
+      (behaviorTrend.dominant_state === 'rumination' || behaviorTrend.repeated_primary_state === 'rumination')
+    ) {
+      maxWords = Math.min(maxWords, 110);
+      forbiddenPatterns.push('ne valide pas longuement la boucle');
+    }
+
+    if (
+      behaviorTrend.cycle_detected &&
+      (behaviorTrend.dominant_state === 'dispersion' || behaviorTrend.dominant_state === 'avoidance')
+    ) {
+      bulletPolicy = mode === 'directive'
+        ? 'liste très courte autorisée si elle sert l’exécution'
+        : bulletPolicy;
+      actionStyle = 'termine par une action unique, nette et immédiate';
+    }
+  }
+
   return {
     max_words: maxWords,
     paragraph_style: paragraphStyle,
@@ -800,7 +1194,7 @@ function buildResponseProfile(userStateAnalysis) {
     question_count: questionCount,
     cognitive_load: cognitiveLoad,
     pacing,
-    forbidden_patterns: forbiddenPatterns
+    forbidden_patterns: [...new Set(forbiddenPatterns)]
   };
 }
 
@@ -875,6 +1269,34 @@ Consignes d’exécution :
 `.trim();
 }
 
+function buildBehaviorTrendPrompt(behaviorTrend) {
+  return `
+MÉMOIRE COMPORTEMENTALE RÉCENTE :
+- window_size: ${behaviorTrend.window_size}
+- dominant_state: ${behaviorTrend.dominant_state}
+- dominant_score: ${behaviorTrend.dominant_score}
+- secondary_dominant_state: ${behaviorTrend.secondary_dominant_state || 'none'}
+- secondary_dominant_score: ${behaviorTrend.secondary_dominant_score}
+- repeated_primary_state: ${behaviorTrend.repeated_primary_state || 'none'}
+- repeated_primary_count: ${behaviorTrend.repeated_primary_count}
+- rumination_trend: ${behaviorTrend.rumination_trend}
+- vulnerability_trend: ${behaviorTrend.vulnerability_trend}
+- activation_trend: ${behaviorTrend.activation_trend}
+- cognitive_load_pressure: ${behaviorTrend.cognitive_load_pressure}
+- recadre_pressure: ${behaviorTrend.recadre_pressure}
+- action_pressure: ${behaviorTrend.action_pressure}
+- cycle_detected: ${behaviorTrend.cycle_detected}
+
+Consignes liées à la dynamique récente :
+- tiens compte de la trajectoire récente, pas seulement du message actuel
+- si cycle_detected = true, réponds avec plus de lucidité et moins de naïveté
+- si rumination_trend = increasing, recadre plus vite et nourris moins la boucle
+- si vulnerability_trend = increasing ou cognitive_load_pressure = high, simplifie davantage
+- si activation_trend = increasing ou action_pressure = high, sois plus nette et tournée vers l’exécution
+- n’annonce pas explicitement tes calculs internes
+`.trim();
+}
+
 function buildExecutionPrompt(responseProfile) {
   return `
 PROFIL D’EXÉCUTION DE LA RÉPONSE :
@@ -936,6 +1358,24 @@ function saveRecentConversationMessage(sender, text) {
 function summarizeRecentConversationForPrompt(limit = 8) {
   const recent = getRecentConversationMemory(limit);
   return recent.map((m) => `${m.sender === 'user' ? 'UTILISATRICE' : 'NYRA'}: ${m.text}`).join('\n');
+}
+
+function getBehaviorMemory() {
+  return readJsonSafe(MEMORY_BEHAVIOR_FILE, createEmptyBehaviorMemory());
+}
+
+function saveBehaviorStateSnapshot(snapshot, maxStates = 8) {
+  const memory = getBehaviorMemory();
+  const recentStates = safeArray(memory.recent_states);
+
+  recentStates.push(snapshot);
+
+  const trimmed = recentStates.slice(-maxStates);
+
+  writeJsonSafe(MEMORY_BEHAVIOR_FILE, {
+    recent_states: trimmed,
+    updated_at: nowIso()
+  });
 }
 
 async function extractStructuredMemoryFromMessage(userMessage) {
@@ -1153,10 +1593,16 @@ app.get('/memory/structured', (req, res) => {
   res.json(structured);
 });
 
+app.get('/memory/behavior', (req, res) => {
+  const behavior = readJsonSafe(MEMORY_BEHAVIOR_FILE, createEmptyBehaviorMemory());
+  res.json(behavior);
+});
+
 app.post('/memory/reset', (req, res) => {
   writeJsonSafe(MEMORY_FILE, { messages: [] });
   writeJsonSafe(MEMORY_SUMMARY_FILE, { summary: '', updated_at: nowIso() });
   writeJsonSafe(MEMORY_STRUCTURED_FILE, createEmptyStructuredMemory());
+  writeJsonSafe(MEMORY_BEHAVIOR_FILE, createEmptyBehaviorMemory());
 
   res.json({
     ok: true,
@@ -1207,8 +1653,19 @@ app.post('/chat', async (req, res) => {
     writeJsonSafe(MEMORY_STRUCTURED_FILE, mergedStructured);
 
     const relevantMemory = extractRelevantMemory(mergedStructured);
-    const userStateAnalysis = analyzeUserState(userMessage, mergedStructured);
-    const responseProfile = buildResponseProfile(userStateAnalysis);
+
+    const rawUserStateAnalysis = analyzeUserState(userMessage, mergedStructured);
+    const currentBehaviorSnapshot = buildBehaviorStateSnapshot(rawUserStateAnalysis);
+
+    const behaviorMemory = getBehaviorMemory();
+    const previewBehaviorStates = [
+      ...safeArray(behaviorMemory.recent_states).slice(-7),
+      currentBehaviorSnapshot
+    ];
+
+    const behaviorTrend = computeBehaviorTrend(previewBehaviorStates);
+    const userStateAnalysis = applyBehaviorTrendToAnalysis(rawUserStateAnalysis, behaviorTrend);
+    const responseProfile = buildResponseProfile(userStateAnalysis, behaviorTrend);
 
     const semanticSummary = readJsonSafe(MEMORY_SUMMARY_FILE, {
       summary: '',
@@ -1220,6 +1677,7 @@ app.post('/chat', async (req, res) => {
     const systemPrompt = [
       buildCoreSystemPrompt(),
       buildBehaviorPrompt(userStateAnalysis),
+      buildBehaviorTrendPrompt(behaviorTrend),
       buildExecutionPrompt(responseProfile),
       buildMemoryPrompt(relevantMemory),
       `RÉSUMÉ SÉMANTIQUE:\n${semanticSummary.summary || 'Aucun résumé disponible pour le moment.'}`,
@@ -1244,6 +1702,11 @@ app.post('/chat', async (req, res) => {
     const assistantReply = normalizeText(completion.choices?.[0]?.message?.content || 'Je suis là.');
     saveRecentConversationMessage('nyra', assistantReply);
 
+    saveBehaviorStateSnapshot({
+      ...currentBehaviorSnapshot,
+      response_mode: userStateAnalysis.response_mode
+    });
+
     updateSemanticSummaryAsync().catch((error) => {
       console.error('❌ Erreur async semantic summary:', error.message);
     });
@@ -1252,9 +1715,11 @@ app.post('/chat', async (req, res) => {
       ok: true,
       reply: assistantReply,
       behavioral_state: userStateAnalysis,
+      behavior_trend: behaviorTrend,
       response_profile: responseProfile,
       memory: {
-        structured_updated: true
+        structured_updated: true,
+        behavior_updated: true
       }
     });
   } catch (error) {
