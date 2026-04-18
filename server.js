@@ -101,16 +101,6 @@ function createEmptyStructuredMemory() {
   };
 }
 
-function createWeightedItem(label, weight = 0.6) {
-  const normalizedLabel = normalizeText(label);
-  return {
-    label: normalizedLabel,
-    weight: clamp(Number(weight) || 0.6, 0, 1),
-    occurrences: 1,
-    last_seen_at: nowIso()
-  };
-}
-
 function isWeightedItem(item) {
   return item && typeof item === 'object' && typeof item.label === 'string';
 }
@@ -564,7 +554,8 @@ function analyzeUserState(message, structuredMemory) {
 
   const shouldReduceCognitiveLoad =
     vulnerability >= 0.45 ||
-    emotionalIntensity >= 0.4;
+    emotionalIntensity >= 0.4 ||
+    responseMode === 'grounding';
 
   const shouldPushToAction =
     activation >= 0.45 ||
@@ -574,7 +565,7 @@ function analyzeUserState(message, structuredMemory) {
   const responseDirectives = {
     grounding: {
       tone: 'calme, contenante, très rassurante, structurée',
-      structure: 'phrases claires, peu de surcharge, recentrage immédiat',
+      structure: 'phrases courtes, peu de surcharge, recentrage immédiat',
       recadrage_level: 'doux mais présent',
       priority: 'apaiser, stabiliser, sécuriser émotionnellement avant tout'
     },
@@ -624,6 +615,96 @@ function analyzeUserState(message, structuredMemory) {
   };
 }
 
+function buildResponseProfile(userStateAnalysis) {
+  const mode = userStateAnalysis.response_mode;
+  const vulnerability = userStateAnalysis.state.vulnerability;
+  const rumination = userStateAnalysis.state.rumination;
+  const dispersion = userStateAnalysis.state.dispersion;
+  const activation = userStateAnalysis.state.activation;
+  const shouldReduceCognitiveLoad = userStateAnalysis.should_reduce_cognitive_load;
+  const shouldPushToAction = userStateAnalysis.should_push_to_action;
+
+  let maxWords = 170;
+  let paragraphStyle = '2 à 4 petits paragraphes';
+  let bulletPolicy = 'pas de liste sauf si c’est clairement utile';
+  let actionStyle = 'pas forcément d’action finale obligatoire';
+  let emotionalValidation = 'brève mais sincère';
+  let questionCount = '0 ou 1 question maximum';
+  let cognitiveLoad = 'modéré';
+  let pacing = 'fluide';
+  let forbiddenPatterns = [
+    'pas de ton robotique',
+    'pas de répétitions inutiles',
+    'pas de généralités creuses',
+    'pas de paraphrase inutile du message'
+  ];
+
+  if (mode === 'grounding') {
+    maxWords = 110;
+    paragraphStyle = '1 à 3 paragraphes très courts';
+    bulletPolicy = 'évite les listes';
+    actionStyle = 'donne une seule micro-action d’ancrage si utile';
+    emotionalValidation = 'plus présente, contenante';
+    questionCount = '0 ou 1 question très simple maximum';
+    cognitiveLoad = 'très faible';
+    pacing = 'lent, rassurant, stable';
+    forbiddenPatterns.push('pas de plan complexe', 'pas de trop nombreuses options');
+  } else if (mode === 'firm_support') {
+    maxWords = 140;
+    paragraphStyle = '2 à 3 paragraphes courts';
+    bulletPolicy = 'évite les listes sauf si une seule mini séquence utile';
+    actionStyle = 'propose une action simple et immédiate';
+    emotionalValidation = 'courte mais réelle';
+    questionCount = '0 ou 1 question utile maximum';
+    cognitiveLoad = 'faible';
+    pacing = 'net, rassurant, lucide';
+    forbiddenPatterns.push('ne nourris pas la rumination', 'pas d’analyse interminable');
+  } else if (mode === 'directive') {
+    maxWords = activation >= 0.75 ? 220 : 170;
+    paragraphStyle = '1 à 3 blocs nets';
+    bulletPolicy = 'liste courte autorisée si elle sert l’exécution';
+    actionStyle = shouldPushToAction
+      ? 'termine par une action claire, faisable maintenant'
+      : 'action concrète si pertinente';
+    emotionalValidation = 'courte';
+    questionCount = '0 ou 1 question ciblée maximum';
+    cognitiveLoad = dispersion >= 0.6 ? 'faible à modéré' : 'modéré';
+    pacing = 'franc, propre, orienté mouvement';
+    forbiddenPatterns.push('pas de 10 options', 'pas de blabla motivationnel');
+  } else if (mode === 'supportive') {
+    maxWords = 160;
+    paragraphStyle = '2 à 4 petits paragraphes';
+    bulletPolicy = 'évite les listes longues';
+    actionStyle = 'propose une petite avancée concrète';
+    emotionalValidation = 'présente';
+    questionCount = '1 question maximum';
+    cognitiveLoad = shouldReduceCognitiveLoad ? 'faible' : 'modéré';
+    pacing = 'doux, clair, soutenant';
+  }
+
+  if (vulnerability >= 0.6) {
+    maxWords = Math.min(maxWords, 120);
+    cognitiveLoad = 'très faible';
+  }
+
+  if (rumination >= 0.8) {
+    maxWords = Math.min(maxWords, 130);
+    forbiddenPatterns.push('pas d’exploration théorique de la boucle');
+  }
+
+  return {
+    max_words: maxWords,
+    paragraph_style: paragraphStyle,
+    bullet_policy: bulletPolicy,
+    action_style: actionStyle,
+    emotional_validation: emotionalValidation,
+    question_count: questionCount,
+    cognitive_load: cognitiveLoad,
+    pacing,
+    forbidden_patterns: forbiddenPatterns
+  };
+}
+
 function buildCoreSystemPrompt() {
   return `
 Tu es Nyra, une présence intelligente, naturelle, profondément personnalisée.
@@ -653,7 +734,16 @@ Règles de style :
 }
 
 function buildBehaviorPrompt(userStateAnalysis) {
-  const { state, primary_state, secondary_state, response_mode, should_recadre, should_reduce_cognitive_load, should_push_to_action, directives } = userStateAnalysis;
+  const {
+    state,
+    primary_state,
+    secondary_state,
+    response_mode,
+    should_recadre,
+    should_reduce_cognitive_load,
+    should_push_to_action,
+    directives
+  } = userStateAnalysis;
 
   return `
 ÉTAT UTILISATRICE DÉTECTÉ :
@@ -683,6 +773,30 @@ Consignes d’exécution :
 - si should_reduce_cognitive_load = true, simplifie la réponse et évite de surcharger
 - si should_recadre = true, recadre avec chaleur mais sans tourner autour du pot
 - si should_push_to_action = true, donne une action simple, claire, faisable immédiatement
+`.trim();
+}
+
+function buildExecutionPrompt(responseProfile) {
+  return `
+PROFIL D’EXÉCUTION DE LA RÉPONSE :
+- max_words: ${responseProfile.max_words}
+- paragraph_style: ${responseProfile.paragraph_style}
+- bullet_policy: ${responseProfile.bullet_policy}
+- action_style: ${responseProfile.action_style}
+- emotional_validation: ${responseProfile.emotional_validation}
+- question_count: ${responseProfile.question_count}
+- cognitive_load: ${responseProfile.cognitive_load}
+- pacing: ${responseProfile.pacing}
+
+INTERDICTIONS / GARDE-FOUS :
+${responseProfile.forbidden_patterns.map((x) => `- ${x}`).join('\n')}
+
+Contraintes finales :
+- reste sous la limite de mots demandée autant que possible
+- une seule idée forte par segment
+- si une action est donnée, elle doit être simple, spécifique, faisable maintenant
+- n’ajoute pas de métadiscours sur le fait que tu analyses son état
+- écris comme une présence premium, humaine, nette, utile
 `.trim();
 }
 
@@ -995,6 +1109,7 @@ app.post('/chat', async (req, res) => {
 
     const relevantMemory = extractRelevantMemory(mergedStructured);
     const userStateAnalysis = analyzeUserState(userMessage, mergedStructured);
+    const responseProfile = buildResponseProfile(userStateAnalysis);
 
     const semanticSummary = readJsonSafe(MEMORY_SUMMARY_FILE, {
       summary: '',
@@ -1006,6 +1121,7 @@ app.post('/chat', async (req, res) => {
     const systemPrompt = [
       buildCoreSystemPrompt(),
       buildBehaviorPrompt(userStateAnalysis),
+      buildExecutionPrompt(responseProfile),
       buildMemoryPrompt(relevantMemory),
       `RÉSUMÉ SÉMANTIQUE:\n${semanticSummary.summary || 'Aucun résumé disponible pour le moment.'}`,
       `CONTEXTE CONVERSATION RÉCENTE:\n${recentConversation || 'Aucun historique récent.'}`
@@ -1013,7 +1129,7 @@ app.post('/chat', async (req, res) => {
 
     const completion = await openai.chat.completions.create({
       model: OPENAI_MODEL,
-      temperature: 0.8,
+      temperature: 0.75,
       messages: [
         {
           role: 'system',
@@ -1037,6 +1153,7 @@ app.post('/chat', async (req, res) => {
       ok: true,
       reply: assistantReply,
       behavioral_state: userStateAnalysis,
+      response_profile: responseProfile,
       memory: {
         structured_updated: true
       }
