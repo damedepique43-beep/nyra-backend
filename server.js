@@ -308,16 +308,44 @@ function analyzeUserState(message, structuredMemory) {
   const strongVulnerabilityPatterns = [
     { phrase: 'je me sens mal', weight: 0.45 },
     { phrase: 'je vais mal', weight: 0.5 },
-    { phrase: 'j’en peux plus', weight: 0.6 },
-    { phrase: 'j en peux plus', weight: 0.6 },
-    { phrase: 'je craque', weight: 0.55 },
+    { phrase: 'j’en peux plus', weight: 0.72 },
+    { phrase: 'j en peux plus', weight: 0.72 },
+    { phrase: 'je craque', weight: 0.78 },
     { phrase: 'je suis perdue', weight: 0.45 },
     { phrase: 'je suis perdu', weight: 0.45 },
     { phrase: 'je me sens seule', weight: 0.42 },
-    { phrase: 'je me sens vide', weight: 0.5 },
+    { phrase: 'je me sens vide', weight: 0.72 },
     { phrase: 'ça me fait mal', weight: 0.35 },
-    { phrase: 'ça me détruit', weight: 0.65 },
-    { phrase: 'je suis au bout', weight: 0.7 }
+    { phrase: 'ça me détruit', weight: 0.7 },
+    { phrase: 'je suis au bout', weight: 0.8 },
+    { phrase: 'j’ai juste besoin que ça s’arrête', weight: 0.85 },
+    { phrase: 'j\'ai juste besoin que ça s’arrête', weight: 0.85 },
+    { phrase: 'j’ai juste besoin que ça s\'arrête', weight: 0.85 },
+    { phrase: 'j\'ai juste besoin que ça s\'arrête', weight: 0.85 },
+    { phrase: 'ça s’arrête dans ma tête', weight: 0.82 },
+    { phrase: 'ça s\'arrête dans ma tête', weight: 0.82 }
+  ];
+
+  const softVulnerabilityPatterns = [
+    { phrase: 'je me sens fragile', weight: 0.42 },
+    { phrase: 'fragile aujourd’hui', weight: 0.28 },
+    { phrase: 'fragile aujourd\'hui', weight: 0.28 },
+    { phrase: 'sans me brusquer', weight: 0.36 },
+    { phrase: 'doucement', weight: 0.18 },
+    { phrase: 'à mon rythme', weight: 0.32 },
+    { phrase: 'a mon rythme', weight: 0.32 },
+    { phrase: 'j’ai besoin que tu m’aides', weight: 0.26 },
+    { phrase: 'j\'ai besoin que tu m’aides', weight: 0.26 },
+    { phrase: 'j’ai besoin que tu m\'aides', weight: 0.26 },
+    { phrase: 'j\'ai besoin que tu m\'aides', weight: 0.26 },
+    { phrase: 'pas trop fort', weight: 0.24 },
+    { phrase: 'j’ai besoin de douceur', weight: 0.4 },
+    { phrase: 'j\'ai besoin de douceur', weight: 0.4 },
+    { phrase: 'je suis un peu mal', weight: 0.3 },
+    { phrase: 'j’ai besoin de soutien', weight: 0.32 },
+    { phrase: 'j\'ai besoin de soutien', weight: 0.32 },
+    { phrase: 'aide-moi doucement', weight: 0.4 },
+    { phrase: 'aide moi doucement', weight: 0.4 }
   ];
 
   const strongRuminationPatterns = [
@@ -332,7 +360,13 @@ function analyzeUserState(message, structuredMemory) {
     { phrase: 'ça m’obsède', weight: 0.65 },
     { phrase: 'ça m\'obsède', weight: 0.65 },
     { phrase: 'je rumine', weight: 0.62 },
-    { phrase: 'je me demande sans arrêt', weight: 0.55 }
+    { phrase: 'je me demande sans arrêt', weight: 0.55 },
+    { phrase: 'je recommence à tourner', weight: 0.42 },
+    { phrase: 'je recommence à tourner dans mes vieux schémas', weight: 0.76 },
+    { phrase: 'je retombe dans mes vieux schémas', weight: 0.78 },
+    { phrase: 'mes vieux schémas', weight: 0.42 },
+    { phrase: 'mes anciens schémas', weight: 0.42 },
+    { phrase: 'je repars dans mes schémas', weight: 0.7 }
   ];
 
   const strongDispersionPatterns = [
@@ -373,7 +407,13 @@ function analyzeUserState(message, structuredMemory) {
     { phrase: 'au plus vite', weight: 0.72 },
     { phrase: 'maintenant', weight: 0.25 },
     { phrase: 'j’ai besoin maintenant', weight: 0.72 },
-    { phrase: 'j\'ai besoin maintenant', weight: 0.72 }
+    { phrase: 'j\'ai besoin maintenant', weight: 0.72 },
+    { phrase: 'j’ai besoin d’avancer vite', weight: 0.82 },
+    { phrase: 'j\'ai besoin d’avancer vite', weight: 0.82 },
+    { phrase: 'j’ai besoin d\'avancer vite', weight: 0.82 },
+    { phrase: 'j\'ai besoin d\'avancer vite', weight: 0.82 },
+    { phrase: 'je veux un plan concret maintenant', weight: 0.82 },
+    { phrase: 'il me faut un plan maintenant', weight: 0.76 }
   ];
 
   const strongActivationPatterns = [
@@ -388,32 +428,44 @@ function analyzeUserState(message, structuredMemory) {
     { phrase: 'je veux qu\'on fasse', weight: 0.52 },
     { phrase: 'je veux quelque chose de propre', weight: 0.38 },
     { phrase: 'premium', weight: 0.18 },
-    { phrase: 'concret', weight: 0.18 }
+    { phrase: 'concret', weight: 0.18 },
+    { phrase: 'je veux un plan concret', weight: 0.34 }
   ];
 
   const strongIntensityPatterns = [
     { phrase: 'catastrophe', weight: 0.55 },
-    { phrase: 'insupportable', weight: 0.55 },
+    { phrase: 'insupportable', weight: 0.65 },
     { phrase: 'horrible', weight: 0.45 },
     { phrase: 'je déteste', weight: 0.38 },
-    { phrase: 'je souffre', weight: 0.55 },
-    { phrase: 'ça m’explose', weight: 0.62 },
-    { phrase: 'ça m\'explose', weight: 0.62 },
+    { phrase: 'je souffre', weight: 0.62 },
+    { phrase: 'ça m’explose', weight: 0.7 },
+    { phrase: 'ça m\'explose', weight: 0.7 },
     { phrase: 'ça m’obsède', weight: 0.58 },
     { phrase: 'ça m\'obsède', weight: 0.58 },
-    { phrase: 'je suis détruite', weight: 0.72 },
-    { phrase: 'je suis détruit', weight: 0.72 },
+    { phrase: 'je suis détruite', weight: 0.78 },
+    { phrase: 'je suis détruit', weight: 0.78 },
+    { phrase: 'j’en peux plus', weight: 0.72 },
+    { phrase: 'j en peux plus', weight: 0.72 },
+    { phrase: 'je craque', weight: 0.72 },
+    { phrase: 'ça s’arrête dans ma tête', weight: 0.82 },
+    { phrase: 'ça s\'arrête dans ma tête', weight: 0.82 },
+    { phrase: 'j’ai juste besoin que ça s’arrête', weight: 0.82 },
+    { phrase: 'j\'ai juste besoin que ça s’arrête', weight: 0.82 },
+    { phrase: 'j’ai juste besoin que ça s\'arrête', weight: 0.82 },
+    { phrase: 'j\'ai juste besoin que ça s\'arrête', weight: 0.82 },
     { phrase: 'jamais', weight: 0.08 },
     { phrase: 'toujours', weight: 0.08 }
   ];
 
   const vulnerabilityLight = countKeywordMatches(lower, [
-    'mal', 'peur', 'fragile', 'seule', 'vide', 'triste', 'pleure', 'douleur'
-  ]) * 0.05;
+    'mal', 'peur', 'fragile', 'seule', 'vide', 'triste', 'pleure', 'douleur',
+    'douceur', 'soutien', 'brusquer'
+  ]) * 0.06;
 
   const ruminationLight = countKeywordMatches(lower, [
-    'boucle', 'obsède', 'obsession', 'repense', 'pourquoi', 'et si', 'rumine'
-  ]) * 0.06;
+    'boucle', 'obsède', 'obsession', 'repense', 'pourquoi', 'et si', 'rumine',
+    'schémas', 'schemas'
+  ]) * 0.07;
 
   const dispersionLight = countKeywordMatches(lower, [
     'éparpille', 'disperse', 'concentrer', 'bloque', 'commencer'
@@ -425,18 +477,21 @@ function analyzeUserState(message, structuredMemory) {
 
   const urgencyLight = countKeywordMatches(lower, [
     'urgent', 'vite', 'rapidement', 'maintenant'
-  ]) * 0.06;
+  ]) * 0.07;
 
   const activationLight = countKeywordMatches(lower, [
-    'avance', 'go', 'motiv', 'propre', 'premium', 'concret'
+    'avance', 'go', 'motiv', 'propre', 'premium', 'concret', 'plan'
   ]) * 0.06;
 
   const intensityLight = countKeywordMatches(lower, [
-    'catastrophe', 'horrible', 'insupportable', 'détruit', 'souffre'
-  ]) * 0.06;
+    'catastrophe', 'horrible', 'insupportable', 'détruit', 'souffre',
+    'craque', 'vide', 'stop', 'arrête'
+  ]) * 0.08;
 
   let vulnerability =
-    countWeightedMatches(lower, strongVulnerabilityPatterns) + vulnerabilityLight;
+    countWeightedMatches(lower, strongVulnerabilityPatterns) +
+    countWeightedMatches(lower, softVulnerabilityPatterns) +
+    vulnerabilityLight;
 
   let rumination =
     countWeightedMatches(lower, strongRuminationPatterns) + ruminationLight;
@@ -458,13 +513,30 @@ function analyzeUserState(message, structuredMemory) {
 
   const wordCount = lower.split(/\s+/).filter(Boolean).length;
 
-  if (wordCount >= 12 && hasAny(lower, ['je', 'j’ai', 'j\'ai'])) {
+  if (wordCount >= 12 && hasAny(lower, ['je', 'j’ai', 'j\'ai', 'besoin'])) {
     emotionalIntensity += 0.04;
+  }
+
+  if (hasAny(lower, ['sans me noyer', 'sans me brusquer', 'à mon rythme', 'a mon rythme'])) {
+    vulnerability += 0.16;
+  }
+
+  if (hasAny(lower, ['recadre-moi', 'recadre moi', 'recadres', 'recadrer'])) {
+    activation += 0.12;
+  }
+
+  if (hasAny(lower, ['sans me noyer'])) {
+    vulnerability += 0.2;
+    emotionalIntensity += 0.08;
+  }
+
+  if (hasAny(lower, ['vieux schémas', 'vieux schemas', 'anciens schémas', 'anciens schemas'])) {
+    rumination += 0.22;
   }
 
   if (rumination > 0.5 && vulnerability > 0.25) {
     vulnerability += 0.12;
-    emotionalIntensity += 0.08;
+    emotionalIntensity += 0.12;
   }
 
   if (dispersion > 0.5 && activation > 0.25) {
@@ -477,6 +549,14 @@ function analyzeUserState(message, structuredMemory) {
 
   if (urgency > 0.4 && activation > 0.25) {
     activation += 0.08;
+  }
+
+  if (urgency > 0.7) {
+    activation += 0.14;
+  }
+
+  if (vulnerability > 0.65 && hasAny(lower, ['ça s’arrête', 'ça s\'arrête', 'j’en peux plus', 'j en peux plus', 'je craque'])) {
+    emotionalIntensity += 0.22;
   }
 
   const memoryBoosts = relevantMemory.top_risk_patterns.map((x) => x.label.toLowerCase());
@@ -499,8 +579,8 @@ function analyzeUserState(message, structuredMemory) {
     activation += 0.08;
   }
 
-  if (memoryNeeds.some((x) => x.includes('rassurance') || x.includes('sécurité') || x.includes('apaisement'))) {
-    vulnerability += 0.06;
+  if (memoryNeeds.some((x) => x.includes('rassurance') || x.includes('sécurité') || x.includes('apaisement') || x.includes('douceur'))) {
+    vulnerability += 0.08;
   }
 
   vulnerability = clamp(Number(vulnerability.toFixed(3)), 0, 1);
@@ -513,54 +593,68 @@ function analyzeUserState(message, structuredMemory) {
 
   let responseMode = 'clarifying';
 
-  if (vulnerability >= 0.55 && emotionalIntensity >= 0.32) {
+  if (
+    (vulnerability >= 0.65 && emotionalIntensity >= 0.45) ||
+    hasAny(lower, ['j’en peux plus', 'j en peux plus', 'je craque', 'ça s’arrête dans ma tête', 'ça s\'arrête dans ma tête'])
+  ) {
     responseMode = 'grounding';
-  } else if (rumination >= 0.55) {
+  } else if (rumination >= 0.55 && vulnerability >= 0.2) {
     responseMode = 'firm_support';
   } else if (dispersion >= 0.55 || avoidance >= 0.55) {
     responseMode = 'directive';
-  } else if (activation >= 0.55) {
+  } else if (activation >= 0.55 || urgency >= 0.65) {
     responseMode = 'directive';
-  } else if (vulnerability >= 0.35) {
+  } else if (vulnerability >= 0.3) {
     responseMode = 'supportive';
   }
 
   let primaryState = 'stable';
   let secondaryState = null;
 
-  const stateEntries = [
-    ['vulnerability', vulnerability],
-    ['rumination', rumination],
-    ['dispersion', dispersion],
-    ['avoidance', avoidance],
-    ['urgency', urgency],
-    ['activation', activation],
-    ['emotional_intensity', emotionalIntensity]
-  ].sort((a, b) => b[1] - a[1]);
+  if (rumination >= 0.45 && vulnerability >= 0.25) {
+    primaryState = 'rumination';
+    secondaryState = 'vulnerability';
+  } else if (urgency >= 0.6 && activation >= 0.25) {
+    primaryState = 'urgency';
+    secondaryState = 'activation';
+  } else {
+    const stateEntries = [
+      ['vulnerability', vulnerability],
+      ['rumination', rumination],
+      ['dispersion', dispersion],
+      ['avoidance', avoidance],
+      ['urgency', urgency],
+      ['activation', activation],
+      ['emotional_intensity', emotionalIntensity]
+    ].sort((a, b) => b[1] - a[1]);
 
-  if (stateEntries[0][1] >= 0.35) {
-    primaryState = stateEntries[0][0];
-  }
+    if (stateEntries[0][1] >= 0.3) {
+      primaryState = stateEntries[0][0];
+    }
 
-  if (stateEntries[1][1] >= 0.3) {
-    secondaryState = stateEntries[1][0];
+    if (stateEntries[1][1] >= 0.25) {
+      secondaryState = stateEntries[1][0];
+    }
   }
 
   const shouldRecadre =
-    rumination >= 0.5 ||
+    rumination >= 0.45 ||
     dispersion >= 0.5 ||
     avoidance >= 0.5 ||
-    activation >= 0.65;
+    activation >= 0.65 ||
+    urgency >= 0.7;
 
   const shouldReduceCognitiveLoad =
-    vulnerability >= 0.45 ||
-    emotionalIntensity >= 0.4 ||
-    responseMode === 'grounding';
+    vulnerability >= 0.4 ||
+    emotionalIntensity >= 0.38 ||
+    responseMode === 'grounding' ||
+    hasAny(lower, ['sans me noyer', 'sans me brusquer']);
 
   const shouldPushToAction =
     activation >= 0.45 ||
     dispersion >= 0.45 ||
-    avoidance >= 0.45;
+    avoidance >= 0.45 ||
+    urgency >= 0.65;
 
   const responseDirectives = {
     grounding: {
@@ -620,6 +714,7 @@ function buildResponseProfile(userStateAnalysis) {
   const vulnerability = userStateAnalysis.state.vulnerability;
   const rumination = userStateAnalysis.state.rumination;
   const dispersion = userStateAnalysis.state.dispersion;
+  const urgency = userStateAnalysis.state.urgency;
   const activation = userStateAnalysis.state.activation;
   const shouldReduceCognitiveLoad = userStateAnalysis.should_reduce_cognitive_load;
   const shouldPushToAction = userStateAnalysis.should_push_to_action;
@@ -640,7 +735,7 @@ function buildResponseProfile(userStateAnalysis) {
   ];
 
   if (mode === 'grounding') {
-    maxWords = 110;
+    maxWords = 95;
     paragraphStyle = '1 à 3 paragraphes très courts';
     bulletPolicy = 'évite les listes';
     actionStyle = 'donne une seule micro-action d’ancrage si utile';
@@ -648,19 +743,19 @@ function buildResponseProfile(userStateAnalysis) {
     questionCount = '0 ou 1 question très simple maximum';
     cognitiveLoad = 'très faible';
     pacing = 'lent, rassurant, stable';
-    forbiddenPatterns.push('pas de plan complexe', 'pas de trop nombreuses options');
+    forbiddenPatterns.push('pas de plan complexe', 'pas de trop nombreuses options', 'pas de longue analyse');
   } else if (mode === 'firm_support') {
-    maxWords = 140;
+    maxWords = 125;
     paragraphStyle = '2 à 3 paragraphes courts';
     bulletPolicy = 'évite les listes sauf si une seule mini séquence utile';
     actionStyle = 'propose une action simple et immédiate';
     emotionalValidation = 'courte mais réelle';
     questionCount = '0 ou 1 question utile maximum';
-    cognitiveLoad = 'faible';
+    cognitiveLoad = 'très faible';
     pacing = 'net, rassurant, lucide';
-    forbiddenPatterns.push('ne nourris pas la rumination', 'pas d’analyse interminable');
+    forbiddenPatterns.push('ne nourris pas la rumination', 'pas d’analyse interminable', 'pas d’exploration théorique de la boucle');
   } else if (mode === 'directive') {
-    maxWords = activation >= 0.75 ? 220 : 170;
+    maxWords = activation >= 0.75 || urgency >= 0.75 ? 160 : 150;
     paragraphStyle = '1 à 3 blocs nets';
     bulletPolicy = 'liste courte autorisée si elle sert l’exécution';
     actionStyle = shouldPushToAction
@@ -672,24 +767,28 @@ function buildResponseProfile(userStateAnalysis) {
     pacing = 'franc, propre, orienté mouvement';
     forbiddenPatterns.push('pas de 10 options', 'pas de blabla motivationnel');
   } else if (mode === 'supportive') {
-    maxWords = 160;
+    maxWords = 135;
     paragraphStyle = '2 à 4 petits paragraphes';
     bulletPolicy = 'évite les listes longues';
     actionStyle = 'propose une petite avancée concrète';
     emotionalValidation = 'présente';
     questionCount = '1 question maximum';
-    cognitiveLoad = shouldReduceCognitiveLoad ? 'faible' : 'modéré';
+    cognitiveLoad = shouldReduceCognitiveLoad ? 'très faible' : 'faible à modéré';
     pacing = 'doux, clair, soutenant';
   }
 
   if (vulnerability >= 0.6) {
-    maxWords = Math.min(maxWords, 120);
+    maxWords = Math.min(maxWords, 110);
     cognitiveLoad = 'très faible';
   }
 
   if (rumination >= 0.8) {
-    maxWords = Math.min(maxWords, 130);
+    maxWords = Math.min(maxWords, 115);
     forbiddenPatterns.push('pas d’exploration théorique de la boucle');
+  }
+
+  if (urgency >= 0.75 && mode !== 'grounding') {
+    maxWords = Math.min(maxWords, 145);
   }
 
   return {
@@ -1129,7 +1228,7 @@ app.post('/chat', async (req, res) => {
 
     const completion = await openai.chat.completions.create({
       model: OPENAI_MODEL,
-      temperature: 0.75,
+      temperature: 0.72,
       messages: [
         {
           role: 'system',
