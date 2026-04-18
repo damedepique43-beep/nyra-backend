@@ -32,6 +32,7 @@ const MEMORY_FILE = path.join(DATA_DIR, 'memory.json');
 const MEMORY_SUMMARY_FILE = path.join(DATA_DIR, 'memory_summary.json');
 const MEMORY_STRUCTURED_FILE = path.join(DATA_DIR, 'memory_structured.json');
 const MEMORY_BEHAVIOR_FILE = path.join(DATA_DIR, 'memory_behavior.json');
+const TOPIC_MEMORY_PATH = path.join(DATA_DIR, 'memory_topics.json');
 const AUDIO_CACHE_DIR = path.join(DATA_DIR, 'audio-cache');
 
 ensureDir(DATA_DIR);
@@ -106,6 +107,12 @@ function createEmptyBehaviorMemory() {
   return {
     recent_states: [],
     updated_at: null
+  };
+}
+
+function createEmptyTopicMemory() {
+  return {
+    topics: []
   };
 }
 
@@ -1401,6 +1408,91 @@ function saveBehaviorStateSnapshot(snapshot, maxStates = 8) {
   });
 }
 
+function loadTopicMemory() {
+  return readJsonSafe(TOPIC_MEMORY_PATH, createEmptyTopicMemory());
+}
+
+function saveTopicMemory(data) {
+  writeJsonSafe(TOPIC_MEMORY_PATH, data);
+}
+
+function updateTopicMemory(topic, primaryState) {
+  const memory = loadTopicMemory();
+
+  let topicEntry = safeArray(memory.topics).find((t) => t.topic === topic);
+
+  if (!topicEntry) {
+    topicEntry = {
+      topic,
+      last_seen_at: nowIso(),
+      occurrences: 0,
+      states: {
+        rumination: 0,
+        vulnerability: 0,
+        urgency: 0,
+        avoidance: 0,
+        activation: 0,
+        dispersion: 0
+      },
+      last_state: null
+    };
+
+    memory.topics.push(topicEntry);
+  }
+
+  topicEntry.occurrences += 1;
+  topicEntry.last_seen_at = nowIso();
+  topicEntry.last_state = primaryState;
+
+  if (topicEntry.states[primaryState] !== undefined) {
+    topicEntry.states[primaryState] += 1;
+  }
+
+  saveTopicMemory(memory);
+}
+
+function detectTopic(message) {
+  const text = normalizeText(message).toLowerCase();
+
+  if (
+    text.includes('clem') ||
+    text.includes('clément') ||
+    text.includes('clement') ||
+    text.includes('relation')
+  ) {
+    return 'relationship_clement';
+  }
+
+  if (
+    text.includes('argent') ||
+    text.includes('money') ||
+    text.includes('€') ||
+    text.includes('payer') ||
+    text.includes('revenu')
+  ) {
+    return 'money';
+  }
+
+  if (
+    text.includes('nyra') ||
+    text.includes('app') ||
+    text.includes('backend') ||
+    text.includes('code') ||
+    text.includes('voiceflow')
+  ) {
+    return 'project_nyra';
+  }
+
+  if (
+    text.includes('ma fille') ||
+    text.includes('mes enfants')
+  ) {
+    return 'children';
+  }
+
+  return 'generic';
+}
+
 async function extractStructuredMemoryFromMessage(userMessage) {
   const currentStructured = readJsonSafe(MEMORY_STRUCTURED_FILE, createEmptyStructuredMemory());
 
@@ -1621,11 +1713,17 @@ app.get('/memory/behavior', (req, res) => {
   res.json(behavior);
 });
 
+app.get('/memory/topics', (req, res) => {
+  const topics = readJsonSafe(TOPIC_MEMORY_PATH, createEmptyTopicMemory());
+  res.json(topics);
+});
+
 app.post('/memory/reset', (req, res) => {
   writeJsonSafe(MEMORY_FILE, { messages: [] });
   writeJsonSafe(MEMORY_SUMMARY_FILE, { summary: '', updated_at: nowIso() });
   writeJsonSafe(MEMORY_STRUCTURED_FILE, createEmptyStructuredMemory());
   writeJsonSafe(MEMORY_BEHAVIOR_FILE, createEmptyBehaviorMemory());
+  writeJsonSafe(TOPIC_MEMORY_PATH, createEmptyTopicMemory());
 
   res.json({
     ok: true,
@@ -1656,102 +1754,7 @@ app.post('/speak', async (req, res) => {
     });
   }
 });
-const TOPIC_MEMORY_PATH = path.join(__dirname, 'memory_topics.json');
 
-function loadTopicMemory() {
-  if (!fs.existsSync(TOPIC_MEMORY_PATH)) {
-    fs.writeFileSync(TOPIC_MEMORY_PATH, JSON.stringify({ topics: [] }, null, 2));
-  }
-
-  return JSON.parse(fs.readFileSync(TOPIC_MEMORY_PATH, 'utf-8'));
-}
-
-function saveTopicMemory(data) {
-  fs.writeFileSync(TOPIC_MEMORY_PATH, JSON.stringify(data, null, 2));
-}
-
-function updateTopicMemory(topic, primaryState) {
-  const memory = loadTopicMemory();
-
-  let topicEntry = memory.topics.find(t => t.topic === topic);
-
-  if (!topicEntry) {
-    topicEntry = {
-      topic,
-      last_seen_at: new Date().toISOString(),
-      occurrences: 0,
-      states: {
-        rumination: 0,
-        vulnerability: 0,
-        urgency: 0,
-        avoidance: 0,
-        activation: 0,
-        dispersion: 0
-      },
-      last_state: null
-    };
-
-    memory.topics.push(topicEntry);
-  }
-
-  topicEntry.occurrences += 1;
-  topicEntry.last_seen_at = new Date().toISOString();
-  topicEntry.last_state = primaryState;
-
-  if (topicEntry.states[primaryState] !== undefined) {
-    topicEntry.states[primaryState] += 1;
-  }
-
-  saveTopicMemory(memory);
-}
-function detectTopic(message) {
-  const text = (message || "").toLowerCase();
-
-  // Clément / relation
-  if (
-    text.includes("clem") ||
-    text.includes("clément") ||
-    text.includes("relation") ||
-    text.includes("lui") ||
-    text.includes("il") ||
-    text.includes("nous")
-  ) {
-    return "relationship_clement";
-  }
-
-  // Argent
-  if (
-    text.includes("argent") ||
-    text.includes("money") ||
-    text.includes("€") ||
-    text.includes("payer") ||
-    text.includes("revenu")
-  ) {
-    return "money";
-  }
-
-  // Nyra / projet
-  if (
-    text.includes("nyra") ||
-    text.includes("app") ||
-    text.includes("backend") ||
-    text.includes("code") ||
-    text.includes("voiceflow")
-  ) {
-    return "project_nyra";
-  }
-
-  // Enfants
-  if (
-    text.includes("ma fille") ||
-    text.includes("mes enfants")
-  ) {
-    return "children";
-  }
-
-  // défaut
-  return "generic";
-}
 app.post('/chat', async (req, res) => {
   try {
     const userMessage = normalizeText(req.body?.message || '');
@@ -1783,8 +1786,10 @@ app.post('/chat', async (req, res) => {
 
     const behaviorTrend = computeBehaviorTrend(previewBehaviorStates);
     const userStateAnalysis = applyBehaviorTrendToAnalysis(rawUserStateAnalysis, behaviorTrend);
+
     const topic = detectTopic(userMessage);
-updateTopicMemory(topic, userStateAnalysis.primary_state);
+    updateTopicMemory(topic, userStateAnalysis.primary_state);
+
     const responseProfile = buildResponseProfile(userStateAnalysis, behaviorTrend);
 
     const semanticSummary = readJsonSafe(MEMORY_SUMMARY_FILE, {
@@ -1837,9 +1842,11 @@ updateTopicMemory(topic, userStateAnalysis.primary_state);
       behavioral_state: userStateAnalysis,
       behavior_trend: behaviorTrend,
       response_profile: responseProfile,
+      detected_topic: topic,
       memory: {
         structured_updated: true,
-        behavior_updated: true
+        behavior_updated: true,
+        topic_updated: true
       }
     });
   } catch (error) {
