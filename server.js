@@ -1783,6 +1783,8 @@ app.post('/chat', async (req, res) => {
 
     const behaviorTrend = computeBehaviorTrend(previewBehaviorStates);
     const userStateAnalysis = applyBehaviorTrendToAnalysis(rawUserStateAnalysis, behaviorTrend);
+    const topic = detectTopic(userMessage);
+updateTopicMemory(topic, userStateAnalysis.primary_state);
     const responseProfile = buildResponseProfile(userStateAnalysis, behaviorTrend);
 
     const semanticSummary = readJsonSafe(MEMORY_SUMMARY_FILE, {
