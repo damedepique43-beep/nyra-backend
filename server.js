@@ -374,7 +374,11 @@ function analyzeUserState(message, structuredMemory) {
     { phrase: 'je retombe dans mes vieux schémas', weight: 0.78 },
     { phrase: 'mes vieux schémas', weight: 0.42 },
     { phrase: 'mes anciens schémas', weight: 0.42 },
-    { phrase: 'je repars dans mes schémas', weight: 0.7 }
+    { phrase: 'je repars dans mes schémas', weight: 0.7 },
+    { phrase: 'les mêmes schémas', weight: 0.7 },
+    { phrase: 'les memes schemas', weight: 0.7 },
+    { phrase: 'je repars dans les mêmes schémas', weight: 0.85 },
+    { phrase: 'je repars dans les memes schemas', weight: 0.85 }
   ];
 
   const strongDispersionPatterns = [
@@ -538,7 +542,7 @@ function analyzeUserState(message, structuredMemory) {
     emotionalIntensity += 0.08;
   }
 
-  if (hasAny(lower, ['vieux schémas', 'vieux schemas', 'anciens schémas', 'anciens schemas'])) {
+  if (hasAny(lower, ['vieux schémas', 'vieux schemas', 'anciens schémas', 'anciens schemas', 'les mêmes schémas', 'les memes schemas'])) {
     rumination += 0.22;
   }
 
@@ -909,10 +913,15 @@ function computeBehaviorTrend(recentStates) {
 
   const cycleDetected =
     repeated.count >= 3 ||
-    (dominant.dominant_state === 'rumination' && dominant.dominant_score >= 0.45) ||
-    (dominant.dominant_state === 'vulnerability' && dominant.dominant_score >= 0.42) ||
-    (dominant.dominant_state === 'dispersion' && dominant.dominant_score >= 0.4) ||
-    (dominant.dominant_state === 'avoidance' && dominant.dominant_score >= 0.4);
+    (
+      states.length >= 3 &&
+      (
+        (dominant.dominant_state === 'rumination' && dominant.dominant_score >= 0.45) ||
+        (dominant.dominant_state === 'vulnerability' && dominant.dominant_score >= 0.42) ||
+        (dominant.dominant_state === 'dispersion' && dominant.dominant_score >= 0.4) ||
+        (dominant.dominant_state === 'avoidance' && dominant.dominant_score >= 0.4)
+      )
+    );
 
   return {
     window_size: states.length,
@@ -983,6 +992,11 @@ function applyBehaviorTrendToAnalysis(userStateAnalysis, behaviorTrend) {
       activation: 0,
       emotional_intensity: 0
     };
+  }
+
+  if ((Number(trend.window_size) || 0) < 3) {
+    analysis.directives = getResponseDirectivesByMode(analysis.response_mode);
+    return analysis;
   }
 
   const dominantState = trend.dominant_state || 'stable';
@@ -1146,7 +1160,7 @@ function buildResponseProfile(userStateAnalysis, behaviorTrend = null) {
     maxWords = Math.min(maxWords, 145);
   }
 
-  if (behaviorTrend) {
+  if (behaviorTrend && (Number(behaviorTrend.window_size) || 0) >= 3) {
     if (behaviorTrend.cognitive_load_pressure === 'high') {
       maxWords = Math.min(maxWords, 105);
       cognitiveLoad = 'très faible';
