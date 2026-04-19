@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const OpenAI = require('openai');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,20 +20,33 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || '';
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || 'Ka6yOFdNGhzFuCVW6VyO';
 
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
+
+const SUPABASE_ENABLED = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+
 if (!OPENAI_API_KEY) {
   console.warn('⚠️ OPENAI_API_KEY manquante');
+}
+
+if (!SUPABASE_ENABLED) {
+  console.warn('⚠️ Supabase non configuré, fallback local activé');
 }
 
 const openai = new OpenAI({
   apiKey: OPENAI_API_KEY,
 });
 
+const supabase = SUPABASE_ENABLED
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
+
 const DATA_DIR = path.join(__dirname, 'data');
 const MEMORY_FILE = path.join(DATA_DIR, 'memory.json');
 const MEMORY_SUMMARY_FILE = path.join(DATA_DIR, 'memory_summary.json');
 const MEMORY_STRUCTURED_FILE = path.join(DATA_DIR, 'memory_structured.json');
 const MEMORY_BEHAVIOR_FILE = path.join(DATA_DIR, 'memory_behavior.json');
-const TOPIC_MEMORY_PATH = path.join(DATA_DIR, 'memory_topics.json');
+const MEMORY_TOPICS_FILE = path.join(DATA_DIR, 'memory_topics.json');
 const AUDIO_CACHE_DIR = path.join(DATA_DIR, 'audio-cache');
 
 ensureDir(DATA_DIR);
@@ -113,6 +127,13 @@ function createEmptyBehaviorMemory() {
 function createEmptyTopicMemory() {
   return {
     topics: []
+  };
+}
+
+function createEmptySemanticSummary() {
+  return {
+    summary: '',
+    updated_at: null
   };
 }
 
@@ -1364,12 +1385,110 @@ Utilise cette mémoire avec discernement :
 `.trim();
 }
 
-function getRecentConversationMemory(limit = 10) {
-  const memory = readJsonSafe(MEMORY_FILE, { messages: [] });
-  return safeArray(memory.messages).slice(-limit);
+// =========================
+// SUPABASE HELPERS
+// =========================
+
+async function getLatestSingletonRow(tableName) {
+  if (!SUPABASE_ENABLED) return null;
+
+  try {
+    const { data, error } = await supabase
+      .from(tableName)
+      .select('*')
+      .order('updated_at', { ascending: false, nullsFirst: false })
+      .limit(1);
+
+    if (error) {
+      console.error(`❌ Supabase select ${tableName}:`, error.message);
+      return null;
+    }
+
+    return data?.[0] || null;
+  } catch (error) {
+    console.error(`❌ Supabase select catch ${tableName}:`, error.message);
+    return null;
+  }
 }
 
-function saveRecentConversationMessage(sender, text) {
+async function saveSingletonRow(tableName, payload) {
+  if (!SUPABASE_ENABLED) return false;
+
+  try {
+    const latest = await getLatestSingletonRow(tableName);
+
+    if (latest?.id) {
+      const { error } = await supabase
+        .from(tableName)
+        .update({
+          ...payload,
+          updated_at: nowIso()
+        })
+        .eq('id', latest.id);
+
+      if (error) {
+        console.error(`❌ Supabase update ${tableName}:`, error.message);
+        return false;
+      }
+
+      return true;
+    }
+
+    const { error } = await supabase
+      .from(tableName)
+      .insert([
+        {
+          ...payload,
+          updated_at: nowIso()
+        }
+      ]);
+
+    if (error) {
+      console.error(`❌ Supabase insert ${tableName}:`, error.message);
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error(`❌ Supabase save catch ${tableName}:`, error.message);
+    return false;
+  }
+}
+
+async function getRecentConversationMemory(limit = 10) {
+  const localMemory = readJsonSafe(MEMORY_FILE, { messages: [] });
+
+  if (!SUPABASE_ENABLED) {
+    return safeArray(localMemory.messages).slice(-limit);
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('nyra_conversations')
+      .select('id, sender, text_content, created_at')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      console.error('❌ Supabase conversations select:', error.message);
+      return safeArray(localMemory.messages).slice(-limit);
+    }
+
+    return safeArray(data)
+      .map((row) => ({
+        id: row.id,
+        sender: row.sender,
+        text: row.text_content,
+        created_at: row.created_at
+      }))
+      .reverse();
+  } catch (error) {
+    console.error('❌ Supabase conversations catch:', error.message);
+    return safeArray(localMemory.messages).slice(-limit);
+  }
+}
+
+async function saveRecentConversationMessage(sender, text) {
   const memory = readJsonSafe(MEMORY_FILE, { messages: [] });
   const messages = safeArray(memory.messages);
 
@@ -1381,74 +1500,147 @@ function saveRecentConversationMessage(sender, text) {
   });
 
   const trimmed = messages.slice(-40);
-
   writeJsonSafe(MEMORY_FILE, { messages: trimmed });
+
+  if (!SUPABASE_ENABLED) return;
+
+  try {
+    const { error } = await supabase
+      .from('nyra_conversations')
+      .insert([
+        {
+          sender,
+          text_content: normalizeText(text),
+          created_at: nowIso()
+        }
+      ]);
+
+    if (error) {
+      console.error('❌ Supabase insert nyra_conversations:', error.message);
+    }
+  } catch (error) {
+    console.error('❌ Supabase insert catch nyra_conversations:', error.message);
+  }
 }
 
-function summarizeRecentConversationForPrompt(limit = 8) {
-  const recent = getRecentConversationMemory(limit);
-  return recent.map((m) => `${m.sender === 'user' ? 'UTILISATRICE' : 'NYRA'}: ${m.text}`).join('\n');
+async function summarizeRecentConversationForPrompt(limit = 8) {
+  const recent = await getRecentConversationMemory(limit);
+  return recent
+    .map((m) => `${m.sender === 'user' ? 'UTILISATRICE' : 'NYRA'}: ${m.text}`)
+    .join('\n');
 }
 
-function getBehaviorMemory() {
-  return readJsonSafe(MEMORY_BEHAVIOR_FILE, createEmptyBehaviorMemory());
+async function getBehaviorMemory() {
+  const localBehavior = readJsonSafe(MEMORY_BEHAVIOR_FILE, createEmptyBehaviorMemory());
+
+  if (!SUPABASE_ENABLED) {
+    return localBehavior;
+  }
+
+  const latest = await getLatestSingletonRow('nyra_behavior_memory');
+  if (!latest) return localBehavior;
+
+  return {
+    recent_states: safeArray(latest.recent_states),
+    updated_at: latest.updated_at || null
+  };
 }
 
-function saveBehaviorStateSnapshot(snapshot, maxStates = 8) {
-  const memory = getBehaviorMemory();
+async function saveBehaviorStateSnapshot(snapshot, maxStates = 8) {
+  const memory = await getBehaviorMemory();
   const recentStates = safeArray(memory.recent_states);
 
   recentStates.push(snapshot);
 
   const trimmed = recentStates.slice(-maxStates);
 
-  writeJsonSafe(MEMORY_BEHAVIOR_FILE, {
+  const payload = {
     recent_states: trimmed,
     updated_at: nowIso()
-  });
+  };
+
+  writeJsonSafe(MEMORY_BEHAVIOR_FILE, payload);
+
+  if (SUPABASE_ENABLED) {
+    await saveSingletonRow('nyra_behavior_memory', payload);
+  }
 }
 
-function loadTopicMemory() {
-  return readJsonSafe(TOPIC_MEMORY_PATH, createEmptyTopicMemory());
-}
+async function getStructuredMemory() {
+  const localStructured = readJsonSafe(MEMORY_STRUCTURED_FILE, createEmptyStructuredMemory());
 
-function saveTopicMemory(data) {
-  writeJsonSafe(TOPIC_MEMORY_PATH, data);
-}
-
-function updateTopicMemory(topic, primaryState) {
-  const memory = loadTopicMemory();
-
-  let topicEntry = safeArray(memory.topics).find((t) => t.topic === topic);
-
-  if (!topicEntry) {
-    topicEntry = {
-      topic,
-      last_seen_at: nowIso(),
-      occurrences: 0,
-      states: {
-        rumination: 0,
-        vulnerability: 0,
-        urgency: 0,
-        avoidance: 0,
-        activation: 0,
-        dispersion: 0
-      },
-      last_state: null
-    };
-
-    memory.topics.push(topicEntry);
+  if (!SUPABASE_ENABLED) {
+    return localStructured;
   }
 
-  topicEntry.occurrences += 1;
-  topicEntry.last_seen_at = nowIso();
-  topicEntry.last_state = primaryState;
-
-  if (topicEntry.states[primaryState] !== undefined) {
-    topicEntry.states[primaryState] += 1;
+  const latest = await getLatestSingletonRow('nyra_structured_memory');
+  if (!latest?.memory || typeof latest.memory !== 'object') {
+    return localStructured;
   }
 
-  saveTopicMemory(memory);
+  return latest.memory;
+}
+
+async function saveStructuredMemory(memory) {
+  writeJsonSafe(MEMORY_STRUCTURED_FILE, memory);
+
+  if (SUPABASE_ENABLED) {
+    await saveSingletonRow('nyra_structured_memory', {
+      memory
+    });
+  }
+}
+
+async function getSemanticSummary() {
+  const localSummary = readJsonSafe(MEMORY_SUMMARY_FILE, createEmptySemanticSummary());
+
+  if (!SUPABASE_ENABLED) {
+    return localSummary;
+  }
+
+  const latest = await getLatestSingletonRow('nyra_semantic_summary');
+  if (!latest) return localSummary;
+
+  return {
+    summary: latest.summary || '',
+    updated_at: latest.updated_at || null
+  };
+}
+
+async function saveSemanticSummary(summaryPayload) {
+  writeJsonSafe(MEMORY_SUMMARY_FILE, summaryPayload);
+
+  if (SUPABASE_ENABLED) {
+    await saveSingletonRow('nyra_semantic_summary', {
+      summary: summaryPayload.summary || ''
+    });
+  }
+}
+
+async function getTopicMemory() {
+  const localTopics = readJsonSafe(MEMORY_TOPICS_FILE, createEmptyTopicMemory());
+
+  if (!SUPABASE_ENABLED) {
+    return localTopics;
+  }
+
+  const latest = await getLatestSingletonRow('nyra_topic_memory');
+  if (!latest) return localTopics;
+
+  return {
+    topics: safeArray(latest.topics),
+    updated_at: latest.updated_at || null
+  };
+}
+
+async function saveTopicMemory(memory) {
+  writeJsonSafe(MEMORY_TOPICS_FILE, memory);
+
+  if (SUPABASE_ENABLED) {
+    await saveSingletonRow('nyra_topic_memory', {
+      topics: safeArray(memory.topics)
+    });
+  }
 }
 
 function detectTopic(message) {
@@ -1493,8 +1685,46 @@ function detectTopic(message) {
   return 'generic';
 }
 
+async function updateTopicMemory(topic, primaryState) {
+  const memory = await getTopicMemory();
+
+  let topicEntry = safeArray(memory.topics).find((t) => t.topic === topic);
+
+  if (!topicEntry) {
+    topicEntry = {
+      topic,
+      last_seen_at: nowIso(),
+      occurrences: 0,
+      states: {
+        rumination: 0,
+        vulnerability: 0,
+        urgency: 0,
+        avoidance: 0,
+        activation: 0,
+        dispersion: 0
+      },
+      last_state: null
+    };
+
+    memory.topics.push(topicEntry);
+  }
+
+  topicEntry.occurrences += 1;
+  topicEntry.last_seen_at = nowIso();
+  topicEntry.last_state = primaryState;
+
+  if (topicEntry.states[primaryState] !== undefined) {
+    topicEntry.states[primaryState] += 1;
+  }
+
+  await saveTopicMemory({
+    topics: memory.topics,
+    updated_at: nowIso()
+  });
+}
+
 async function extractStructuredMemoryFromMessage(userMessage) {
-  const currentStructured = readJsonSafe(MEMORY_STRUCTURED_FILE, createEmptyStructuredMemory());
+  const currentStructured = await getStructuredMemory();
 
   const prompt = `
 Tu extrais uniquement la mémoire durable ou semi-durable utile d’un message utilisateur.
@@ -1580,14 +1810,10 @@ ${userMessage}
 
 async function updateSemanticSummaryAsync() {
   try {
-    const shortMemory = readJsonSafe(MEMORY_FILE, { messages: [] });
-    const existingSummary = readJsonSafe(MEMORY_SUMMARY_FILE, {
-      summary: '',
-      updated_at: null
-    });
+    const shortMemory = await getRecentConversationMemory(20);
+    const existingSummary = await getSemanticSummary();
 
-    const recentMessages = safeArray(shortMemory.messages).slice(-20);
-    if (recentMessages.length === 0) return;
+    if (shortMemory.length === 0) return;
 
     const prompt = `
 Tu mets à jour une mémoire sémantique synthétique.
@@ -1596,7 +1822,7 @@ Ancien résumé :
 ${existingSummary.summary || ''}
 
 Derniers messages :
-${recentMessages.map((m) => `${m.sender}: ${m.text}`).join('\n')}
+${shortMemory.map((m) => `${m.sender}: ${m.text}`).join('\n')}
 
 Objectif :
 - produire un résumé utile, compact, à long terme
@@ -1622,7 +1848,7 @@ Objectif :
 
     const summary = normalizeText(completion.choices?.[0]?.message?.content || '');
 
-    writeJsonSafe(MEMORY_SUMMARY_FILE, {
+    await saveSemanticSummary({
       summary,
       updated_at: nowIso()
     });
@@ -1694,36 +1920,86 @@ app.get('/', (req, res) => {
     ok: true,
     app: 'Nyra backend',
     status: 'running',
-    timestamp: nowIso()
+    timestamp: nowIso(),
+    supabase_enabled: SUPABASE_ENABLED
   });
 });
 
-app.get('/memory', (req, res) => {
-  const memory = readJsonSafe(MEMORY_FILE, { messages: [] });
-  res.json(memory);
+app.get('/memory', async (req, res) => {
+  const memory = await getRecentConversationMemory(40);
+  res.json({ messages: memory });
 });
 
-app.get('/memory/structured', (req, res) => {
-  const structured = readJsonSafe(MEMORY_STRUCTURED_FILE, createEmptyStructuredMemory());
+app.get('/memory/structured', async (req, res) => {
+  const structured = await getStructuredMemory();
   res.json(structured);
 });
 
-app.get('/memory/behavior', (req, res) => {
-  const behavior = readJsonSafe(MEMORY_BEHAVIOR_FILE, createEmptyBehaviorMemory());
+app.get('/memory/behavior', async (req, res) => {
+  const behavior = await getBehaviorMemory();
   res.json(behavior);
 });
 
-app.get('/memory/topics', (req, res) => {
-  const topics = readJsonSafe(TOPIC_MEMORY_PATH, createEmptyTopicMemory());
+app.get('/memory/topics', async (req, res) => {
+  const topics = await getTopicMemory();
   res.json(topics);
 });
 
-app.post('/memory/reset', (req, res) => {
-  writeJsonSafe(MEMORY_FILE, { messages: [] });
-  writeJsonSafe(MEMORY_SUMMARY_FILE, { summary: '', updated_at: nowIso() });
-  writeJsonSafe(MEMORY_STRUCTURED_FILE, createEmptyStructuredMemory());
-  writeJsonSafe(MEMORY_BEHAVIOR_FILE, createEmptyBehaviorMemory());
-  writeJsonSafe(TOPIC_MEMORY_PATH, createEmptyTopicMemory());
+app.get('/test-db', async (req, res) => {
+  if (!SUPABASE_ENABLED) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Supabase non configuré'
+    });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('nyra_conversations')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(5);
+
+    if (error) {
+      throw error;
+    }
+
+    return res.json({
+      ok: true,
+      data
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: error.message
+    });
+  }
+});
+
+app.post('/memory/reset', async (req, res) => {
+  const emptyMemory = { messages: [] };
+  const emptySummary = createEmptySemanticSummary();
+  const emptyStructured = createEmptyStructuredMemory();
+  const emptyBehavior = createEmptyBehaviorMemory();
+  const emptyTopics = createEmptyTopicMemory();
+
+  writeJsonSafe(MEMORY_FILE, emptyMemory);
+  writeJsonSafe(MEMORY_SUMMARY_FILE, emptySummary);
+  writeJsonSafe(MEMORY_STRUCTURED_FILE, emptyStructured);
+  writeJsonSafe(MEMORY_BEHAVIOR_FILE, emptyBehavior);
+  writeJsonSafe(MEMORY_TOPICS_FILE, emptyTopics);
+
+  if (SUPABASE_ENABLED) {
+    try {
+      await supabase.from('nyra_conversations').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      await saveSemanticSummary(emptySummary);
+      await saveStructuredMemory(emptyStructured);
+      await saveSingletonRow('nyra_behavior_memory', emptyBehavior);
+      await saveTopicMemory(emptyTopics);
+    } catch (error) {
+      console.error('❌ Erreur reset Supabase:', error.message);
+    }
+  }
 
   res.json({
     ok: true,
@@ -1758,6 +2034,7 @@ app.post('/speak', async (req, res) => {
 app.post('/chat', async (req, res) => {
   try {
     const userMessage = normalizeText(req.body?.message || '');
+
     if (!userMessage) {
       return res.status(400).json({
         ok: false,
@@ -1765,20 +2042,20 @@ app.post('/chat', async (req, res) => {
       });
     }
 
-    saveRecentConversationMessage('user', userMessage);
+    await saveRecentConversationMessage('user', userMessage);
 
-    const currentStructuredMemory = readJsonSafe(MEMORY_STRUCTURED_FILE, createEmptyStructuredMemory());
+    const currentStructuredMemory = await getStructuredMemory();
 
     const extractedStructured = await extractStructuredMemoryFromMessage(userMessage);
     const mergedStructured = mergeStructuredMemory(currentStructuredMemory, extractedStructured);
-    writeJsonSafe(MEMORY_STRUCTURED_FILE, mergedStructured);
+    await saveStructuredMemory(mergedStructured);
 
     const relevantMemory = extractRelevantMemory(mergedStructured);
 
     const rawUserStateAnalysis = analyzeUserState(userMessage, mergedStructured);
     const currentBehaviorSnapshot = buildBehaviorStateSnapshot(rawUserStateAnalysis);
 
-    const behaviorMemory = getBehaviorMemory();
+    const behaviorMemory = await getBehaviorMemory();
     const previewBehaviorStates = [
       ...safeArray(behaviorMemory.recent_states).slice(-7),
       currentBehaviorSnapshot
@@ -1788,16 +2065,12 @@ app.post('/chat', async (req, res) => {
     const userStateAnalysis = applyBehaviorTrendToAnalysis(rawUserStateAnalysis, behaviorTrend);
 
     const topic = detectTopic(userMessage);
-    updateTopicMemory(topic, userStateAnalysis.primary_state);
+    await updateTopicMemory(topic, userStateAnalysis.primary_state);
 
     const responseProfile = buildResponseProfile(userStateAnalysis, behaviorTrend);
 
-    const semanticSummary = readJsonSafe(MEMORY_SUMMARY_FILE, {
-      summary: '',
-      updated_at: null
-    });
-
-    const recentConversation = summarizeRecentConversationForPrompt(8);
+    const semanticSummary = await getSemanticSummary();
+    const recentConversation = await summarizeRecentConversationForPrompt(8);
 
     const systemPrompt = [
       buildCoreSystemPrompt(),
@@ -1825,9 +2098,9 @@ app.post('/chat', async (req, res) => {
     });
 
     const assistantReply = normalizeText(completion.choices?.[0]?.message?.content || 'Je suis là.');
-    saveRecentConversationMessage('nyra', assistantReply);
+    await saveRecentConversationMessage('nyra', assistantReply);
 
-    saveBehaviorStateSnapshot({
+    await saveBehaviorStateSnapshot({
       ...currentBehaviorSnapshot,
       response_mode: userStateAnalysis.response_mode
     });
@@ -1839,14 +2112,15 @@ app.post('/chat', async (req, res) => {
     return res.json({
       ok: true,
       reply: assistantReply,
+      detected_topic: topic,
       behavioral_state: userStateAnalysis,
       behavior_trend: behaviorTrend,
       response_profile: responseProfile,
-      detected_topic: topic,
       memory: {
         structured_updated: true,
         behavior_updated: true,
-        topic_updated: true
+        topic_updated: true,
+        supabase_enabled: SUPABASE_ENABLED
       }
     });
   } catch (error) {
