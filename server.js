@@ -1857,6 +1857,17 @@ Objectif :
   }
 }
 
+async function processPostResponseMemoryUpdate(userMessage, currentStructuredMemory) {
+  try {
+    const extractedStructured = await extractStructuredMemoryFromMessage(userMessage);
+    const mergedStructured = mergeStructuredMemory(currentStructuredMemory, extractedStructured);
+    await saveStructuredMemory(mergedStructured);
+    await updateSemanticSummaryAsync();
+  } catch (error) {
+    console.error('❌ Erreur processPostResponseMemoryUpdate:', error.message);
+  }
+}
+
 function optimizeTextForSpeech(text) {
   return String(text || '')
     .replace(/\*\*(.*?)\*\*/g, '$1')
@@ -2044,18 +2055,23 @@ app.post('/chat', async (req, res) => {
 
     await saveRecentConversationMessage('user', userMessage);
 
-    const currentStructuredMemory = await getStructuredMemory();
+    const [
+      currentStructuredMemory,
+      behaviorMemory,
+      semanticSummary,
+      recentConversation
+    ] = await Promise.all([
+      getStructuredMemory(),
+      getBehaviorMemory(),
+      getSemanticSummary(),
+      summarizeRecentConversationForPrompt(8)
+    ]);
 
-    const extractedStructured = await extractStructuredMemoryFromMessage(userMessage);
-    const mergedStructured = mergeStructuredMemory(currentStructuredMemory, extractedStructured);
-    await saveStructuredMemory(mergedStructured);
+    const relevantMemory = extractRelevantMemory(currentStructuredMemory);
 
-    const relevantMemory = extractRelevantMemory(mergedStructured);
-
-    const rawUserStateAnalysis = analyzeUserState(userMessage, mergedStructured);
+    const rawUserStateAnalysis = analyzeUserState(userMessage, currentStructuredMemory);
     const currentBehaviorSnapshot = buildBehaviorStateSnapshot(rawUserStateAnalysis);
 
-    const behaviorMemory = await getBehaviorMemory();
     const previewBehaviorStates = [
       ...safeArray(behaviorMemory.recent_states).slice(-7),
       currentBehaviorSnapshot
@@ -2068,9 +2084,6 @@ app.post('/chat', async (req, res) => {
     await updateTopicMemory(topic, userStateAnalysis.primary_state);
 
     const responseProfile = buildResponseProfile(userStateAnalysis, behaviorTrend);
-
-    const semanticSummary = await getSemanticSummary();
-    const recentConversation = await summarizeRecentConversationForPrompt(8);
 
     const systemPrompt = [
       buildCoreSystemPrompt(),
@@ -2105,11 +2118,7 @@ app.post('/chat', async (req, res) => {
       response_mode: userStateAnalysis.response_mode
     });
 
-    updateSemanticSummaryAsync().catch((error) => {
-      console.error('❌ Erreur async semantic summary:', error.message);
-    });
-
-    return res.json({
+    res.json({
       ok: true,
       reply: assistantReply,
       detected_topic: topic,
@@ -2117,11 +2126,15 @@ app.post('/chat', async (req, res) => {
       behavior_trend: behaviorTrend,
       response_profile: responseProfile,
       memory: {
-        structured_updated: true,
+        structured_update_queued: true,
         behavior_updated: true,
         topic_updated: true,
         supabase_enabled: SUPABASE_ENABLED
       }
+    });
+
+    processPostResponseMemoryUpdate(userMessage, currentStructuredMemory).catch((error) => {
+      console.error('❌ Erreur post-response queued memory update:', error.message);
     });
   } catch (error) {
     console.error('❌ /chat error:', error.message);
