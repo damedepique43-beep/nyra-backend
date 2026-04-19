@@ -2134,5 +2134,6 @@ app.post('/chat', async (req, res) => {
 });
 
 app.listen(PORT, () => {
+  console.log('🚀 VERSION NYRA: MEMORY V2 + BEHAVIOR ACTIVE');
   console.log(`✅ Nyra backend lancé sur le port ${PORT}`);
 });
