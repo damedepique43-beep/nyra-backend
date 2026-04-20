@@ -355,10 +355,24 @@ function hasAny(text, patterns) {
   return patterns.some((pattern) => lower.includes(pattern.toLowerCase()));
 }
 
+function hasExplicitRecadreRequest(text) {
+  const lower = normalizeText(text).toLowerCase();
+  return hasAny(lower, [
+    'recadre-moi',
+    'recadre moi',
+    'recadre',
+    'recadrer',
+    'recadrage',
+    'cadre-moi',
+    'cadre moi'
+  ]);
+}
+
 function analyzeUserState(message, structuredMemory) {
   const text = normalizeText(message);
   const lower = text.toLowerCase();
   const relevantMemory = extractRelevantMemory(structuredMemory);
+  const explicitRecadreRequest = hasExplicitRecadreRequest(lower);
 
   const strongVulnerabilityPatterns = [
     { phrase: 'je me sens mal', weight: 0.45 },
@@ -580,8 +594,9 @@ function analyzeUserState(message, structuredMemory) {
     vulnerability += 0.16;
   }
 
-  if (hasAny(lower, ['recadre-moi', 'recadre moi', 'recadres', 'recadrer'])) {
-    activation += 0.12;
+  if (explicitRecadreRequest) {
+    activation += 0.18;
+    rumination += 0.08;
   }
 
   if (hasAny(lower, ['sans me noyer'])) {
@@ -651,6 +666,7 @@ function analyzeUserState(message, structuredMemory) {
   emotionalIntensity = clamp(Number(emotionalIntensity.toFixed(3)), 0, 1);
 
   const shouldRecadre =
+    explicitRecadreRequest ||
     rumination >= 0.45 ||
     dispersion >= 0.5 ||
     avoidance >= 0.5 ||
@@ -663,6 +679,7 @@ function analyzeUserState(message, structuredMemory) {
     hasAny(lower, ['sans me noyer', 'sans me brusquer']);
 
   const shouldPushToAction =
+    explicitRecadreRequest ||
     activation >= 0.45 ||
     dispersion >= 0.45 ||
     avoidance >= 0.45 ||
@@ -676,11 +693,16 @@ function analyzeUserState(message, structuredMemory) {
   ) {
     responseMode = 'grounding';
   } else if (
+    (explicitRecadreRequest && (rumination >= 0.38 || dispersion >= 0.38 || avoidance >= 0.38)) ||
     rumination >= 0.68 ||
     (rumination >= 0.55 && shouldRecadre)
   ) {
     responseMode = 'firm_support';
-  } else if (dispersion >= 0.55 || avoidance >= 0.55) {
+  } else if (
+    (explicitRecadreRequest && activation >= 0.34) ||
+    dispersion >= 0.55 ||
+    avoidance >= 0.55
+  ) {
     responseMode = 'directive';
   } else if (activation >= 0.55 || urgency >= 0.65) {
     responseMode = 'directive';
@@ -1121,6 +1143,15 @@ function applyBehaviorTrendToAnalysis(userStateAnalysis, behaviorTrend) {
   }
 
   if (
+    trend.recadre_pressure === 'high' &&
+    analysis.response_mode === 'supportive' &&
+    analysis.state.rumination >= 0.38
+  ) {
+    analysis.response_mode = 'firm_support';
+    analysis.should_recadre = true;
+  }
+
+  if (
     trend.cognitive_load_pressure === 'high' &&
     analysis.state.vulnerability >= 0.55 &&
     analysis.state.emotional_intensity >= 0.38
@@ -1170,7 +1201,7 @@ function buildResponseProfile(userStateAnalysis, behaviorTrend = null) {
     pacing = 'lent, rassurant, stable';
     forbiddenPatterns.push('pas de plan complexe', 'pas de trop nombreuses options', 'pas de longue analyse');
   } else if (mode === 'firm_support') {
-    maxWords = 125;
+    maxWords = 115;
     paragraphStyle = '2 à 3 paragraphes courts';
     bulletPolicy = 'évite les listes sauf si une seule mini séquence utile';
     actionStyle = 'propose une action simple et immédiate';
@@ -1208,7 +1239,7 @@ function buildResponseProfile(userStateAnalysis, behaviorTrend = null) {
   }
 
   if (rumination >= 0.8) {
-    maxWords = Math.min(maxWords, 115);
+    maxWords = Math.min(maxWords, 105);
     forbiddenPatterns.push('pas d’exploration théorique de la boucle');
   }
 
@@ -1240,7 +1271,7 @@ function buildResponseProfile(userStateAnalysis, behaviorTrend = null) {
       behaviorTrend.cycle_detected &&
       (behaviorTrend.dominant_state === 'rumination' || behaviorTrend.repeated_primary_state === 'rumination')
     ) {
-      maxWords = Math.min(maxWords, 110);
+      maxWords = Math.min(maxWords, 105);
       forbiddenPatterns.push('ne valide pas longuement la boucle');
     }
 
@@ -1800,6 +1831,139 @@ function validateLLMUserStateAnalysis(payload, fallbackAnalysis, fallbackTopic) 
   };
 }
 
+function getStateRanking(state) {
+  return Object.entries(state || {})
+    .map(([key, value]) => ({
+      key,
+      score: Number(value) || 0
+    }))
+    .sort((a, b) => b.score - a.score);
+}
+
+function getWordCount(text) {
+  return normalizeText(text).split(/\s+/).filter(Boolean).length;
+}
+
+function hasContrastMarkers(text) {
+  const lower = normalizeText(text).toLowerCase();
+  return hasAny(lower, [
+    'mais',
+    'sauf que',
+    'en même temps',
+    'en meme temps',
+    'd’un côté',
+    'd\'un côté',
+    'd’un cote',
+    'd\'un cote',
+    'je sais pas',
+    'je ne sais pas',
+    'j’hésite',
+    'j\'hésite',
+    'je suis partagée',
+    'je suis partagé'
+  ]);
+}
+
+function shouldUseLLMStateAnalysis(userMessage, localAnalysis) {
+  const text = normalizeText(userMessage);
+  const state = localAnalysis?.state || {};
+  const ranking = getStateRanking(state);
+
+  const top1 = ranking[0]?.score || 0;
+  const top2 = ranking[1]?.score || 0;
+  const topGap = Number((top1 - top2).toFixed(3));
+  const wordCount = getWordCount(text);
+  const explicitRecadre = hasExplicitRecadreRequest(text);
+
+  const strongGroundingSignal =
+    localAnalysis.response_mode === 'grounding' ||
+    state.vulnerability >= 0.7 ||
+    state.emotional_intensity >= 0.72;
+
+  if (strongGroundingSignal) {
+    return {
+      use_llm: false,
+      reason: 'strong_grounding_signal',
+      confidence: 0.95
+    };
+  }
+
+  const strongFirmSupportSignal =
+    explicitRecadre &&
+    (
+      state.rumination >= 0.38 ||
+      state.dispersion >= 0.38 ||
+      state.avoidance >= 0.38
+    );
+
+  if (strongFirmSupportSignal) {
+    return {
+      use_llm: false,
+      reason: 'explicit_recadre_signal',
+      confidence: 0.92
+    };
+  }
+
+  const strongDirectiveSignal =
+    localAnalysis.response_mode === 'directive' &&
+    (
+      state.activation >= 0.58 ||
+      state.urgency >= 0.65 ||
+      state.dispersion >= 0.55 ||
+      state.avoidance >= 0.55
+    );
+
+  if (strongDirectiveSignal) {
+    return {
+      use_llm: false,
+      reason: 'strong_directive_signal',
+      confidence: 0.88
+    };
+  }
+
+  const strongSupportiveSignal =
+    localAnalysis.response_mode === 'supportive' &&
+    state.vulnerability >= 0.34 &&
+    state.rumination < 0.4 &&
+    state.dispersion < 0.4 &&
+    state.avoidance < 0.4;
+
+  if (strongSupportiveSignal && wordCount <= 40) {
+    return {
+      use_llm: false,
+      reason: 'strong_supportive_signal',
+      confidence: 0.82
+    };
+  }
+
+  if (
+    top1 >= 0.55 &&
+    topGap >= 0.18 &&
+    !hasContrastMarkers(text) &&
+    wordCount <= 45
+  ) {
+    return {
+      use_llm: false,
+      reason: 'clear_rules_dominant_state',
+      confidence: 0.8
+    };
+  }
+
+  if (wordCount <= 8 && top1 >= 0.32) {
+    return {
+      use_llm: false,
+      reason: 'short_message_fast_path',
+      confidence: 0.76
+    };
+  }
+
+  return {
+    use_llm: true,
+    reason: 'ambiguous_or_mixed_signal',
+    confidence: 0.52
+  };
+}
+
 async function analyzeUserStateWithLLM(userMessage, structuredMemory) {
   const fallbackTopic = detectTopic(userMessage);
   const fallbackAnalysis = analyzeUserState(userMessage, structuredMemory);
@@ -2297,34 +2461,40 @@ app.post('/chat', async (req, res) => {
 
     const relevantMemory = extractRelevantMemory(currentStructuredMemory);
 
-    let rawUserStateAnalysis;
-    let topic;
-    let stateAnalysisSource = 'rules';
+    const localStateAnalysis = analyzeUserState(userMessage, currentStructuredMemory);
+    const analysisStrategy = shouldUseLLMStateAnalysis(userMessage, localStateAnalysis);
 
-    try {
-      const llmStateAnalysis = await analyzeUserStateWithLLM(
-        userMessage,
-        currentStructuredMemory
-      );
+    let rawUserStateAnalysis = localStateAnalysis;
+    let topic = detectTopic(userMessage);
+    let stateAnalysisSource = 'rules_fast_path';
 
-      rawUserStateAnalysis = {
-        state: llmStateAnalysis.state,
-        primary_state: llmStateAnalysis.primary_state,
-        secondary_state: llmStateAnalysis.secondary_state,
-        response_mode: llmStateAnalysis.response_mode,
-        should_recadre: llmStateAnalysis.should_recadre,
-        should_reduce_cognitive_load: llmStateAnalysis.should_reduce_cognitive_load,
-        should_push_to_action: llmStateAnalysis.should_push_to_action,
-        directives: llmStateAnalysis.directives || getResponseDirectivesByMode(llmStateAnalysis.response_mode)
-      };
+    if (analysisStrategy.use_llm) {
+      try {
+        const llmStateAnalysis = await analyzeUserStateWithLLM(
+          userMessage,
+          currentStructuredMemory
+        );
 
-      topic = llmStateAnalysis.topic || detectTopic(userMessage);
-      stateAnalysisSource = 'llm';
-    } catch (error) {
-      rawUserStateAnalysis = analyzeUserState(userMessage, currentStructuredMemory);
-      topic = detectTopic(userMessage);
-      stateAnalysisSource = 'rules_fallback';
+        rawUserStateAnalysis = {
+          state: llmStateAnalysis.state,
+          primary_state: llmStateAnalysis.primary_state,
+          secondary_state: llmStateAnalysis.secondary_state,
+          response_mode: llmStateAnalysis.response_mode,
+          should_recadre: llmStateAnalysis.should_recadre,
+          should_reduce_cognitive_load: llmStateAnalysis.should_reduce_cognitive_load,
+          should_push_to_action: llmStateAnalysis.should_push_to_action,
+          directives: llmStateAnalysis.directives || getResponseDirectivesByMode(llmStateAnalysis.response_mode)
+        };
+
+        topic = llmStateAnalysis.topic || detectTopic(userMessage);
+        stateAnalysisSource = 'llm';
+      } catch (error) {
+        rawUserStateAnalysis = localStateAnalysis;
+        topic = detectTopic(userMessage);
+        stateAnalysisSource = 'rules_fallback';
+      }
     }
+
     const afterAnalysisAt = Date.now();
 
     const currentBehaviorSnapshot = buildBehaviorStateSnapshot(rawUserStateAnalysis);
@@ -2354,7 +2524,7 @@ app.post('/chat', async (req, res) => {
 
     const generationMaxTokens = Math.min(
       260,
-      Math.max(120, Math.round(responseProfile.max_words * 1.9))
+      Math.max(110, Math.round(responseProfile.max_words * 1.85))
     );
 
     const completion = await openai.chat.completions.create({
@@ -2394,12 +2564,18 @@ app.post('/chat', async (req, res) => {
     };
 
     console.log('⚡ /chat perf:', perf);
+    console.log('🧠 /chat analysis strategy:', {
+      source: stateAnalysisSource,
+      strategy_reason: analysisStrategy.reason,
+      strategy_confidence: analysisStrategy.confidence
+    });
 
     res.json({
       ok: true,
       reply: assistantReply,
       detected_topic: topic,
       state_analysis_source: stateAnalysisSource,
+      analysis_strategy: analysisStrategy,
       behavioral_state: userStateAnalysis,
       behavior_trend: behaviorTrend,
       response_profile: responseProfile,
@@ -2426,7 +2602,7 @@ app.post('/chat', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('🚀 VERSION NYRA: MEMORY V2 + BEHAVIOR ACTIVE + HYBRID STATE ANALYSIS');
-  console.log('⚡ PERF PHASE 1 ACTIVE: prompt compression + memory reduction + token caps');
+  console.log('🚀 VERSION NYRA: MEMORY V2 + BEHAVIOR ACTIVE + SMART HYBRID STATE ANALYSIS');
+  console.log('⚡ PERF PHASE 2 ACTIVE: rules fast path + llm gating + stronger recadre routing');
   console.log(`✅ Nyra backend lancé sur le port ${PORT}`);
 });
