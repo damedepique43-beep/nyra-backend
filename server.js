@@ -419,7 +419,11 @@ function analyzeUserState(message, structuredMemory) {
 
   const strongRuminationPatterns = [
     { phrase: 'je tourne en boucle', weight: 0.72 },
+    { phrase: 'je tourne encore en boucle', weight: 0.86 },
+    { phrase: 'je tourne toujours en boucle', weight: 0.84 },
     { phrase: 'je suis en boucle', weight: 0.68 },
+    { phrase: 'encore en boucle', weight: 0.42 },
+    { phrase: 'tourne en boucle', weight: 0.52 },
     { phrase: 'je n’arrive pas à décrocher', weight: 0.58 },
     { phrase: 'je n\'arrive pas à décrocher', weight: 0.58 },
     { phrase: 'je n’arrive pas à lâcher', weight: 0.55 },
@@ -537,7 +541,7 @@ function analyzeUserState(message, structuredMemory) {
 
   const ruminationLight = countKeywordMatches(lower, [
     'boucle', 'obsède', 'obsession', 'repense', 'pourquoi', 'et si', 'rumine',
-    'schémas', 'schemas'
+    'schémas', 'schemas', 'tourne'
   ]) * 0.07;
 
   const dispersionLight = countKeywordMatches(lower, [
@@ -602,6 +606,20 @@ function analyzeUserState(message, structuredMemory) {
   if (hasAny(lower, ['sans me noyer'])) {
     vulnerability += 0.2;
     emotionalIntensity += 0.08;
+  }
+
+  if (
+    lower.includes('tourne') &&
+    lower.includes('boucle')
+  ) {
+    rumination += 0.25;
+  }
+
+  if (
+    explicitRecadreRequest &&
+    lower.includes('boucle')
+  ) {
+    rumination += 0.18;
   }
 
   if (hasAny(lower, ['vieux schémas', 'vieux schemas', 'anciens schémas', 'anciens schemas', 'les mêmes schémas', 'les memes schemas'])) {
@@ -1922,6 +1940,7 @@ function shouldUseLLMStateAnalysis(userMessage, localAnalysis) {
   }
 
   const strongSupportiveSignal =
+    !explicitRecadre &&
     localAnalysis.response_mode === 'supportive' &&
     state.vulnerability >= 0.34 &&
     state.rumination < 0.4 &&
@@ -2617,5 +2636,6 @@ app.post('/chat', async (req, res) => {
 app.listen(PORT, () => {
   console.log('🚀 VERSION NYRA: MEMORY V2 + BEHAVIOR ACTIVE + SMART HYBRID STATE ANALYSIS');
   console.log('⚡ PERF PHASE 2 ACTIVE: rules fast path + llm gating + hybrid rules priority');
+  console.log('🛠️ RUMINATION FIX ACTIVE: encore en boucle + tourne/boucle + recadre guard');
   console.log(`✅ Nyra backend lancé sur le port ${PORT}`);
 });
