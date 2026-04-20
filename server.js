@@ -2475,16 +2475,46 @@ app.post('/chat', async (req, res) => {
           currentStructuredMemory
         );
 
-        rawUserStateAnalysis = {
-          state: llmStateAnalysis.state,
-          primary_state: llmStateAnalysis.primary_state,
-          secondary_state: llmStateAnalysis.secondary_state,
-          response_mode: llmStateAnalysis.response_mode,
-          should_recadre: llmStateAnalysis.should_recadre,
-          should_reduce_cognitive_load: llmStateAnalysis.should_reduce_cognitive_load,
-          should_push_to_action: llmStateAnalysis.should_push_to_action,
-          directives: llmStateAnalysis.directives || getResponseDirectivesByMode(llmStateAnalysis.response_mode)
-        };
+        const rulesAnalysis = analyzeUserState(userMessage, currentStructuredMemory);
+
+const llmStateAnalysis = await analyzeUserStateWithLLM(
+  userMessage,
+  currentStructuredMemory
+);
+
+// 🔥 HYBRID MERGE (rules prioritaires)
+rawUserStateAnalysis = {
+  state: {
+    vulnerability: Math.max(rulesAnalysis.state.vulnerability, llmStateAnalysis.state.vulnerability),
+    rumination: Math.max(rulesAnalysis.state.rumination, llmStateAnalysis.state.rumination),
+    dispersion: Math.max(rulesAnalysis.state.dispersion, llmStateAnalysis.state.dispersion),
+    avoidance: Math.max(rulesAnalysis.state.avoidance, llmStateAnalysis.state.avoidance),
+    urgency: Math.max(rulesAnalysis.state.urgency, llmStateAnalysis.state.urgency),
+    activation: Math.max(rulesAnalysis.state.activation, llmStateAnalysis.state.activation),
+    emotional_intensity: Math.max(
+      rulesAnalysis.state.emotional_intensity,
+      llmStateAnalysis.state.emotional_intensity
+    )
+  },
+
+  primary_state: rulesAnalysis.primary_state,
+  secondary_state: rulesAnalysis.secondary_state,
+
+  // 🔥 MODE basé sur RULES (plus fiable)
+  response_mode: rulesAnalysis.response_mode,
+
+  should_recadre: rulesAnalysis.should_recadre || llmStateAnalysis.should_recadre,
+  should_reduce_cognitive_load:
+    rulesAnalysis.should_reduce_cognitive_load || llmStateAnalysis.should_reduce_cognitive_load,
+  should_push_to_action:
+    rulesAnalysis.should_push_to_action || llmStateAnalysis.should_push_to_action,
+
+  directives: getResponseDirectivesByMode(rulesAnalysis.response_mode)
+};
+
+// topic = LLM ok
+topic = llmStateAnalysis.topic || detectTopic(userMessage);
+stateAnalysisSource = 'hybrid_rules_priority';
 
         topic = llmStateAnalysis.topic || detectTopic(userMessage);
         stateAnalysisSource = 'llm';
