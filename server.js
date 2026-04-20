@@ -2461,10 +2461,10 @@ app.post('/chat', async (req, res) => {
 
     const relevantMemory = extractRelevantMemory(currentStructuredMemory);
 
-    const localStateAnalysis = analyzeUserState(userMessage, currentStructuredMemory);
-    const analysisStrategy = shouldUseLLMStateAnalysis(userMessage, localStateAnalysis);
+    const rulesAnalysis = analyzeUserState(userMessage, currentStructuredMemory);
+    const analysisStrategy = shouldUseLLMStateAnalysis(userMessage, rulesAnalysis);
 
-    let rawUserStateAnalysis = localStateAnalysis;
+    let rawUserStateAnalysis = rulesAnalysis;
     let topic = detectTopic(userMessage);
     let stateAnalysisSource = 'rules_fast_path';
 
@@ -2475,51 +2475,34 @@ app.post('/chat', async (req, res) => {
           currentStructuredMemory
         );
 
-        const rulesAnalysis = analyzeUserState(userMessage, currentStructuredMemory);
-
-const llmStateAnalysis = await analyzeUserStateWithLLM(
-  userMessage,
-  currentStructuredMemory
-);
-
-// 🔥 HYBRID MERGE (rules prioritaires)
-rawUserStateAnalysis = {
-  state: {
-    vulnerability: Math.max(rulesAnalysis.state.vulnerability, llmStateAnalysis.state.vulnerability),
-    rumination: Math.max(rulesAnalysis.state.rumination, llmStateAnalysis.state.rumination),
-    dispersion: Math.max(rulesAnalysis.state.dispersion, llmStateAnalysis.state.dispersion),
-    avoidance: Math.max(rulesAnalysis.state.avoidance, llmStateAnalysis.state.avoidance),
-    urgency: Math.max(rulesAnalysis.state.urgency, llmStateAnalysis.state.urgency),
-    activation: Math.max(rulesAnalysis.state.activation, llmStateAnalysis.state.activation),
-    emotional_intensity: Math.max(
-      rulesAnalysis.state.emotional_intensity,
-      llmStateAnalysis.state.emotional_intensity
-    )
-  },
-
-  primary_state: rulesAnalysis.primary_state,
-  secondary_state: rulesAnalysis.secondary_state,
-
-  // 🔥 MODE basé sur RULES (plus fiable)
-  response_mode: rulesAnalysis.response_mode,
-
-  should_recadre: rulesAnalysis.should_recadre || llmStateAnalysis.should_recadre,
-  should_reduce_cognitive_load:
-    rulesAnalysis.should_reduce_cognitive_load || llmStateAnalysis.should_reduce_cognitive_load,
-  should_push_to_action:
-    rulesAnalysis.should_push_to_action || llmStateAnalysis.should_push_to_action,
-
-  directives: getResponseDirectivesByMode(rulesAnalysis.response_mode)
-};
-
-// topic = LLM ok
-topic = llmStateAnalysis.topic || detectTopic(userMessage);
-stateAnalysisSource = 'hybrid_rules_priority';
+        rawUserStateAnalysis = {
+          state: {
+            vulnerability: Math.max(rulesAnalysis.state.vulnerability, llmStateAnalysis.state.vulnerability),
+            rumination: Math.max(rulesAnalysis.state.rumination, llmStateAnalysis.state.rumination),
+            dispersion: Math.max(rulesAnalysis.state.dispersion, llmStateAnalysis.state.dispersion),
+            avoidance: Math.max(rulesAnalysis.state.avoidance, llmStateAnalysis.state.avoidance),
+            urgency: Math.max(rulesAnalysis.state.urgency, llmStateAnalysis.state.urgency),
+            activation: Math.max(rulesAnalysis.state.activation, llmStateAnalysis.state.activation),
+            emotional_intensity: Math.max(
+              rulesAnalysis.state.emotional_intensity,
+              llmStateAnalysis.state.emotional_intensity
+            )
+          },
+          primary_state: rulesAnalysis.primary_state,
+          secondary_state: rulesAnalysis.secondary_state,
+          response_mode: rulesAnalysis.response_mode,
+          should_recadre: rulesAnalysis.should_recadre || llmStateAnalysis.should_recadre,
+          should_reduce_cognitive_load:
+            rulesAnalysis.should_reduce_cognitive_load || llmStateAnalysis.should_reduce_cognitive_load,
+          should_push_to_action:
+            rulesAnalysis.should_push_to_action || llmStateAnalysis.should_push_to_action,
+          directives: getResponseDirectivesByMode(rulesAnalysis.response_mode)
+        };
 
         topic = llmStateAnalysis.topic || detectTopic(userMessage);
-        stateAnalysisSource = 'llm';
+        stateAnalysisSource = 'hybrid_rules_priority';
       } catch (error) {
-        rawUserStateAnalysis = localStateAnalysis;
+        rawUserStateAnalysis = rulesAnalysis;
         topic = detectTopic(userMessage);
         stateAnalysisSource = 'rules_fallback';
       }
@@ -2633,6 +2616,6 @@ stateAnalysisSource = 'hybrid_rules_priority';
 
 app.listen(PORT, () => {
   console.log('🚀 VERSION NYRA: MEMORY V2 + BEHAVIOR ACTIVE + SMART HYBRID STATE ANALYSIS');
-  console.log('⚡ PERF PHASE 2 ACTIVE: rules fast path + llm gating + stronger recadre routing');
+  console.log('⚡ PERF PHASE 2 ACTIVE: rules fast path + llm gating + hybrid rules priority');
   console.log(`✅ Nyra backend lancé sur le port ${PORT}`);
 });
