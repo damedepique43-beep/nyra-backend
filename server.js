@@ -16,6 +16,7 @@ app.use(express.json({ limit: '2mb' }));
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+const OPENAI_ANALYSIS_MODEL = process.env.OPENAI_ANALYSIS_MODEL || OPENAI_MODEL;
 
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || '';
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || 'Ka6yOFdNGhzFuCVW6VyO';
@@ -1685,6 +1686,245 @@ function detectTopic(message) {
   return 'generic';
 }
 
+function sanitizeStateScore(value, fallback = 0) {
+  const num = Number(value);
+  if (Number.isNaN(num)) return clamp(Number(fallback) || 0, 0, 1);
+  return clamp(Number(num.toFixed(3)), 0, 1);
+}
+
+function normalizePrimaryState(value, fallback = 'stable') {
+  const allowed = new Set([
+    'stable',
+    'vulnerability',
+    'rumination',
+    'dispersion',
+    'avoidance',
+    'urgency',
+    'activation',
+    'emotional_intensity'
+  ]);
+
+  const normalized = normalizeText(value).toLowerCase();
+  return allowed.has(normalized) ? normalized : fallback;
+}
+
+function normalizeSecondaryState(value) {
+  if (value === null || value === undefined || value === '') return null;
+  return normalizePrimaryState(value, null);
+}
+
+function normalizeResponseMode(value, fallback = 'clarifying') {
+  const allowed = new Set([
+    'grounding',
+    'supportive',
+    'directive',
+    'firm_support',
+    'clarifying'
+  ]);
+
+  const normalized = normalizeText(value).toLowerCase();
+  return allowed.has(normalized) ? normalized : fallback;
+}
+
+function normalizeTopicLabel(value, fallback = 'generic') {
+  const normalized = normalizeText(value)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}_-]+/gu, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  return normalized || fallback;
+}
+
+function buildCompactStateMemoryContext(structuredMemory) {
+  const relevant = extractRelevantMemory(structuredMemory);
+  const identity = relevant.identity || {};
+  const style = relevant.conversation_style || {};
+
+  return {
+    identity: {
+      preferred_name: identity.preferred_name || identity.first_name || null,
+      language_primary: identity.language_primary || null
+    },
+    conversation_style: {
+      prefers_structure: Boolean(style.prefers_structure),
+      prefers_gentle_reframing: Boolean(style.prefers_gentle_reframing),
+      needs_clarity: Boolean(style.needs_clarity),
+      dislikes_overwhelm: Boolean(style.dislikes_overwhelm)
+    },
+    top_active_contexts: relevant.top_active_contexts.slice(0, 3).map((x) => x.label),
+    top_needs: relevant.top_needs.slice(0, 3).map((x) => x.label),
+    top_risk_patterns: relevant.top_risk_patterns.slice(0, 3).map((x) => x.label),
+    top_support_patterns: relevant.top_support_patterns.slice(0, 3).map((x) => x.label),
+    top_emotional_patterns: relevant.top_emotional_patterns.slice(0, 3).map((x) => x.label)
+  };
+}
+
+function validateLLMUserStateAnalysis(payload, fallbackAnalysis, fallbackTopic) {
+  const fallback = fallbackAnalysis || analyzeUserState('', createEmptyStructuredMemory());
+
+  const statePayload = payload?.state || {};
+
+  const state = {
+    vulnerability: sanitizeStateScore(statePayload.vulnerability, fallback.state.vulnerability),
+    rumination: sanitizeStateScore(statePayload.rumination, fallback.state.rumination),
+    dispersion: sanitizeStateScore(statePayload.dispersion, fallback.state.dispersion),
+    avoidance: sanitizeStateScore(statePayload.avoidance, fallback.state.avoidance),
+    urgency: sanitizeStateScore(statePayload.urgency, fallback.state.urgency),
+    activation: sanitizeStateScore(statePayload.activation, fallback.state.activation),
+    emotional_intensity: sanitizeStateScore(
+      statePayload.emotional_intensity,
+      fallback.state.emotional_intensity
+    )
+  };
+
+  let primaryState = normalizePrimaryState(payload?.primary_state, fallback.primary_state);
+  let secondaryState = normalizeSecondaryState(payload?.secondary_state);
+
+  if (!secondaryState && fallback.secondary_state) {
+    secondaryState = normalizeSecondaryState(fallback.secondary_state);
+  }
+
+  const responseMode = normalizeResponseMode(payload?.response_mode, fallback.response_mode);
+
+  return {
+    topic: normalizeTopicLabel(payload?.topic, fallbackTopic || 'generic'),
+    state,
+    primary_state: primaryState,
+    secondary_state: secondaryState,
+    response_mode: responseMode,
+    should_recadre:
+      typeof payload?.should_recadre === 'boolean'
+        ? payload.should_recadre
+        : fallback.should_recadre,
+    should_reduce_cognitive_load:
+      typeof payload?.should_reduce_cognitive_load === 'boolean'
+        ? payload.should_reduce_cognitive_load
+        : fallback.should_reduce_cognitive_load,
+    should_push_to_action:
+      typeof payload?.should_push_to_action === 'boolean'
+        ? payload.should_push_to_action
+        : fallback.should_push_to_action,
+    directives: getResponseDirectivesByMode(responseMode)
+  };
+}
+
+async function analyzeUserStateWithLLM(userMessage, structuredMemory) {
+  const fallbackTopic = detectTopic(userMessage);
+  const fallbackAnalysis = analyzeUserState(userMessage, structuredMemory);
+  const compactMemory = buildCompactStateMemoryContext(structuredMemory);
+
+  const prompt = `
+Analyse le message utilisateur pour piloter un assistant émotionnel/personnalisé.
+
+Tu dois renvoyer uniquement une analyse structurée du message actuel.
+Tu peux t'aider de la mémoire profonde, mais sans surinterpréter.
+
+Règles :
+- topic = sujet principal concret du message
+- state = scores entre 0 et 1
+- primary_state = état dominant principal
+- secondary_state = état secondaire si pertinent, sinon null
+- response_mode ∈ grounding | supportive | directive | firm_support | clarifying
+- should_recadre = true si la réponse doit recadrer / couper une boucle / remettre du cadre
+- should_reduce_cognitive_load = true si la réponse doit rester très simple et légère mentalement
+- should_push_to_action = true si la réponse doit pousser à une action claire
+
+Mémoire utile :
+${JSON.stringify(compactMemory, null, 2)}
+
+Topic de fallback si besoin :
+${fallbackTopic}
+
+Message utilisateur :
+${userMessage}
+`.trim();
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: OPENAI_ANALYSIS_MODEL,
+      temperature: 0.1,
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'nyra_user_state_analysis',
+          strict: true,
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              topic: {
+                type: 'string'
+              },
+              state: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  vulnerability: { type: 'number' },
+                  rumination: { type: 'number' },
+                  dispersion: { type: 'number' },
+                  avoidance: { type: 'number' },
+                  urgency: { type: 'number' },
+                  activation: { type: 'number' },
+                  emotional_intensity: { type: 'number' }
+                },
+                required: [
+                  'vulnerability',
+                  'rumination',
+                  'dispersion',
+                  'avoidance',
+                  'urgency',
+                  'activation',
+                  'emotional_intensity'
+                ]
+              },
+              primary_state: { type: 'string' },
+              secondary_state: {
+                anyOf: [
+                  { type: 'string' },
+                  { type: 'null' }
+                ]
+              },
+              response_mode: { type: 'string' },
+              should_recadre: { type: 'boolean' },
+              should_reduce_cognitive_load: { type: 'boolean' },
+              should_push_to_action: { type: 'boolean' }
+            },
+            required: [
+              'topic',
+              'state',
+              'primary_state',
+              'secondary_state',
+              'response_mode',
+              'should_recadre',
+              'should_reduce_cognitive_load',
+              'should_push_to_action'
+            ]
+          }
+        }
+      },
+      messages: [
+        {
+          role: 'system',
+          content: 'Tu es un moteur d’analyse d’état utilisateur. Tu réponds uniquement en JSON valide, strict, sans texte autour.'
+        },
+        {
+          role: 'user',
+          content: prompt
+        }
+      ]
+    });
+
+    const content = completion.choices?.[0]?.message?.content || '{}';
+    const parsed = JSON.parse(content);
+
+    return validateLLMUserStateAnalysis(parsed, fallbackAnalysis, fallbackTopic);
+  } catch (error) {
+    console.error('❌ Erreur analyzeUserStateWithLLM:', error.message);
+    throw error;
+  }
+}
+
 async function updateTopicMemory(topic, primaryState) {
   const memory = await getTopicMemory();
 
@@ -2069,7 +2309,35 @@ app.post('/chat', async (req, res) => {
 
     const relevantMemory = extractRelevantMemory(currentStructuredMemory);
 
-    const rawUserStateAnalysis = analyzeUserState(userMessage, currentStructuredMemory);
+    let rawUserStateAnalysis;
+    let topic;
+    let stateAnalysisSource = 'rules';
+
+    try {
+      const llmStateAnalysis = await analyzeUserStateWithLLM(
+        userMessage,
+        currentStructuredMemory
+      );
+
+      rawUserStateAnalysis = {
+        state: llmStateAnalysis.state,
+        primary_state: llmStateAnalysis.primary_state,
+        secondary_state: llmStateAnalysis.secondary_state,
+        response_mode: llmStateAnalysis.response_mode,
+        should_recadre: llmStateAnalysis.should_recadre,
+        should_reduce_cognitive_load: llmStateAnalysis.should_reduce_cognitive_load,
+        should_push_to_action: llmStateAnalysis.should_push_to_action,
+        directives: llmStateAnalysis.directives || getResponseDirectivesByMode(llmStateAnalysis.response_mode)
+      };
+
+      topic = llmStateAnalysis.topic || detectTopic(userMessage);
+      stateAnalysisSource = 'llm';
+    } catch (error) {
+      rawUserStateAnalysis = analyzeUserState(userMessage, currentStructuredMemory);
+      topic = detectTopic(userMessage);
+      stateAnalysisSource = 'rules_fallback';
+    }
+
     const currentBehaviorSnapshot = buildBehaviorStateSnapshot(rawUserStateAnalysis);
 
     const previewBehaviorStates = [
@@ -2080,7 +2348,6 @@ app.post('/chat', async (req, res) => {
     const behaviorTrend = computeBehaviorTrend(previewBehaviorStates);
     const userStateAnalysis = applyBehaviorTrendToAnalysis(rawUserStateAnalysis, behaviorTrend);
 
-    const topic = detectTopic(userMessage);
     await updateTopicMemory(topic, userStateAnalysis.primary_state);
 
     const responseProfile = buildResponseProfile(userStateAnalysis, behaviorTrend);
@@ -2122,6 +2389,7 @@ app.post('/chat', async (req, res) => {
       ok: true,
       reply: assistantReply,
       detected_topic: topic,
+      state_analysis_source: stateAnalysisSource,
       behavioral_state: userStateAnalysis,
       behavior_trend: behaviorTrend,
       response_profile: responseProfile,
@@ -2147,6 +2415,6 @@ app.post('/chat', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('🚀 VERSION NYRA: MEMORY V2 + BEHAVIOR ACTIVE');
+  console.log('🚀 VERSION NYRA: MEMORY V2 + BEHAVIOR ACTIVE + HYBRID STATE ANALYSIS');
   console.log(`✅ Nyra backend lancé sur le port ${PORT}`);
 });
