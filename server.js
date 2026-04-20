@@ -98,6 +98,24 @@ function normalizeText(value) {
     .trim();
 }
 
+function truncateText(value, maxLength = 220) {
+  const text = normalizeText(value);
+  if (!text) return '';
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 1).trim()}…`;
+}
+
+function labelsOnly(items, limit = 3) {
+  return safeArray(items)
+    .filter(isWeightedItem)
+    .slice(0, limit)
+    .map((item) => item.label);
+}
+
+function boolToFlag(value) {
+  return value ? 'yes' : 'no';
+}
+
 function createEmptyStructuredMemory() {
   return {
     identity: {},
@@ -273,7 +291,7 @@ function recencyScore(lastSeenAt) {
   return 0.15;
 }
 
-function rankMemoryItems(items, limit = 5) {
+function rankMemoryItems(items, limit = 3) {
   return safeArray(items)
     .filter(isWeightedItem)
     .map((item) => ({
@@ -293,14 +311,14 @@ function extractRelevantMemory(structuredMemory) {
   const memory = structuredMemory || createEmptyStructuredMemory();
 
   return {
-    top_emotional_patterns: rankMemoryItems(memory.emotional_patterns, 5),
-    top_triggers: rankMemoryItems(memory.triggers, 5),
-    top_needs: rankMemoryItems(memory.needs, 5),
-    top_risk_patterns: rankMemoryItems(memory.risk_patterns, 5),
-    top_support_patterns: rankMemoryItems(memory.support_patterns, 5),
-    top_active_contexts: rankMemoryItems(memory.active_contexts, 5),
-    top_regulation_strategies: rankMemoryItems(memory.regulation_strategies, 5),
-    top_projects: rankMemoryItems(memory.projects, 5),
+    top_emotional_patterns: rankMemoryItems(memory.emotional_patterns, 3),
+    top_triggers: rankMemoryItems(memory.triggers, 3),
+    top_needs: rankMemoryItems(memory.needs, 3),
+    top_risk_patterns: rankMemoryItems(memory.risk_patterns, 3),
+    top_support_patterns: rankMemoryItems(memory.support_patterns, 3),
+    top_active_contexts: rankMemoryItems(memory.active_contexts, 3),
+    top_regulation_strategies: rankMemoryItems(memory.regulation_strategies, 3),
+    top_projects: rankMemoryItems(memory.projects, 3),
     conversation_style: memory.conversation_style || {},
     identity: memory.identity || {}
   };
@@ -1251,31 +1269,19 @@ function buildResponseProfile(userStateAnalysis, behaviorTrend = null) {
 }
 
 function buildCoreSystemPrompt() {
-  return `
-Tu es Nyra, une présence intelligente, naturelle, profondément personnalisée.
-
-Ta mission :
-- comprendre l’état réel de l’utilisatrice
-- répondre avec chaleur, justesse, lucidité et intelligence
-- réguler quand nécessaire
-- recadrer quand nécessaire
-- aider à avancer concrètement
-
-Règles de style :
-- sois naturelle, humaine, fluide
-- évite le ton robotique, scolaire ou trop lisse
-- ne fais pas de listes interminables sauf si c’est clairement utile
-- privilégie l’impact, la précision et la sincérité
-- quand l’utilisatrice est en boucle mentale, ne nourris pas la boucle
-- quand elle est dispersée, recentre-la
-- quand elle est vulnérable, stabilise-la d’abord
-- quand elle a besoin d’action, donne du concret
-- utilise la mémoire seulement si elle aide vraiment la réponse
-- n’invente jamais de souvenirs ou de faits
-- n’explique pas tes mécanismes internes
-- reste cohérente avec sa personnalité, son fonctionnement TDAH, et son besoin de structure intelligente
-- si un recadrage est utile, fais-le avec chaleur mais sans mollesse
-`.trim();
+  return [
+    'Tu es Nyra.',
+    'Réponds avec chaleur, justesse, lucidité et naturel.',
+    'Priorités : comprendre l’état réel, réguler si besoin, recadrer si utile, aider à avancer concrètement.',
+    'Style : humain, fluide, précis, sans ton robotique.',
+    'Ne nourris pas la rumination.',
+    'Si vulnérabilité forte : stabilise d’abord.',
+    'Si dispersion : recentre.',
+    'Si action nécessaire : donne du concret.',
+    'Utilise la mémoire seulement si elle aide vraiment.',
+    'N’invente jamais de souvenirs ou de faits.',
+    'N’explique pas tes mécanismes internes.'
+  ].join('\n');
 }
 
 function buildBehaviorPrompt(userStateAnalysis) {
@@ -1290,100 +1296,85 @@ function buildBehaviorPrompt(userStateAnalysis) {
     directives
   } = userStateAnalysis;
 
-  return `
-ÉTAT UTILISATRICE DÉTECTÉ :
-- vulnerability: ${state.vulnerability}
-- rumination: ${state.rumination}
-- dispersion: ${state.dispersion}
-- avoidance: ${state.avoidance}
-- urgency: ${state.urgency}
-- activation: ${state.activation}
-- emotional_intensity: ${state.emotional_intensity}
-
-SYNTHÈSE COMPORTEMENTALE :
-- primary_state: ${primary_state}
-- secondary_state: ${secondary_state || 'none'}
-- response_mode: ${response_mode}
-- should_recadre: ${should_recadre}
-- should_reduce_cognitive_load: ${should_reduce_cognitive_load}
-- should_push_to_action: ${should_push_to_action}
-
-MODE DE RÉPONSE À ADOPTER :
-- tone: ${directives.tone}
-- structure: ${directives.structure}
-- recadrage_level: ${directives.recadrage_level}
-- priority: ${directives.priority}
-
-Consignes d’exécution :
-- si should_reduce_cognitive_load = true, simplifie la réponse et évite de surcharger
-- si should_recadre = true, recadre avec chaleur mais sans tourner autour du pot
-- si should_push_to_action = true, donne une action simple, claire, faisable immédiatement
-`.trim();
+  return [
+    'STATE',
+    `p=${primary_state}`,
+    `s=${secondary_state || 'none'}`,
+    `mode=${response_mode}`,
+    `vuln=${state.vulnerability}`,
+    `rum=${state.rumination}`,
+    `disp=${state.dispersion}`,
+    `avoid=${state.avoidance}`,
+    `urg=${state.urgency}`,
+    `act=${state.activation}`,
+    `int=${state.emotional_intensity}`,
+    `recadre=${boolToFlag(should_recadre)}`,
+    `low_cognitive_load=${boolToFlag(should_reduce_cognitive_load)}`,
+    `push_action=${boolToFlag(should_push_to_action)}`,
+    `tone=${directives.tone}`,
+    `structure=${directives.structure}`,
+    `priority=${directives.priority}`
+  ].join(' | ');
 }
 
 function buildBehaviorTrendPrompt(behaviorTrend) {
-  return `
-MÉMOIRE COMPORTEMENTALE RÉCENTE :
-- window_size: ${behaviorTrend.window_size}
-- dominant_state: ${behaviorTrend.dominant_state}
-- dominant_score: ${behaviorTrend.dominant_score}
-- secondary_dominant_state: ${behaviorTrend.secondary_dominant_state || 'none'}
-- secondary_dominant_score: ${behaviorTrend.secondary_dominant_score}
-- repeated_primary_state: ${behaviorTrend.repeated_primary_state || 'none'}
-- repeated_primary_count: ${behaviorTrend.repeated_primary_count}
-- rumination_trend: ${behaviorTrend.rumination_trend}
-- vulnerability_trend: ${behaviorTrend.vulnerability_trend}
-- activation_trend: ${behaviorTrend.activation_trend}
-- cognitive_load_pressure: ${behaviorTrend.cognitive_load_pressure}
-- recadre_pressure: ${behaviorTrend.recadre_pressure}
-- action_pressure: ${behaviorTrend.action_pressure}
-- cycle_detected: ${behaviorTrend.cycle_detected}
-
-Consignes liées à la dynamique récente :
-- tiens compte de la trajectoire récente, pas seulement du message actuel
-- si cycle_detected = true, réponds avec plus de lucidité et moins de naïveté
-- si rumination_trend = increasing, recadre plus vite et nourris moins la boucle
-- si vulnerability_trend = increasing ou cognitive_load_pressure = high, simplifie davantage
-- si activation_trend = increasing ou action_pressure = high, sois plus nette et tournée vers l’exécution
-- n’annonce pas explicitement tes calculs internes
-`.trim();
+  return [
+    'TREND',
+    `window=${behaviorTrend.window_size}`,
+    `dominant=${behaviorTrend.dominant_state}`,
+    `secondary=${behaviorTrend.secondary_dominant_state || 'none'}`,
+    `repeat=${behaviorTrend.repeated_primary_state || 'none'}:${behaviorTrend.repeated_primary_count}`,
+    `rum_trend=${behaviorTrend.rumination_trend}`,
+    `vuln_trend=${behaviorTrend.vulnerability_trend}`,
+    `act_trend=${behaviorTrend.activation_trend}`,
+    `cognitive_pressure=${behaviorTrend.cognitive_load_pressure}`,
+    `recadre_pressure=${behaviorTrend.recadre_pressure}`,
+    `action_pressure=${behaviorTrend.action_pressure}`,
+    `cycle=${boolToFlag(behaviorTrend.cycle_detected)}`,
+    'Apply trend silently. If cycle=yes, be less naive and more structuring.'
+  ].join(' | ');
 }
 
 function buildExecutionPrompt(responseProfile) {
-  return `
-PROFIL D’EXÉCUTION DE LA RÉPONSE :
-- max_words: ${responseProfile.max_words}
-- paragraph_style: ${responseProfile.paragraph_style}
-- bullet_policy: ${responseProfile.bullet_policy}
-- action_style: ${responseProfile.action_style}
-- emotional_validation: ${responseProfile.emotional_validation}
-- question_count: ${responseProfile.question_count}
-- cognitive_load: ${responseProfile.cognitive_load}
-- pacing: ${responseProfile.pacing}
-
-INTERDICTIONS / GARDE-FOUS :
-${responseProfile.forbidden_patterns.map((x) => `- ${x}`).join('\n')}
-
-Contraintes finales :
-- reste sous la limite de mots demandée autant que possible
-- une seule idée forte par segment
-- si une action est donnée, elle doit être simple, spécifique, faisable maintenant
-- n’ajoute pas de métadiscours sur le fait que tu analyses son état
-- écris comme une présence premium, humaine, nette, utile
-`.trim();
+  return [
+    'EXECUTION',
+    `max_words=${responseProfile.max_words}`,
+    `paragraphs=${responseProfile.paragraph_style}`,
+    `bullets=${responseProfile.bullet_policy}`,
+    `action=${responseProfile.action_style}`,
+    `validation=${responseProfile.emotional_validation}`,
+    `questions=${responseProfile.question_count}`,
+    `cognitive_load=${responseProfile.cognitive_load}`,
+    `pacing=${responseProfile.pacing}`,
+    `forbidden=${responseProfile.forbidden_patterns.join('; ')}`
+  ].join(' | ');
 }
 
 function buildMemoryPrompt(relevantMemory) {
-  return `
-MÉMOIRE PERTINENTE :
-${JSON.stringify(relevantMemory, null, 2)}
+  const identity = relevantMemory.identity || {};
+  const style = relevantMemory.conversation_style || {};
 
-Utilise cette mémoire avec discernement :
-- seulement si elle améliore la pertinence
-- priorise les patterns, triggers, besoins et contextes actifs les plus forts
-- ne surcharge pas la réponse
-- ne cite pas mécaniquement la mémoire
-`.trim();
+  const compactMemory = {
+    identity: {
+      preferred_name: identity.preferred_name || identity.first_name || null,
+      language_primary: identity.language_primary || null
+    },
+    conversation_style: {
+      prefers_structure: Boolean(style.prefers_structure),
+      prefers_gentle_reframing: Boolean(style.prefers_gentle_reframing),
+      needs_clarity: Boolean(style.needs_clarity),
+      dislikes_overwhelm: Boolean(style.dislikes_overwhelm)
+    },
+    active_contexts: labelsOnly(relevantMemory.top_active_contexts, 3),
+    needs: labelsOnly(relevantMemory.top_needs, 3),
+    risk_patterns: labelsOnly(relevantMemory.top_risk_patterns, 3),
+    support_patterns: labelsOnly(relevantMemory.top_support_patterns, 3),
+    emotional_patterns: labelsOnly(relevantMemory.top_emotional_patterns, 3),
+    regulation_strategies: labelsOnly(relevantMemory.top_regulation_strategies, 3),
+    projects: labelsOnly(relevantMemory.top_projects, 3)
+  };
+
+  return `MEMORY ${JSON.stringify(compactMemory)}`;
 }
 
 // =========================
@@ -1524,10 +1515,10 @@ async function saveRecentConversationMessage(sender, text) {
   }
 }
 
-async function summarizeRecentConversationForPrompt(limit = 8) {
+async function summarizeRecentConversationForPrompt(limit = 4) {
   const recent = await getRecentConversationMemory(limit);
   return recent
-    .map((m) => `${m.sender === 'user' ? 'UTILISATRICE' : 'NYRA'}: ${m.text}`)
+    .map((m) => `${m.sender === 'user' ? 'U' : 'N'}: ${truncateText(m.text, 180)}`)
     .join('\n');
 }
 
@@ -1778,7 +1769,7 @@ function validateLLMUserStateAnalysis(payload, fallbackAnalysis, fallbackTopic) 
     )
   };
 
-  let primaryState = normalizePrimaryState(payload?.primary_state, fallback.primary_state);
+  const primaryState = normalizePrimaryState(payload?.primary_state, fallback.primary_state);
   let secondaryState = normalizeSecondaryState(payload?.secondary_state);
 
   if (!secondaryState && fallback.secondary_state) {
@@ -1814,36 +1805,29 @@ async function analyzeUserStateWithLLM(userMessage, structuredMemory) {
   const fallbackAnalysis = analyzeUserState(userMessage, structuredMemory);
   const compactMemory = buildCompactStateMemoryContext(structuredMemory);
 
-  const prompt = `
-Analyse le message utilisateur pour piloter un assistant émotionnel/personnalisé.
-
-Tu dois renvoyer uniquement une analyse structurée du message actuel.
-Tu peux t'aider de la mémoire profonde, mais sans surinterpréter.
-
-Règles :
-- topic = sujet principal concret du message
-- state = scores entre 0 et 1
-- primary_state = état dominant principal
-- secondary_state = état secondaire si pertinent, sinon null
-- response_mode ∈ grounding | supportive | directive | firm_support | clarifying
-- should_recadre = true si la réponse doit recadrer / couper une boucle / remettre du cadre
-- should_reduce_cognitive_load = true si la réponse doit rester très simple et légère mentalement
-- should_push_to_action = true si la réponse doit pousser à une action claire
-
-Mémoire utile :
-${JSON.stringify(compactMemory, null, 2)}
-
-Topic de fallback si besoin :
-${fallbackTopic}
-
-Message utilisateur :
-${userMessage}
-`.trim();
+  const prompt = [
+    'Analyse le message utilisateur pour piloter un assistant émotionnel/personnalisé.',
+    'Renvoie uniquement une analyse structurée du message actuel.',
+    'Utilise la mémoire seulement comme aide légère, sans surinterpréter.',
+    'Règles :',
+    '- topic = sujet principal concret',
+    '- state = scores entre 0 et 1',
+    '- primary_state = état dominant',
+    '- secondary_state = état secondaire pertinent ou null',
+    '- response_mode ∈ grounding | supportive | directive | firm_support | clarifying',
+    '- should_recadre = true si la réponse doit recadrer / couper une boucle / remettre du cadre',
+    '- should_reduce_cognitive_load = true si la réponse doit rester très simple mentalement',
+    '- should_push_to_action = true si la réponse doit pousser à une action claire',
+    `Mémoire utile: ${JSON.stringify(compactMemory)}`,
+    `Topic fallback: ${fallbackTopic}`,
+    `Message: ${userMessage}`
+  ].join('\n');
 
   try {
     const completion = await openai.chat.completions.create({
       model: OPENAI_ANALYSIS_MODEL,
       temperature: 0.1,
+      max_tokens: 220,
       response_format: {
         type: 'json_schema',
         json_schema: {
@@ -2283,6 +2267,8 @@ app.post('/speak', async (req, res) => {
 });
 
 app.post('/chat', async (req, res) => {
+  const requestStartedAt = Date.now();
+
   try {
     const userMessage = normalizeText(req.body?.message || '');
 
@@ -2294,6 +2280,7 @@ app.post('/chat', async (req, res) => {
     }
 
     await saveRecentConversationMessage('user', userMessage);
+    const afterUserSaveAt = Date.now();
 
     const [
       currentStructuredMemory,
@@ -2304,8 +2291,9 @@ app.post('/chat', async (req, res) => {
       getStructuredMemory(),
       getBehaviorMemory(),
       getSemanticSummary(),
-      summarizeRecentConversationForPrompt(8)
+      summarizeRecentConversationForPrompt(4)
     ]);
+    const afterMemoryLoadAt = Date.now();
 
     const relevantMemory = extractRelevantMemory(currentStructuredMemory);
 
@@ -2337,6 +2325,7 @@ app.post('/chat', async (req, res) => {
       topic = detectTopic(userMessage);
       stateAnalysisSource = 'rules_fallback';
     }
+    const afterAnalysisAt = Date.now();
 
     const currentBehaviorSnapshot = buildBehaviorStateSnapshot(rawUserStateAnalysis);
 
@@ -2349,6 +2338,7 @@ app.post('/chat', async (req, res) => {
     const userStateAnalysis = applyBehaviorTrendToAnalysis(rawUserStateAnalysis, behaviorTrend);
 
     await updateTopicMemory(topic, userStateAnalysis.primary_state);
+    const afterTopicUpdateAt = Date.now();
 
     const responseProfile = buildResponseProfile(userStateAnalysis, behaviorTrend);
 
@@ -2358,13 +2348,19 @@ app.post('/chat', async (req, res) => {
       buildBehaviorTrendPrompt(behaviorTrend),
       buildExecutionPrompt(responseProfile),
       buildMemoryPrompt(relevantMemory),
-      `RÉSUMÉ SÉMANTIQUE:\n${semanticSummary.summary || 'Aucun résumé disponible pour le moment.'}`,
-      `CONTEXTE CONVERSATION RÉCENTE:\n${recentConversation || 'Aucun historique récent.'}`
+      `SUMMARY: ${truncateText(semanticSummary.summary || 'none', 320)}`,
+      `RECENT:\n${recentConversation || 'none'}`
     ].join('\n\n');
+
+    const generationMaxTokens = Math.min(
+      260,
+      Math.max(120, Math.round(responseProfile.max_words * 1.9))
+    );
 
     const completion = await openai.chat.completions.create({
       model: OPENAI_MODEL,
       temperature: 0.72,
+      max_tokens: generationMaxTokens,
       messages: [
         {
           role: 'system',
@@ -2376,6 +2372,7 @@ app.post('/chat', async (req, res) => {
         }
       ]
     });
+    const afterGenerationAt = Date.now();
 
     const assistantReply = normalizeText(completion.choices?.[0]?.message?.content || 'Je suis là.');
     await saveRecentConversationMessage('nyra', assistantReply);
@@ -2384,6 +2381,19 @@ app.post('/chat', async (req, res) => {
       ...currentBehaviorSnapshot,
       response_mode: userStateAnalysis.response_mode
     });
+    const afterSavesAt = Date.now();
+
+    const perf = {
+      total_ms: Date.now() - requestStartedAt,
+      save_user_message_ms: afterUserSaveAt - requestStartedAt,
+      preload_memory_ms: afterMemoryLoadAt - afterUserSaveAt,
+      analysis_ms: afterAnalysisAt - afterMemoryLoadAt,
+      topic_update_ms: afterTopicUpdateAt - afterAnalysisAt,
+      generation_ms: afterGenerationAt - afterTopicUpdateAt,
+      final_saves_ms: afterSavesAt - afterGenerationAt
+    };
+
+    console.log('⚡ /chat perf:', perf);
 
     res.json({
       ok: true,
@@ -2393,6 +2403,7 @@ app.post('/chat', async (req, res) => {
       behavioral_state: userStateAnalysis,
       behavior_trend: behaviorTrend,
       response_profile: responseProfile,
+      perf,
       memory: {
         structured_update_queued: true,
         behavior_updated: true,
@@ -2416,5 +2427,6 @@ app.post('/chat', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log('🚀 VERSION NYRA: MEMORY V2 + BEHAVIOR ACTIVE + HYBRID STATE ANALYSIS');
+  console.log('⚡ PERF PHASE 1 ACTIVE: prompt compression + memory reduction + token caps');
   console.log(`✅ Nyra backend lancé sur le port ${PORT}`);
 });
