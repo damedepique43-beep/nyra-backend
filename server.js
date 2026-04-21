@@ -48,6 +48,7 @@ const MEMORY_SUMMARY_FILE = path.join(DATA_DIR, 'memory_summary.json');
 const MEMORY_STRUCTURED_FILE = path.join(DATA_DIR, 'memory_structured.json');
 const MEMORY_BEHAVIOR_FILE = path.join(DATA_DIR, 'memory_behavior.json');
 const MEMORY_TOPICS_FILE = path.join(DATA_DIR, 'memory_topics.json');
+const REMINDER_EVENTS_FILE = path.join(DATA_DIR, 'pending_reminder_events.json');
 const AUDIO_CACHE_DIR = path.join(DATA_DIR, 'audio-cache');
 
 ensureDir(DATA_DIR);
@@ -153,6 +154,12 @@ function createEmptySemanticSummary() {
   return {
     summary: '',
     updated_at: null
+  };
+}
+
+function createEmptyReminderEventStore() {
+  return {
+    pending: []
   };
 }
 
@@ -608,17 +615,11 @@ function analyzeUserState(message, structuredMemory) {
     emotionalIntensity += 0.08;
   }
 
-  if (
-    lower.includes('tourne') &&
-    lower.includes('boucle')
-  ) {
+  if (lower.includes('tourne') && lower.includes('boucle')) {
     rumination += 0.25;
   }
 
-  if (
-    explicitRecadreRequest &&
-    lower.includes('boucle')
-  ) {
+  if (explicitRecadreRequest && lower.includes('boucle')) {
     rumination += 0.18;
   }
 
@@ -1424,6 +1425,236 @@ function buildMemoryPrompt(relevantMemory) {
   };
 
   return `MEMORY ${JSON.stringify(compactMemory)}`;
+}
+
+function normalizeReminderActionId(action) {
+  const normalized = normalizeText(action).toLowerCase();
+
+  if (normalized === 'done' || normalized === 'fait') return 'done';
+  if (normalized === 'snooze' || normalized === 'plus_tard' || normalized === 'plus tard') return 'snooze';
+  if (normalized === 'ignore' || normalized === 'ignorer') return 'ignore';
+
+  return '';
+}
+
+function getReminderEventStore() {
+  return readJsonSafe(REMINDER_EVENTS_FILE, createEmptyReminderEventStore());
+}
+
+function saveReminderEventStore(store) {
+  writeJsonSafe(REMINDER_EVENTS_FILE, store);
+}
+
+function cleanupResolvedReminderEvents(store, maxResolvedToKeep = 50) {
+  const pending = [];
+  const resolved = [];
+
+  for (const item of safeArray(store.pending)) {
+    if (item?.status === 'pending') {
+      pending.push(item);
+    } else {
+      resolved.push(item);
+    }
+  }
+
+  const trimmedResolved = resolved
+    .sort((a, b) => {
+      const aTime = new Date(a?.resolved_at || a?.updated_at || 0).getTime();
+      const bTime = new Date(b?.resolved_at || b?.updated_at || 0).getTime();
+      return bTime - aTime;
+    })
+    .slice(0, maxResolvedToKeep);
+
+  return {
+    pending: [...pending, ...trimmedResolved]
+  };
+}
+
+function upsertPendingReminderEvent(payload) {
+  const store = getReminderEventStore();
+  const reminderId = normalizeText(payload?.reminder_id || '');
+  const title = normalizeText(payload?.title || '');
+  const message = normalizeText(payload?.message || title);
+  const reminderTime = normalizeText(payload?.reminder_time || '');
+  const type = normalizeText(payload?.type || 'REMINDER_DUE') || 'REMINDER_DUE';
+  const actions = safeArray(payload?.actions);
+  const voiceEnabled = Boolean(payload?.voice_enabled);
+  const voiceText = normalizeText(payload?.voice_text || message);
+
+  if (!reminderId || !title) {
+    return {
+      ok: false,
+      error: 'reminder_id ou title manquant'
+    };
+  }
+
+  const existingIndex = safeArray(store.pending).findIndex(
+    (item) => item?.reminder_id === reminderId && item?.status === 'pending'
+  );
+
+  const baseEvent = {
+    event_id: existingIndex >= 0
+      ? store.pending[existingIndex].event_id
+      : crypto.randomUUID(),
+    type,
+    reminder_id: reminderId,
+    title,
+    message,
+    reminder_time: reminderTime,
+    actions,
+    voice_enabled: voiceEnabled,
+    voice_text: voiceText,
+    status: 'pending',
+    triggered_at: nowIso(),
+    updated_at: nowIso()
+  };
+
+  if (existingIndex >= 0) {
+    store.pending[existingIndex] = {
+      ...store.pending[existingIndex],
+      ...baseEvent
+    };
+  } else {
+    store.pending.push(baseEvent);
+  }
+
+  saveReminderEventStore(cleanupResolvedReminderEvents(store));
+
+  return {
+    ok: true,
+    event: baseEvent
+  };
+}
+
+function getPendingReminderEvents() {
+  const store = getReminderEventStore();
+
+  return safeArray(store.pending)
+    .filter((item) => item?.status === 'pending')
+    .sort((a, b) => {
+      const aTime = new Date(a?.triggered_at || 0).getTime();
+      const bTime = new Date(b?.triggered_at || 0).getTime();
+      return bTime - aTime;
+    });
+}
+
+function resolvePendingReminderEvent(reminderId, actionId) {
+  const store = getReminderEventStore();
+  const normalizedReminderId = normalizeText(reminderId);
+  let resolvedEvent = null;
+
+  store.pending = safeArray(store.pending).map((item) => {
+    if (item?.reminder_id !== normalizedReminderId || item?.status !== 'pending') {
+      return item;
+    }
+
+    resolvedEvent = {
+      ...item,
+      status: 'resolved',
+      resolved_action: actionId,
+      resolved_at: nowIso(),
+      updated_at: nowIso()
+    };
+
+    return resolvedEvent;
+  });
+
+  saveReminderEventStore(cleanupResolvedReminderEvents(store));
+
+  return resolvedEvent;
+}
+
+function addMinutesToNowIso(minutes) {
+  const safeMinutes = clamp(Number(minutes) || 20, 1, 1440);
+  return new Date(Date.now() + safeMinutes * 60 * 1000).toISOString();
+}
+
+async function updateReminderAfterActionInSupabase(reminderId, actionId, options = {}) {
+  if (!SUPABASE_ENABLED) {
+    return {
+      ok: false,
+      reason: 'supabase_disabled'
+    };
+  }
+
+  try {
+    const { data: reminder, error: selectError } = await supabase
+      .from('reminders')
+      .select('*')
+      .eq('id', reminderId)
+      .limit(1)
+      .maybeSingle();
+
+    if (selectError) {
+      console.error('❌ Supabase select reminder action:', selectError.message);
+      return {
+        ok: false,
+        reason: selectError.message
+      };
+    }
+
+    if (!reminder) {
+      return {
+        ok: false,
+        reason: 'reminder_not_found'
+      };
+    }
+
+    const now = nowIso();
+    const scheduleType = normalizeText(reminder.schedule_type || '').toLowerCase();
+    const updatePayload = {
+      updated_at: now
+    };
+
+    if (actionId === 'done') {
+      if (scheduleType === 'recurring') {
+        updatePayload.last_triggered_at = now;
+        updatePayload.snoozed_until = null;
+      } else {
+        updatePayload.last_triggered_at = now;
+        updatePayload.completed_at = now;
+        updatePayload.status = 'done';
+        updatePayload.snoozed_until = null;
+      }
+    } else if (actionId === 'snooze') {
+      updatePayload.last_triggered_at = now;
+      updatePayload.snoozed_until = addMinutesToNowIso(options.snooze_minutes || 20);
+      updatePayload.status = 'active';
+    } else if (actionId === 'ignore') {
+      updatePayload.last_triggered_at = now;
+    } else {
+      return {
+        ok: false,
+        reason: 'invalid_action'
+      };
+    }
+
+    const { data: updatedRows, error: updateError } = await supabase
+      .from('reminders')
+      .update(updatePayload)
+      .eq('id', reminderId)
+      .select('*');
+
+    if (updateError) {
+      console.error('❌ Supabase update reminder action:', updateError.message);
+      return {
+        ok: false,
+        reason: updateError.message
+      };
+    }
+
+    return {
+      ok: true,
+      reminder: updatedRows?.[0] || null,
+      applied_update: updatePayload
+    };
+  } catch (error) {
+    console.error('❌ updateReminderAfterActionInSupabase catch:', error.message);
+    return {
+      ok: false,
+      reason: error.message
+    };
+  }
 }
 
 // =========================
@@ -2400,12 +2631,14 @@ app.post('/memory/reset', async (req, res) => {
   const emptyStructured = createEmptyStructuredMemory();
   const emptyBehavior = createEmptyBehaviorMemory();
   const emptyTopics = createEmptyTopicMemory();
+  const emptyReminderEvents = createEmptyReminderEventStore();
 
   writeJsonSafe(MEMORY_FILE, emptyMemory);
   writeJsonSafe(MEMORY_SUMMARY_FILE, emptySummary);
   writeJsonSafe(MEMORY_STRUCTURED_FILE, emptyStructured);
   writeJsonSafe(MEMORY_BEHAVIOR_FILE, emptyBehavior);
   writeJsonSafe(MEMORY_TOPICS_FILE, emptyTopics);
+  writeJsonSafe(REMINDER_EVENTS_FILE, emptyReminderEvents);
 
   if (SUPABASE_ENABLED) {
     try {
@@ -2423,6 +2656,96 @@ app.post('/memory/reset', async (req, res) => {
     ok: true,
     message: 'Mémoire réinitialisée'
   });
+});
+
+app.post('/reminder-trigger', async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const result = upsertPendingReminderEvent(payload);
+
+    if (!result.ok) {
+      return res.status(400).json({
+        ok: false,
+        error: result.error || 'Payload reminder invalide'
+      });
+    }
+
+    return res.json({
+      ok: true,
+      queued: true,
+      event: result.event
+    });
+  } catch (error) {
+    console.error('❌ /reminder-trigger error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: error.message || 'Erreur interne reminder-trigger'
+    });
+  }
+});
+
+app.get('/reminders/pending', async (req, res) => {
+  try {
+    const pending = getPendingReminderEvents();
+
+    return res.json({
+      ok: true,
+      count: pending.length,
+      reminders: pending
+    });
+  } catch (error) {
+    console.error('❌ /reminders/pending error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: error.message || 'Erreur récupération reminders pending'
+    });
+  }
+});
+
+app.post('/reminders/:reminderId/action', async (req, res) => {
+  try {
+    const reminderId = normalizeText(req.params?.reminderId || '');
+    const action = normalizeReminderActionId(req.body?.action || '');
+    const snoozeMinutes = clamp(Number(req.body?.snooze_minutes) || 20, 1, 1440);
+
+    if (!reminderId) {
+      return res.status(400).json({
+        ok: false,
+        error: 'reminderId manquant'
+      });
+    }
+
+    if (!action) {
+      return res.status(400).json({
+        ok: false,
+        error: 'action invalide'
+      });
+    }
+
+    const resolvedEvent = resolvePendingReminderEvent(reminderId, action);
+    const updateResult = await updateReminderAfterActionInSupabase(reminderId, action, {
+      snooze_minutes: snoozeMinutes
+    });
+
+    return res.json({
+      ok: true,
+      reminder_id: reminderId,
+      action,
+      snooze_minutes: action === 'snooze' ? snoozeMinutes : null,
+      pending_event_resolved: Boolean(resolvedEvent),
+      supabase_updated: updateResult.ok,
+      supabase_result: updateResult
+    });
+  } catch (error) {
+    console.error('❌ /reminders/:reminderId/action error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: error.message || 'Erreur action reminder'
+    });
+  }
 });
 
 app.post('/speak', async (req, res) => {
@@ -2634,8 +2957,9 @@ app.post('/chat', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('🚀 VERSION NYRA: MEMORY V2 + BEHAVIOR ACTIVE + SMART HYBRID STATE ANALYSIS');
+  console.log('🚀 VERSION NYRA: MEMORY V2 + REMINDER BRIDGE + BEHAVIOR ACTIVE');
   console.log('⚡ PERF PHASE 2 ACTIVE: rules fast path + llm gating + hybrid rules priority');
   console.log('🛠️ RUMINATION FIX ACTIVE: encore en boucle + tourne/boucle + recadre guard');
+  console.log('🔔 REMINDER ENDPOINTS ACTIVE: /reminder-trigger + /reminders/pending + /reminders/:id/action');
   console.log(`✅ Nyra backend lancé sur le port ${PORT}`);
 });
