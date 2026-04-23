@@ -2956,7 +2956,7 @@ app.post('/chat', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log('🚀 VERSION NYRA: MEMORY V2 + REMINDER BRIDGE + BEHAVIOR ACTIVE');
   console.log('⚡ PERF PHASE 2 ACTIVE: rules fast path + llm gating + hybrid rules priority');
   console.log('🛠️ RUMINATION FIX ACTIVE: encore en boucle + tourne/boucle + recadre guard');
