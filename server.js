@@ -2114,6 +2114,12 @@ function hasContrastMarkers(text) {
 }
 
 function shouldUseLLMStateAnalysis(userMessage, localAnalysis) {
+  return {
+    use_llm: false,
+    reason: 'fast_mode_disabled_llm_analysis',
+    confidence: 1
+  };
+}
   const text = normalizeText(userMessage);
   const state = localAnalysis?.state || {};
   const ranking = getStateRanking(state);
