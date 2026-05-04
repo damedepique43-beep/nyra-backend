@@ -2095,22 +2095,17 @@ function getWordCount(text) {
 
 function hasContrastMarkers(text) {
   const lower = normalizeText(text).toLowerCase();
-  return hasAny(lower, [
-    'mais',
-    'sauf que',
-    'en même temps',
-    'en meme temps',
-    'd’un côté',
-    'd\'un côté',
-    'd’un cote',
-    'd\'un cote',
-    'je sais pas',
-    'je ne sais pas',
-    'j’hésite',
-    'j\'hésite',
-    'je suis partagée',
-    'je suis partagé'
-  ]);
+return hasAny(lower, [
+  'mais',
+  'sauf que',
+  'en meme temps',
+  "d'un cote",
+  'je sais pas',
+  'je ne sais pas',
+  "j'hesite",
+  'je suis partagee',
+  'je suis partage'
+]);
 }
 
 function shouldUseLLMStateAnalysis(userMessage, localAnalysis) {
@@ -2118,105 +2113,6 @@ function shouldUseLLMStateAnalysis(userMessage, localAnalysis) {
     use_llm: false,
     reason: 'fast_mode_disabled_llm_analysis',
     confidence: 1
-  };
-}
-  const text = normalizeText(userMessage);
-  const state = localAnalysis?.state || {};
-  const ranking = getStateRanking(state);
-
-  const top1 = ranking[0]?.score || 0;
-  const top2 = ranking[1]?.score || 0;
-  const topGap = Number((top1 - top2).toFixed(3));
-  const wordCount = getWordCount(text);
-  const explicitRecadre = hasExplicitRecadreRequest(text);
-
-  const strongGroundingSignal =
-    localAnalysis.response_mode === 'grounding' ||
-    state.vulnerability >= 0.7 ||
-    state.emotional_intensity >= 0.72;
-
-  if (strongGroundingSignal) {
-    return {
-      use_llm: false,
-      reason: 'strong_grounding_signal',
-      confidence: 0.95
-    };
-  }
-
-  const strongFirmSupportSignal =
-    explicitRecadre &&
-    (
-      state.rumination >= 0.38 ||
-      state.dispersion >= 0.38 ||
-      state.avoidance >= 0.38
-    );
-
-  if (strongFirmSupportSignal) {
-    return {
-      use_llm: false,
-      reason: 'explicit_recadre_signal',
-      confidence: 0.92
-    };
-  }
-
-  const strongDirectiveSignal =
-    localAnalysis.response_mode === 'directive' &&
-    (
-      state.activation >= 0.58 ||
-      state.urgency >= 0.65 ||
-      state.dispersion >= 0.55 ||
-      state.avoidance >= 0.55
-    );
-
-  if (strongDirectiveSignal) {
-    return {
-      use_llm: false,
-      reason: 'strong_directive_signal',
-      confidence: 0.88
-    };
-  }
-
-  const strongSupportiveSignal =
-    !explicitRecadre &&
-    localAnalysis.response_mode === 'supportive' &&
-    state.vulnerability >= 0.34 &&
-    state.rumination < 0.4 &&
-    state.dispersion < 0.4 &&
-    state.avoidance < 0.4;
-
-  if (strongSupportiveSignal && wordCount <= 40) {
-    return {
-      use_llm: false,
-      reason: 'strong_supportive_signal',
-      confidence: 0.82
-    };
-  }
-
-  if (
-    top1 >= 0.55 &&
-    topGap >= 0.18 &&
-    !hasContrastMarkers(text) &&
-    wordCount <= 45
-  ) {
-    return {
-      use_llm: false,
-      reason: 'clear_rules_dominant_state',
-      confidence: 0.8
-    };
-  }
-
-  if (wordCount <= 8 && top1 >= 0.32) {
-    return {
-      use_llm: false,
-      reason: 'short_message_fast_path',
-      confidence: 0.76
-    };
-  }
-
-  return {
-    use_llm: true,
-    reason: 'ambiguous_or_mixed_signal',
-    confidence: 0.52
   };
 }
 
