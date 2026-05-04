@@ -8,21 +8,176 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
+
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+function normalizeText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function includesAny(text, words) {
+  const lower = text.toLowerCase();
+  return words.some(word => lower.includes(word));
+}
+
+function analyzeMessage(message) {
+  const text = normalizeText(message);
+  const lower = text.toLowerCase();
+
+  const analysis = {
+    type: 'note',
+    is_task: false,
+    is_idea: false,
+    is_emotion: false,
+    is_project: false,
+    urgency: 'normal',
+    suggested_bucket: 'inbox',
+    tags: [],
+  };
+
+  if (
+    includesAny(lower, [
+      'je dois',
+      'il faut',
+      'pense à',
+      'penser à',
+      'rappelle',
+      'à faire',
+      'a faire',
+      'ne pas oublier',
+    ])
+  ) {
+    analysis.type = 'task';
+    analysis.is_task = true;
+    analysis.suggested_bucket = 'tasks';
+    analysis.tags.push('tâche');
+  }
+
+  if (
+    includesAny(lower, [
+      'idée',
+      'j’ai une idée',
+      "j'ai une idée",
+      'concept',
+      'ça pourrait',
+      'on pourrait',
+    ])
+  ) {
+    analysis.type = analysis.is_task ? 'mixed' : 'idea';
+    analysis.is_idea = true;
+    analysis.suggested_bucket = analysis.is_task ? 'inbox' : 'ideas';
+    analysis.tags.push('idée');
+  }
+
+  if (
+    includesAny(lower, [
+      'je me sens',
+      'angoisse',
+      'stress',
+      'triste',
+      'énervée',
+      'énervé',
+      'fatiguée',
+      'fatigué',
+      'peur',
+      'mal',
+    ])
+  ) {
+    analysis.type =
+      analysis.is_task || analysis.is_idea ? 'mixed' : 'emotion';
+    analysis.is_emotion = true;
+    analysis.suggested_bucket =
+      analysis.is_task || analysis.is_idea ? 'inbox' : 'journal';
+    analysis.tags.push('émotion');
+  }
+
+  if (
+    includesAny(lower, [
+      'nyra',
+      'projet',
+      'app',
+      'application',
+      'backend',
+      'code',
+      'roadmap',
+    ])
+  ) {
+    analysis.is_project = true;
+    analysis.tags.push('projet');
+    if (!analysis.is_task && !analysis.is_idea && !analysis.is_emotion) {
+      analysis.type = 'project_note';
+      analysis.suggested_bucket = 'projects';
+    }
+  }
+
+  if (
+    includesAny(lower, [
+      'urgent',
+      'vite',
+      'rapidement',
+      'aujourd’hui',
+      "aujourd'hui",
+      'maintenant',
+      'ce soir',
+      'demain',
+    ])
+  ) {
+    analysis.urgency = 'high';
+    analysis.tags.push('urgent');
+  }
+
+  if (analysis.tags.length === 0) {
+    analysis.tags.push('note');
+  }
+
+  return analysis;
+}
+
+function buildSystemPrompt(analysis) {
+  return `
+Tu es Nyra, un cerveau externe intelligent pour personnes TDAH.
+
+Ta mission :
+- accueillir ce que l’utilisateur vide de sa tête
+- comprendre si c’est une tâche, une idée, une émotion, un projet ou un mélange
+- répondre vite, clairement, sans surcharger
+- aider à organiser sans demander trop d’effort mental
+
+Analyse locale détectée :
+${JSON.stringify(analysis)}
+
+Règles de réponse :
+- réponds en français naturel
+- sois directe, humaine, chaleureuse
+- maximum 120 mots
+- pas de long pavé
+- si c’est une tâche : reformule clairement l’action
+- si c’est une idée : dis que l’idée est capturée et propose où la ranger
+- si c’est une émotion : valide brièvement et aide à poser le poids
+- si c’est mixte : trie mentalement pour l’utilisateur
+- ne prétends pas avoir sauvegardé dans une base de données
+- ne parle pas de tes mécanismes internes
+`.trim();
+}
+
 app.get('/', (req, res) => {
   res.json({
     ok: true,
     app: 'Nyra backend',
+    version: 'fast-v2-local-analysis',
   });
 });
 
 app.post('/chat', async (req, res) => {
-  const userMessage = req.body?.message;
+  const startedAt = Date.now();
+
+  const userMessage = normalizeText(req.body?.message || '');
+  const userId = normalizeText(req.body?.userId || 'local-user');
 
   if (!userMessage) {
     return res.status(400).json({
@@ -32,15 +187,16 @@ app.post('/chat', async (req, res) => {
   }
 
   try {
-    // ⚡ Réponse rapide (pas de mémoire, pas de supabase)
+    const analysis = analyzeMessage(userMessage);
+
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4.1-mini',
-      temperature: 0.7,
-      max_tokens: 150,
+      model: OPENAI_MODEL,
+      temperature: 0.55,
+      max_tokens: 180,
       messages: [
         {
           role: 'system',
-          content: "Tu es Nyra, une IA humaine, naturelle, directe, intelligente.",
+          content: buildSystemPrompt(analysis),
         },
         {
           role: 'user',
@@ -49,19 +205,21 @@ app.post('/chat', async (req, res) => {
       ],
     });
 
-    const reply = completion.choices?.[0]?.message?.content || "Je suis là.";
+    const reply =
+      normalizeText(completion.choices?.[0]?.message?.content) ||
+      'Je l’ai capté. Je le garde comme élément à organiser.';
 
-    // ⚡ réponse immédiate
     res.json({
       ok: true,
       reply,
+      analysis,
+      userId,
+      perf: {
+        total_ms: Date.now() - startedAt,
+      },
     });
-
-    // 🔥 (OPTIONNEL PLUS TARD)
-    // ici tu pourras remettre la mémoire en async
-
   } catch (error) {
-    console.error('❌ ERROR:', error.message);
+    console.error('❌ /chat error:', error.message);
 
     res.status(500).json({
       ok: false,
@@ -71,5 +229,5 @@ app.post('/chat', async (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Nyra backend lancé sur le port ${PORT}`);
+  console.log(`🚀 Nyra backend FAST V2 lancé sur le port ${PORT}`);
 });
