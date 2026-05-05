@@ -22,9 +22,6 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
-const MAX_ITEMS = 1000;
-const MAX_CONVERSATIONS = 300;
-
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });
@@ -33,7 +30,6 @@ function ensureDir(dirPath) {
 
 function createEmptyStore() {
   return {
-    version: 'v5-suggestions',
     items: [],
     conversations: [],
     updated_at: null,
@@ -60,7 +56,6 @@ function readStore() {
 function writeStore(store) {
   try {
     ensureDir(DATA_DIR);
-    store.updated_at = new Date().toISOString();
     fs.writeFileSync(STORE_FILE, JSON.stringify(store, null, 2), 'utf8');
   } catch (error) {
     console.error('❌ writeStore error:', error.message);
@@ -86,46 +81,120 @@ function analyzeMessage(message) {
 
   const analysis = {
     type: 'note',
-    bucket: 'inbox',
     is_task: false,
     is_idea: false,
     is_emotion: false,
+    is_project: false,
     urgency: 'normal',
-    priority_score: 2,
-    due_hint: null,
+    suggested_bucket: 'inbox',
     tags: [],
   };
 
-  if (includesAny(lower, ['je dois', 'il faut', 'pense à'])) {
+  if (
+    includesAny(lower, [
+      'je dois',
+      'il faut',
+      'pense à',
+      'penser à',
+      'rappelle',
+      'à faire',
+      'a faire',
+      'ne pas oublier',
+    ])
+  ) {
     analysis.type = 'task';
-    analysis.bucket = 'tasks';
     analysis.is_task = true;
+    analysis.suggested_bucket = 'tasks';
+    analysis.tags.push('tâche');
   }
 
-  if (includesAny(lower, ['idée', "j'ai une idée"])) {
-    analysis.is_idea = true;
+  if (
+    includesAny(lower, [
+      'idée',
+      'j’ai une idée',
+      "j'ai une idée",
+      'concept',
+      'ça pourrait',
+      'on pourrait',
+    ])
+  ) {
     analysis.type = analysis.is_task ? 'mixed' : 'idea';
-    analysis.bucket = analysis.is_task ? 'inbox' : 'ideas';
+    analysis.is_idea = true;
+    analysis.suggested_bucket = analysis.is_task ? 'inbox' : 'ideas';
+    analysis.tags.push('idée');
   }
 
-  if (includesAny(lower, ['je me sens', 'triste', 'stress', 'fatigué'])) {
-    analysis.is_emotion = true;
+  if (
+    includesAny(lower, [
+      'je me sens',
+      'angoisse',
+      'stress',
+      'triste',
+      'énervée',
+      'énervé',
+      'fatiguée',
+      'fatigué',
+      'peur',
+      'mal',
+    ])
+  ) {
     analysis.type =
       analysis.is_task || analysis.is_idea ? 'mixed' : 'emotion';
-    analysis.bucket =
+    analysis.is_emotion = true;
+    analysis.suggested_bucket =
       analysis.is_task || analysis.is_idea ? 'inbox' : 'journal';
+    analysis.tags.push('émotion');
   }
 
-  if (includesAny(lower, ['urgent', 'vite', 'demain', 'maintenant'])) {
+  if (
+    includesAny(lower, [
+      'nyra',
+      'projet',
+      'app',
+      'application',
+      'backend',
+      'code',
+      'roadmap',
+    ])
+  ) {
+    analysis.is_project = true;
+    analysis.tags.push('projet');
+
+    if (!analysis.is_task && !analysis.is_idea && !analysis.is_emotion) {
+      analysis.type = 'project_note';
+      analysis.suggested_bucket = 'projects';
+    }
+  }
+
+  if (
+    includesAny(lower, [
+      'urgent',
+      'vite',
+      'rapidement',
+      'aujourd’hui',
+      "aujourd'hui",
+      'maintenant',
+      'ce soir',
+      'demain',
+    ])
+  ) {
     analysis.urgency = 'high';
+    analysis.tags.push('urgent');
+  }
+
+  if (analysis.tags.length === 0) {
+    analysis.tags.push('note');
   }
 
   return analysis;
 }
 
-// 🔥 NOUVEAU
 function buildSuggestions(analysis) {
   const suggestions = [];
+
+  if (analysis.urgency === 'high') {
+    suggestions.push('Traiter maintenant');
+  }
 
   if (analysis.is_task) {
     suggestions.push('Ajouter à aujourd’hui');
@@ -136,22 +205,26 @@ function buildSuggestions(analysis) {
   if (analysis.is_idea) {
     suggestions.push('Classer dans idées');
     suggestions.push('Transformer en tâche');
+    suggestions.push('Développer plus tard');
   }
 
   if (analysis.is_emotion) {
-    suggestions.push('Prendre 5 min pour toi');
-    suggestions.push('Respirer');
+    suggestions.push('Prendre 5 minutes pour toi');
+    suggestions.push('Écrire ce que tu ressens');
+    suggestions.push('Respirer et ralentir');
   }
 
   if (analysis.type === 'mixed') {
-    suggestions.push('Trier mentalement');
+    suggestions.push('Trier tâche / idée / émotion');
+    suggestions.push('Garder l’essentiel');
   }
 
-  if (analysis.urgency === 'high') {
-    suggestions.unshift('Traiter maintenant');
+  if (analysis.is_project) {
+    suggestions.push('Ajouter à la roadmap');
+    suggestions.push('Créer une tâche projet');
   }
 
-  return suggestions.slice(0, 4);
+  return [...new Set(suggestions)].slice(0, 4);
 }
 
 function createStoredItem({ userId, message, analysis }) {
@@ -159,11 +232,13 @@ function createStoredItem({ userId, message, analysis }) {
     id: crypto.randomUUID(),
     user_id: userId,
     type: analysis.type,
-    bucket: analysis.bucket,
+    bucket: analysis.suggested_bucket,
     content: message,
     urgency: analysis.urgency,
+    tags: analysis.tags,
     status: analysis.is_task ? 'todo' : 'captured',
     created_at: nowIso(),
+    updated_at: nowIso(),
   };
 }
 
@@ -183,26 +258,131 @@ function saveCapture({ userId, message, reply, analysis }) {
     user_id: userId,
     user_message: message,
     nyra_reply: reply,
+    analysis,
     created_at: nowIso(),
   });
 
-  store.items = store.items.slice(-MAX_ITEMS);
-  store.conversations = store.conversations.slice(-MAX_CONVERSATIONS);
+  store.items = store.items.slice(-500);
+  store.conversations = store.conversations.slice(-200);
+  store.updated_at = nowIso();
 
   writeStore(store);
 
   return item;
 }
 
+function getStoreSummary(userId) {
+  const store = readStore();
+
+  const userItems = store.items.filter(item => item.user_id === userId);
+
+  return {
+    total_items: userItems.length,
+    tasks: userItems.filter(item => item.bucket === 'tasks').length,
+    ideas: userItems.filter(item => item.bucket === 'ideas').length,
+    journal: userItems.filter(item => item.bucket === 'journal').length,
+    projects: userItems.filter(item => item.bucket === 'projects').length,
+    inbox: userItems.filter(item => item.bucket === 'inbox').length,
+  };
+}
+
+function buildSystemPrompt(analysis, memorySummary) {
+  return `
+Tu es Nyra, un cerveau externe intelligent pour personnes TDAH.
+
+Ta mission :
+- accueillir ce que l’utilisateur vide de sa tête
+- comprendre si c’est une tâche, une idée, une émotion, un projet ou un mélange
+- répondre vite, clairement, sans surcharger
+- aider à organiser sans demander trop d’effort mental
+
+Analyse locale détectée :
+${JSON.stringify(analysis)}
+
+Résumé mémoire locale :
+${JSON.stringify(memorySummary)}
+
+Règles de réponse :
+- réponds en français naturel
+- sois directe, humaine, chaleureuse
+- maximum 120 mots
+- pas de long pavé
+- si c’est une tâche : reformule clairement l’action
+- si c’est une idée : dis que l’idée est capturée et propose où la ranger
+- si c’est une émotion : valide brièvement et aide à poser le poids
+- si c’est mixte : trie mentalement pour l’utilisateur
+- tu peux dire que c’est capturé dans Nyra
+- ne parle pas de fichier JSON
+- ne parle pas de tes mécanismes internes
+`.trim();
+}
+
 app.get('/', (req, res) => {
   res.json({
     ok: true,
     app: 'Nyra backend',
-    version: 'v5-suggestions',
+    version: 'fast-v3-local-memory-suggestions',
+  });
+});
+
+app.get('/store', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const items = store.items.filter(item => item.user_id === userId);
+
+  res.json({
+    ok: true,
+    userId,
+    summary: getStoreSummary(userId),
+    items,
+  });
+});
+
+app.get('/store/tasks', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const tasks = store.items.filter(
+    item => item.user_id === userId && item.bucket === 'tasks'
+  );
+
+  res.json({
+    ok: true,
+    userId,
+    count: tasks.length,
+    tasks,
+  });
+});
+
+app.get('/store/ideas', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const ideas = store.items.filter(
+    item => item.user_id === userId && item.bucket === 'ideas'
+  );
+
+  res.json({
+    ok: true,
+    userId,
+    count: ideas.length,
+    ideas,
+  });
+});
+
+app.post('/store/reset', (req, res) => {
+  writeStore(createEmptyStore());
+
+  res.json({
+    ok: true,
+    message: 'Mémoire locale Nyra réinitialisée',
   });
 });
 
 app.post('/chat', async (req, res) => {
+  const startedAt = Date.now();
+
   const userMessage = normalizeText(req.body?.message || '');
   const userId = normalizeText(req.body?.userId || 'local-user');
 
@@ -215,16 +395,17 @@ app.post('/chat', async (req, res) => {
 
   try {
     const analysis = analyzeMessage(userMessage);
+    const suggestions = buildSuggestions(analysis);
+    const memorySummary = getStoreSummary(userId);
 
     const completion = await openai.chat.completions.create({
       model: OPENAI_MODEL,
       temperature: 0.55,
-      max_tokens: 150,
+      max_tokens: 180,
       messages: [
         {
           role: 'system',
-          content:
-            'Tu es Nyra, un cerveau externe. Réponds simplement et clairement.',
+          content: buildSystemPrompt(analysis, memorySummary),
         },
         {
           role: 'user',
@@ -235,7 +416,7 @@ app.post('/chat', async (req, res) => {
 
     const reply =
       normalizeText(completion.choices?.[0]?.message?.content) ||
-      'C’est capté.';
+      'Je l’ai capté. Je le range dans Nyra.';
 
     const storedItem = saveCapture({
       userId,
@@ -244,14 +425,16 @@ app.post('/chat', async (req, res) => {
       analysis,
     });
 
-    const suggestions = buildSuggestions(analysis);
-
     res.json({
       ok: true,
       reply,
       analysis,
       suggestions,
       stored_item: storedItem,
+      memory_summary: getStoreSummary(userId),
+      perf: {
+        total_ms: Date.now() - startedAt,
+      },
     });
   } catch (error) {
     console.error('❌ /chat error:', error.message);
@@ -264,5 +447,5 @@ app.post('/chat', async (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Nyra backend V5 suggestions lancé`);
+  console.log(`🚀 Nyra backend FAST V3 local memory + suggestions lancé sur le port ${PORT}`);
 });
