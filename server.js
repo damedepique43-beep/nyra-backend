@@ -22,6 +22,8 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
+const STORE_VERSION = 'memory-graph-v1';
+
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });
@@ -34,10 +36,13 @@ function nowIso() {
 
 function createEmptyStore() {
   return {
-    version: 'structured-actions-v1',
+    version: STORE_VERSION,
     items: [],
     actions: [],
     conversations: [],
+    projects: [],
+    relations: [],
+    contexts: [],
     connected_accounts: [],
     updated_at: null,
   };
@@ -56,12 +61,13 @@ function readStore() {
     const parsed = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8'));
 
     return {
-      version: parsed.version || 'structured-actions-v1',
+      version: parsed.version || STORE_VERSION,
       items: Array.isArray(parsed.items) ? parsed.items : [],
       actions: Array.isArray(parsed.actions) ? parsed.actions : [],
-      conversations: Array.isArray(parsed.conversations)
-        ? parsed.conversations
-        : [],
+      conversations: Array.isArray(parsed.conversations) ? parsed.conversations : [],
+      projects: Array.isArray(parsed.projects) ? parsed.projects : [],
+      relations: Array.isArray(parsed.relations) ? parsed.relations : [],
+      contexts: Array.isArray(parsed.contexts) ? parsed.contexts : [],
       connected_accounts: Array.isArray(parsed.connected_accounts)
         ? parsed.connected_accounts
         : [],
@@ -79,7 +85,7 @@ function writeStore(store) {
 
     const safeStore = {
       ...store,
-      version: 'structured-actions-v1',
+      version: STORE_VERSION,
       updated_at: nowIso(),
     };
 
@@ -91,6 +97,15 @@ function writeStore(store) {
 
 function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeKey(value) {
+  return normalizeText(value)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 }
 
 function includesAny(text, words) {
@@ -199,14 +214,6 @@ function detectPriority(text, analysis) {
 }
 
 function actionToProvider(actionType) {
-  if (actionType === 'create_reminder') return 'local';
-  if (actionType === 'add_to_today') return 'local';
-  if (actionType === 'plan_now') return 'local';
-  if (actionType === 'process_now') return 'local';
-  if (actionType === 'classify_as_idea') return 'local';
-  if (actionType === 'idea_to_task') return 'local';
-  if (actionType === 'add_to_roadmap') return 'local';
-
   return 'local';
 }
 
@@ -214,6 +221,7 @@ function actionToConnectionType(actionType) {
   if (actionType === 'create_calendar_event') return 'google_calendar';
   if (actionType === 'create_google_task') return 'google_tasks';
   if (actionType === 'sync_drive_note') return 'google_drive';
+  if (actionType === 'export_project_spec_to_drive') return 'google_drive';
 
   return null;
 }
@@ -230,6 +238,7 @@ function actionToBucket(actionType) {
   if (actionType === 'classify_as_idea') return 'ideas';
   if (actionType === 'idea_to_task') return 'tasks';
   if (actionType === 'add_to_roadmap') return 'projects';
+  if (actionType === 'create_project_spec') return 'projects';
   return 'actions';
 }
 
@@ -261,6 +270,10 @@ function buildNextStep(actionType, datetimeHint) {
 
   if (actionType === 'add_to_roadmap') {
     return 'Revoir cette entrée lors de la prochaine session projet.';
+  }
+
+  if (actionType === 'create_project_spec') {
+    return 'Structurer cette idée en cahier des charges.';
   }
 
   return 'Action enregistrée.';
@@ -304,9 +317,176 @@ function buildStructuredAction({ userId, message, actionType, label, status, ana
   };
 }
 
+function detectKnownProjectName(text) {
+  const lower = normalizeText(text).toLowerCase();
+
+  const knownProjects = [
+    {
+      name: 'Nyra',
+      keywords: ['nyra', 'ok nyra', 'cerveau externe', 'mémoire intelligente', 'react native', 'app mobile'],
+    },
+    {
+      name: 'NovaCall',
+      keywords: ['novacall', 'nova call', 'agent vocal', 'voiceflow', 'make', 'clinique', 'cliniques'],
+    },
+    {
+      name: 'Dame de Pique',
+      keywords: ['dame de pique', 'tiktok spirituel', 'spiritualité', 'méditation', 'numérologie'],
+    },
+    {
+      name: 'BrumeArdente',
+      keywords: ['brumeardente', 'brume ardente', 'payhip', 'ebook', 'e-book', 'carnet'],
+    },
+  ];
+
+  const found = knownProjects.find(project =>
+    project.keywords.some(keyword => lower.includes(keyword))
+  );
+
+  if (found) return found.name;
+
+  const explicitProjectMatch = lower.match(/projet\s+([a-z0-9àâçéèêëîïôûùüÿñæœ' -]{2,40})/i);
+
+  if (explicitProjectMatch && explicitProjectMatch[1]) {
+    return normalizeText(explicitProjectMatch[1])
+      .replace(/[.,!?;:]+$/g, '')
+      .trim();
+  }
+
+  return null;
+}
+
+function ensureProject(store, userId, projectName, sourceText) {
+  if (!projectName) return null;
+
+  const projectKey = normalizeKey(projectName);
+
+  let project = store.projects.find(existingProject => {
+    return (
+      existingProject.user_id === userId &&
+      normalizeKey(existingProject.name) === projectKey
+    );
+  });
+
+  if (project) {
+    project.updated_at = nowIso();
+
+    if (sourceText) {
+      project.last_source_preview = normalizeText(sourceText).slice(0, 180);
+    }
+
+    return project;
+  }
+
+  project = {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    name: projectName,
+    key: projectKey,
+    description: `Projet détecté automatiquement à partir des captures Nyra.`,
+    status: 'active',
+    tags: ['project', projectKey],
+    source: 'auto_detection',
+    last_source_preview: normalizeText(sourceText).slice(0, 180),
+    created_at: nowIso(),
+    updated_at: nowIso(),
+  };
+
+  store.projects.push(project);
+
+  return project;
+}
+
+function createRelation({ userId, sourceId, targetId, relationType, confidence, metadata }) {
+  return {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    source_id: sourceId,
+    target_id: targetId,
+    relation_type: relationType,
+    confidence,
+    metadata: metadata || {},
+    created_at: nowIso(),
+  };
+}
+
+function relationExists(store, userId, sourceId, targetId, relationType) {
+  return store.relations.some(relation => {
+    return (
+      relation.user_id === userId &&
+      relation.source_id === sourceId &&
+      relation.target_id === targetId &&
+      relation.relation_type === relationType
+    );
+  });
+}
+
+function buildContextSummary(project, relatedItems) {
+  const recentItems = relatedItems
+    .slice(-8)
+    .map(item => `- ${item.title || item.content}`)
+    .join('\n');
+
+  if (!recentItems) {
+    return `${project.name} est un projet actif dans Nyra.`;
+  }
+
+  return `${project.name} est un projet actif dans Nyra. Éléments récents liés :\n${recentItems}`;
+}
+
+function updateProjectContext(store, userId, project) {
+  if (!project) return null;
+
+  const projectRelations = store.relations.filter(relation => {
+    return (
+      relation.user_id === userId &&
+      relation.target_id === project.id &&
+      relation.relation_type === 'belongs_to_project'
+    );
+  });
+
+  const relatedItemIds = projectRelations.map(relation => relation.source_id);
+
+  const relatedItems = store.items.filter(item => {
+    return item.user_id === userId && relatedItemIds.includes(item.id);
+  });
+
+  let context = store.contexts.find(existingContext => {
+    return (
+      existingContext.user_id === userId &&
+      existingContext.context_type === 'project' &&
+      existingContext.project_id === project.id
+    );
+  });
+
+  if (!context) {
+    context = {
+      id: crypto.randomUUID(),
+      user_id: userId,
+      context_type: 'project',
+      project_id: project.id,
+      name: `Contexte — ${project.name}`,
+      summary: '',
+      related_items: [],
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    };
+
+    store.contexts.push(context);
+  }
+
+  context.related_items = relatedItemIds;
+  context.summary = buildContextSummary(project, relatedItems);
+  context.updated_at = nowIso();
+
+  return context;
+}
+
 function analyzeMessage(message) {
   const text = normalizeText(message);
   const lower = text.toLowerCase();
+
+  const detectedProjectName = detectKnownProjectName(text);
 
   const analysis = {
     type: 'note',
@@ -314,6 +494,7 @@ function analyzeMessage(message) {
     is_idea: false,
     is_emotion: false,
     is_project: false,
+    project_name: detectedProjectName,
     urgency: 'normal',
     suggested_bucket: 'inbox',
     tags: [],
@@ -346,6 +527,8 @@ function analyzeMessage(message) {
       'concept',
       'ça pourrait',
       'on pourrait',
+      'j’imagine',
+      "j'imagine",
     ])
   ) {
     analysis.type = analysis.is_task ? 'mixed' : 'idea';
@@ -377,14 +560,19 @@ function analyzeMessage(message) {
   }
 
   if (
+    detectedProjectName ||
     includesAny(lower, [
       'nyra',
+      'novacall',
       'projet',
       'app',
       'application',
       'backend',
       'code',
       'roadmap',
+      'cahier des charges',
+      'mvp',
+      'fonctionnalité',
     ])
   ) {
     analysis.is_project = true;
@@ -412,6 +600,10 @@ function analyzeMessage(message) {
   ) {
     analysis.urgency = 'high';
     analysis.tags.push('urgent');
+  }
+
+  if (analysis.project_name) {
+    analysis.tags.push(normalizeKey(analysis.project_name));
   }
 
   if (analysis.datetime_hint) {
@@ -555,6 +747,25 @@ function detectAction(message, userId, analysis) {
     });
   }
 
+  if (
+    includesAny(lower, [
+      'cahier des charges',
+      'transforme ça en cahier des charges',
+      'prépare un cahier des charges',
+      'génère un cahier des charges',
+      'structure ce projet',
+    ])
+  ) {
+    return buildStructuredAction({
+      userId,
+      message,
+      actionType: 'create_project_spec',
+      label: 'Créer un cahier des charges',
+      status: 'draft',
+      analysis,
+    });
+  }
+
   return null;
 }
 
@@ -593,6 +804,7 @@ function buildSuggestions(analysis, action) {
   if (analysis.is_project) {
     suggestions.push('Ajouter à la roadmap');
     suggestions.push('Créer une tâche projet');
+    suggestions.push('Préparer un cahier des charges');
   }
 
   return uniqueArray(suggestions).slice(0, 4);
@@ -615,8 +827,11 @@ function createStoredItem({ userId, message, analysis, action }) {
     priority: action ? action.priority : detectPriority(message, analysis),
     datetime_hint: action ? action.datetime_hint : analysis.datetime_hint,
 
-    tags: action ? ['action', action.action_type, action.provider] : analysis.tags,
+    tags: action ? uniqueArray(['action', action.action_type, action.provider, analysis.project_name ? normalizeKey(analysis.project_name) : null]) : analysis.tags,
     status: action ? action.status : analysis.is_task ? 'todo' : 'captured',
+
+    project_name: analysis.project_name || null,
+    project_id: null,
 
     action_type: action ? action.action_type : null,
     action_label: action ? action.label : null,
@@ -643,7 +858,34 @@ function saveCapture({ userId, message, reply, analysis, action }) {
     action,
   });
 
+  let linkedProject = null;
+  let createdRelation = null;
+  let updatedContext = null;
+
+  if (analysis.project_name) {
+    linkedProject = ensureProject(store, userId, analysis.project_name, message);
+    item.project_id = linkedProject.id;
+    item.project_name = linkedProject.name;
+  }
+
   store.items.push(item);
+
+  if (linkedProject && !relationExists(store, userId, item.id, linkedProject.id, 'belongs_to_project')) {
+    createdRelation = createRelation({
+      userId,
+      sourceId: item.id,
+      targetId: linkedProject.id,
+      relationType: 'belongs_to_project',
+      confidence: 0.92,
+      metadata: {
+        project_name: linkedProject.name,
+        detection: 'keyword_or_explicit_project',
+      },
+    });
+
+    store.relations.push(createdRelation);
+    updatedContext = updateProjectContext(store, userId, linkedProject);
+  }
 
   let actionRecord = null;
 
@@ -651,10 +893,28 @@ function saveCapture({ userId, message, reply, analysis, action }) {
     actionRecord = {
       ...action,
       item_id: item.id,
+      project_id: linkedProject ? linkedProject.id : null,
+      project_name: linkedProject ? linkedProject.name : null,
       updated_at: nowIso(),
     };
 
     store.actions.push(actionRecord);
+
+    if (linkedProject && !relationExists(store, userId, actionRecord.id, linkedProject.id, 'action_for_project')) {
+      store.relations.push(
+        createRelation({
+          userId,
+          sourceId: actionRecord.id,
+          targetId: linkedProject.id,
+          relationType: 'action_for_project',
+          confidence: 0.9,
+          metadata: {
+            action_type: actionRecord.action_type,
+            project_name: linkedProject.name,
+          },
+        })
+      );
+    }
   }
 
   store.conversations.push({
@@ -666,18 +926,27 @@ function saveCapture({ userId, message, reply, analysis, action }) {
     action,
     stored_item_id: item.id,
     action_id: actionRecord ? actionRecord.id : null,
+    project_id: linkedProject ? linkedProject.id : null,
+    project_name: linkedProject ? linkedProject.name : null,
+    relation_id: createdRelation ? createdRelation.id : null,
     created_at: nowIso(),
   });
 
   store.items = store.items.slice(-500);
   store.actions = store.actions.slice(-300);
   store.conversations = store.conversations.slice(-200);
+  store.projects = store.projects.slice(-100);
+  store.relations = store.relations.slice(-1000);
+  store.contexts = store.contexts.slice(-200);
 
   writeStore(store);
 
   return {
     item,
     action: actionRecord,
+    project: linkedProject,
+    relation: createdRelation,
+    context: updatedContext,
   };
 }
 
@@ -686,6 +955,9 @@ function getStoreSummary(userId) {
 
   const userItems = store.items.filter(item => item.user_id === userId);
   const userActions = store.actions.filter(action => action.user_id === userId);
+  const userProjects = store.projects.filter(project => project.user_id === userId);
+  const userRelations = store.relations.filter(relation => relation.user_id === userId);
+  const userContexts = store.contexts.filter(context => context.user_id === userId);
 
   return {
     total_items: userItems.length,
@@ -698,6 +970,9 @@ function getStoreSummary(userId) {
     plans: userItems.filter(item => item.bucket === 'plans').length,
     inbox: userItems.filter(item => item.bucket === 'inbox').length,
     actions: userActions.length,
+    project_count: userProjects.length,
+    relation_count: userRelations.length,
+    context_count: userContexts.length,
     local_only: userActions.filter(action => action.sync_status === 'local_only').length,
     pending_sync: userActions.filter(action => action.sync_status === 'pending_sync').length,
     synced: userActions.filter(action => action.sync_status === 'synced').length,
@@ -718,6 +993,10 @@ function buildActionReply(action) {
 
     if (action.connection_type === 'google_tasks') {
       return '✔ Action préparée. Il faudra connecter Google Tasks pour la synchroniser.';
+    }
+
+    if (action.connection_type === 'google_drive') {
+      return '✔ Action préparée. Il faudra connecter Google Drive pour l’exporter.';
     }
 
     return '✔ Action préparée. Une connexion externe sera nécessaire pour la synchroniser.';
@@ -751,6 +1030,10 @@ function buildActionReply(action) {
     return '✔ Ajouté à la roadmap projet.';
   }
 
+  if (action.action_type === 'create_project_spec') {
+    return '✔ Idée capturée. Prochaine étape : la transformer en cahier des charges structuré.';
+  }
+
   return '✔ Action enregistrée.';
 }
 
@@ -778,6 +1061,7 @@ Règles de réponse :
 - si c’est une tâche : reformule clairement l’action
 - si c’est une idée : dis que l’idée est capturée et propose où la ranger
 - si c’est une émotion : valide brièvement et aide à poser le poids
+- si c’est un projet : dis que c’est relié au projet concerné si un projet est détecté
 - si c’est mixte : trie mentalement pour l’utilisateur
 - tu peux dire que c’est capturé dans Nyra
 - ne parle pas de fichier JSON
@@ -789,7 +1073,7 @@ app.get('/', (req, res) => {
   res.json({
     ok: true,
     app: 'Nyra backend',
-    version: 'structured-actions-v1',
+    version: STORE_VERSION,
   });
 });
 
@@ -885,6 +1169,92 @@ app.get('/store/reminders', (req, res) => {
   });
 });
 
+app.get('/store/projects', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const projects = store.projects.filter(project => project.user_id === userId);
+
+  res.json({
+    ok: true,
+    userId,
+    count: projects.length,
+    projects,
+  });
+});
+
+app.get('/store/relations', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const relations = store.relations.filter(relation => relation.user_id === userId);
+
+  res.json({
+    ok: true,
+    userId,
+    count: relations.length,
+    relations,
+  });
+});
+
+app.get('/store/contexts', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const contexts = store.contexts.filter(context => context.user_id === userId);
+
+  res.json({
+    ok: true,
+    userId,
+    count: contexts.length,
+    contexts,
+  });
+});
+
+app.get('/store/project/:projectId', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const projectId = normalizeText(req.params.projectId);
+  const store = readStore();
+
+  const project = store.projects.find(item => {
+    return item.user_id === userId && item.id === projectId;
+  });
+
+  if (!project) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Projet introuvable',
+    });
+  }
+
+  const relations = store.relations.filter(relation => {
+    return relation.user_id === userId && relation.target_id === project.id;
+  });
+
+  const relatedItemIds = relations.map(relation => relation.source_id);
+
+  const items = store.items.filter(item => {
+    return item.user_id === userId && relatedItemIds.includes(item.id);
+  });
+
+  const context = store.contexts.find(existingContext => {
+    return (
+      existingContext.user_id === userId &&
+      existingContext.context_type === 'project' &&
+      existingContext.project_id === project.id
+    );
+  });
+
+  res.json({
+    ok: true,
+    userId,
+    project,
+    context: context || null,
+    relations,
+    items,
+  });
+});
+
 app.get('/store/connected-accounts', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
@@ -970,6 +1340,9 @@ app.post('/chat', async (req, res) => {
       suggestions,
       stored_item: saved.item,
       stored_action: saved.action,
+      linked_project: saved.project,
+      created_relation: saved.relation,
+      updated_context: saved.context,
       memory_summary: getStoreSummary(userId),
       perf: {
         total_ms: Date.now() - startedAt,
@@ -986,5 +1359,5 @@ app.post('/chat', async (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Nyra backend structured actions lancé sur le port ${PORT}`);
+  console.log(`🚀 Nyra backend memory graph lancé sur le port ${PORT}`);
 });
