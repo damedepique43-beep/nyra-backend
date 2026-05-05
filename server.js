@@ -31,6 +31,7 @@ function ensureDir(dirPath) {
 function createEmptyStore() {
   return {
     items: [],
+    actions: [],
     conversations: [],
     updated_at: null,
   };
@@ -46,7 +47,16 @@ function readStore() {
       return empty;
     }
 
-    return JSON.parse(fs.readFileSync(STORE_FILE, 'utf8'));
+    const parsed = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8'));
+
+    return {
+      items: Array.isArray(parsed.items) ? parsed.items : [],
+      actions: Array.isArray(parsed.actions) ? parsed.actions : [],
+      conversations: Array.isArray(parsed.conversations)
+        ? parsed.conversations
+        : [],
+      updated_at: parsed.updated_at || null,
+    };
   } catch (error) {
     console.error('❌ readStore error:', error.message);
     return createEmptyStore();
@@ -56,6 +66,7 @@ function readStore() {
 function writeStore(store) {
   try {
     ensureDir(DATA_DIR);
+    store.updated_at = nowIso();
     fs.writeFileSync(STORE_FILE, JSON.stringify(store, null, 2), 'utf8');
   } catch (error) {
     console.error('❌ writeStore error:', error.message);
@@ -73,6 +84,15 @@ function nowIso() {
 function includesAny(text, words) {
   const lower = text.toLowerCase();
   return words.some(word => lower.includes(word));
+}
+
+function extractContext(text) {
+  const match = text.match(/contexte\s*:\s*(.*?)(?:\n|$)/i);
+  if (match && match[1]) {
+    return normalizeText(match[1]);
+  }
+
+  return normalizeText(text);
 }
 
 function analyzeMessage(message) {
@@ -176,6 +196,8 @@ function analyzeMessage(message) {
       'maintenant',
       'ce soir',
       'demain',
+      'demain matin',
+      'de toute urgence',
     ])
   ) {
     analysis.urgency = 'high';
@@ -189,7 +211,127 @@ function analyzeMessage(message) {
   return analysis;
 }
 
-function buildSuggestions(analysis) {
+function detectAction(message) {
+  const text = normalizeText(message);
+  const lower = text.toLowerCase();
+  const context = extractContext(text);
+
+  if (
+    includesAny(lower, [
+      'ajoute ça à mes priorités',
+      'ajoute ça à aujourd’hui',
+      "ajoute ça à aujourd'hui",
+      'ajouter à aujourd’hui',
+      "ajouter à aujourd'hui",
+    ])
+  ) {
+    return {
+      type: 'add_to_today',
+      label: 'Ajouter à aujourd’hui',
+      target: context,
+      status: 'done',
+    };
+  }
+
+  if (
+    includesAny(lower, [
+      'aide-moi à créer un rappel',
+      'crée un rappel',
+      'créer un rappel',
+      'rappel clair',
+    ])
+  ) {
+    return {
+      type: 'create_reminder',
+      label: 'Créer un rappel',
+      target: context,
+      status: 'draft',
+    };
+  }
+
+  if (
+    includesAny(lower, [
+      'aide-moi à planifier',
+      'planifier ça',
+      'planifier maintenant',
+      'avec une action simple',
+    ])
+  ) {
+    return {
+      type: 'plan_now',
+      label: 'Planifier maintenant',
+      target: context,
+      status: 'done',
+    };
+  }
+
+  if (
+    includesAny(lower, [
+      'aide-moi à traiter ça maintenant',
+      'traiter ça maintenant',
+      'traiter maintenant',
+      'étape par étape',
+    ])
+  ) {
+    return {
+      type: 'process_now',
+      label: 'Traiter maintenant',
+      target: context,
+      status: 'done',
+    };
+  }
+
+  if (
+    includesAny(lower, [
+      'classe ça dans mes idées',
+      'classer dans idées',
+      'classe dans idées',
+    ])
+  ) {
+    return {
+      type: 'classify_as_idea',
+      label: 'Classer dans idées',
+      target: context,
+      status: 'done',
+    };
+  }
+
+  if (
+    includesAny(lower, [
+      'transforme cette idée en tâche',
+      'transformer en tâche',
+      'transforme ça en tâche',
+    ])
+  ) {
+    return {
+      type: 'idea_to_task',
+      label: 'Transformer en tâche',
+      target: context,
+      status: 'done',
+    };
+  }
+
+  if (
+    includesAny(lower, [
+      'ajoute ça à la roadmap',
+      'ajouter à la roadmap',
+      'roadmap du projet',
+    ])
+  ) {
+    return {
+      type: 'add_to_roadmap',
+      label: 'Ajouter à la roadmap',
+      target: context,
+      status: 'done',
+    };
+  }
+
+  return null;
+}
+
+function buildSuggestions(analysis, action) {
+  if (action) return [];
+
   const suggestions = [];
 
   if (analysis.urgency === 'high') {
@@ -227,31 +369,73 @@ function buildSuggestions(analysis) {
   return [...new Set(suggestions)].slice(0, 4);
 }
 
-function createStoredItem({ userId, message, analysis }) {
+function createStoredItem({ userId, message, analysis, action }) {
+  const bucket = action ? actionToBucket(action.type) : analysis.suggested_bucket;
+
   return {
     id: crypto.randomUUID(),
     user_id: userId,
-    type: analysis.type,
-    bucket: analysis.suggested_bucket,
-    content: message,
+    type: action ? 'action_result' : analysis.type,
+    bucket,
+    content: action ? action.target : message,
     urgency: analysis.urgency,
-    tags: analysis.tags,
-    status: analysis.is_task ? 'todo' : 'captured',
+    tags: action ? ['action', action.type] : analysis.tags,
+    status: action ? action.status : analysis.is_task ? 'todo' : 'captured',
+    action_type: action ? action.type : null,
+    action_label: action ? action.label : null,
     created_at: nowIso(),
     updated_at: nowIso(),
   };
 }
 
-function saveCapture({ userId, message, reply, analysis }) {
+function actionToBucket(actionType) {
+  if (actionType === 'add_to_today') return 'today';
+  if (actionType === 'create_reminder') return 'reminders';
+  if (actionType === 'plan_now') return 'plans';
+  if (actionType === 'process_now') return 'plans';
+  if (actionType === 'classify_as_idea') return 'ideas';
+  if (actionType === 'idea_to_task') return 'tasks';
+  if (actionType === 'add_to_roadmap') return 'projects';
+  return 'actions';
+}
+
+function createActionRecord({ userId, message, action }) {
+  return {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    action_type: action.type,
+    label: action.label,
+    target: action.target,
+    status: action.status,
+    source_message: message,
+    created_at: nowIso(),
+    updated_at: nowIso(),
+  };
+}
+
+function saveCapture({ userId, message, reply, analysis, action }) {
   const store = readStore();
 
   const item = createStoredItem({
     userId,
     message,
     analysis,
+    action,
   });
 
   store.items.push(item);
+
+  let actionRecord = null;
+
+  if (action) {
+    actionRecord = createActionRecord({
+      userId,
+      message,
+      action,
+    });
+
+    store.actions.push(actionRecord);
+  }
 
   store.conversations.push({
     id: crypto.randomUUID(),
@@ -259,22 +443,30 @@ function saveCapture({ userId, message, reply, analysis }) {
     user_message: message,
     nyra_reply: reply,
     analysis,
+    action,
+    stored_item_id: item.id,
+    action_id: actionRecord ? actionRecord.id : null,
     created_at: nowIso(),
   });
 
   store.items = store.items.slice(-500);
+  store.actions = store.actions.slice(-300);
   store.conversations = store.conversations.slice(-200);
   store.updated_at = nowIso();
 
   writeStore(store);
 
-  return item;
+  return {
+    item,
+    action: actionRecord,
+  };
 }
 
 function getStoreSummary(userId) {
   const store = readStore();
 
   const userItems = store.items.filter(item => item.user_id === userId);
+  const userActions = store.actions.filter(action => action.user_id === userId);
 
   return {
     total_items: userItems.length,
@@ -282,8 +474,46 @@ function getStoreSummary(userId) {
     ideas: userItems.filter(item => item.bucket === 'ideas').length,
     journal: userItems.filter(item => item.bucket === 'journal').length,
     projects: userItems.filter(item => item.bucket === 'projects').length,
+    today: userItems.filter(item => item.bucket === 'today').length,
+    reminders: userItems.filter(item => item.bucket === 'reminders').length,
+    plans: userItems.filter(item => item.bucket === 'plans').length,
     inbox: userItems.filter(item => item.bucket === 'inbox').length,
+    actions: userActions.length,
   };
+}
+
+function buildActionReply(action) {
+  if (!action) return null;
+
+  if (action.type === 'add_to_today') {
+    return '✔ Ajouté à tes priorités d’aujourd’hui.';
+  }
+
+  if (action.type === 'create_reminder') {
+    return '✔ Rappel préparé. Prochaine étape : choisir l’heure exacte.';
+  }
+
+  if (action.type === 'plan_now') {
+    return '✔ Plan créé : fais une seule action simple maintenant.';
+  }
+
+  if (action.type === 'process_now') {
+    return '✔ On traite maintenant : commence par la plus petite action possible.';
+  }
+
+  if (action.type === 'classify_as_idea') {
+    return '✔ Classé dans tes idées.';
+  }
+
+  if (action.type === 'idea_to_task') {
+    return '✔ Transformé en tâche concrète.';
+  }
+
+  if (action.type === 'add_to_roadmap') {
+    return '✔ Ajouté à la roadmap projet.';
+  }
+
+  return '✔ Action enregistrée.';
 }
 
 function buildSystemPrompt(analysis, memorySummary) {
@@ -305,7 +535,7 @@ ${JSON.stringify(memorySummary)}
 Règles de réponse :
 - réponds en français naturel
 - sois directe, humaine, chaleureuse
-- maximum 120 mots
+- maximum 90 mots
 - pas de long pavé
 - si c’est une tâche : reformule clairement l’action
 - si c’est une idée : dis que l’idée est capturée et propose où la ranger
@@ -321,7 +551,7 @@ app.get('/', (req, res) => {
   res.json({
     ok: true,
     app: 'Nyra backend',
-    version: 'fast-v3-local-memory-suggestions',
+    version: 'fast-v3-local-memory-action-engine',
   });
 });
 
@@ -336,6 +566,20 @@ app.get('/store', (req, res) => {
     userId,
     summary: getStoreSummary(userId),
     items,
+  });
+});
+
+app.get('/store/actions', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const actions = store.actions.filter(action => action.user_id === userId);
+
+  res.json({
+    ok: true,
+    userId,
+    count: actions.length,
+    actions,
   });
 });
 
@@ -371,6 +615,38 @@ app.get('/store/ideas', (req, res) => {
   });
 });
 
+app.get('/store/today', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const today = store.items.filter(
+    item => item.user_id === userId && item.bucket === 'today'
+  );
+
+  res.json({
+    ok: true,
+    userId,
+    count: today.length,
+    today,
+  });
+});
+
+app.get('/store/reminders', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const reminders = store.items.filter(
+    item => item.user_id === userId && item.bucket === 'reminders'
+  );
+
+  res.json({
+    ok: true,
+    userId,
+    count: reminders.length,
+    reminders,
+  });
+});
+
 app.post('/store/reset', (req, res) => {
   writeStore(createEmptyStore());
 
@@ -395,42 +671,51 @@ app.post('/chat', async (req, res) => {
 
   try {
     const analysis = analyzeMessage(userMessage);
-    const suggestions = buildSuggestions(analysis);
+    const action = detectAction(userMessage);
+    const suggestions = buildSuggestions(analysis, action);
     const memorySummary = getStoreSummary(userId);
 
-    const completion = await openai.chat.completions.create({
-      model: OPENAI_MODEL,
-      temperature: 0.55,
-      max_tokens: 180,
-      messages: [
-        {
-          role: 'system',
-          content: buildSystemPrompt(analysis, memorySummary),
-        },
-        {
-          role: 'user',
-          content: userMessage,
-        },
-      ],
-    });
+    let reply = buildActionReply(action);
 
-    const reply =
-      normalizeText(completion.choices?.[0]?.message?.content) ||
-      'Je l’ai capté. Je le range dans Nyra.';
+    if (!reply) {
+      const completion = await openai.chat.completions.create({
+        model: OPENAI_MODEL,
+        temperature: 0.45,
+        max_tokens: 150,
+        messages: [
+          {
+            role: 'system',
+            content: buildSystemPrompt(analysis, memorySummary),
+          },
+          {
+            role: 'user',
+            content: userMessage,
+          },
+        ],
+      });
 
-    const storedItem = saveCapture({
+      reply =
+        normalizeText(completion.choices?.[0]?.message?.content) ||
+        'Je l’ai capté. Je le range dans Nyra.';
+    }
+
+    const saved = saveCapture({
       userId,
       message: userMessage,
       reply,
       analysis,
+      action,
     });
 
     res.json({
       ok: true,
       reply,
+      message: reply,
       analysis,
+      action,
       suggestions,
-      stored_item: storedItem,
+      stored_item: saved.item,
+      stored_action: saved.action,
       memory_summary: getStoreSummary(userId),
       perf: {
         total_ms: Date.now() - startedAt,
@@ -447,5 +732,5 @@ app.post('/chat', async (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Nyra backend FAST V3 local memory + suggestions lancé sur le port ${PORT}`);
+  console.log(`🚀 Nyra backend action engine lancé sur le port ${PORT}`);
 });
