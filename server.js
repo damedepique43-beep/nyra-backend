@@ -22,7 +22,7 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
-const STORE_VERSION = 'memory-graph-v1';
+const STORE_VERSION = 'project-spec-v1';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -157,29 +157,12 @@ function detectDatetimeHint(text) {
     return 'today';
   }
 
-  if (includesAny(lower, ['demain matin'])) {
-    return 'tomorrow_morning';
-  }
-
-  if (includesAny(lower, ['demain après-midi', 'demain apres-midi'])) {
-    return 'tomorrow_afternoon';
-  }
-
-  if (includesAny(lower, ['demain soir'])) {
-    return 'tomorrow_evening';
-  }
-
-  if (includesAny(lower, ['demain'])) {
-    return 'tomorrow';
-  }
-
-  if (includesAny(lower, ['cette semaine', 'dans la semaine'])) {
-    return 'this_week';
-  }
-
-  if (includesAny(lower, ['ce week-end', 'week-end', 'weekend'])) {
-    return 'weekend';
-  }
+  if (includesAny(lower, ['demain matin'])) return 'tomorrow_morning';
+  if (includesAny(lower, ['demain après-midi', 'demain apres-midi'])) return 'tomorrow_afternoon';
+  if (includesAny(lower, ['demain soir'])) return 'tomorrow_evening';
+  if (includesAny(lower, ['demain'])) return 'tomorrow';
+  if (includesAny(lower, ['cette semaine', 'dans la semaine'])) return 'this_week';
+  if (includesAny(lower, ['ce week-end', 'week-end', 'weekend'])) return 'weekend';
 
   if (includesAny(lower, ['plus tard', 'un jour', 'quand j’aurai le temps', "quand j'aurai le temps"])) {
     return 'later';
@@ -213,7 +196,7 @@ function detectPriority(text, analysis) {
   return 'normal';
 }
 
-function actionToProvider(actionType) {
+function actionToProvider() {
   return 'local';
 }
 
@@ -248,33 +231,13 @@ function buildNextStep(actionType, datetimeHint) {
     return 'Choisir une date et une heure pour le rappel.';
   }
 
-  if (actionType === 'add_to_today') {
-    return 'Traiter cette priorité aujourd’hui.';
-  }
-
-  if (actionType === 'plan_now') {
-    return 'Faire la plus petite première action maintenant.';
-  }
-
-  if (actionType === 'process_now') {
-    return 'Commencer par une étape simple et immédiate.';
-  }
-
-  if (actionType === 'classify_as_idea') {
-    return 'Garder cette idée pour la développer plus tard.';
-  }
-
-  if (actionType === 'idea_to_task') {
-    return 'Faire cette tâche quand elle devient prioritaire.';
-  }
-
-  if (actionType === 'add_to_roadmap') {
-    return 'Revoir cette entrée lors de la prochaine session projet.';
-  }
-
-  if (actionType === 'create_project_spec') {
-    return 'Structurer cette idée en cahier des charges.';
-  }
+  if (actionType === 'add_to_today') return 'Traiter cette priorité aujourd’hui.';
+  if (actionType === 'plan_now') return 'Faire la plus petite première action maintenant.';
+  if (actionType === 'process_now') return 'Commencer par une étape simple et immédiate.';
+  if (actionType === 'classify_as_idea') return 'Garder cette idée pour la développer plus tard.';
+  if (actionType === 'idea_to_task') return 'Faire cette tâche quand elle devient prioritaire.';
+  if (actionType === 'add_to_roadmap') return 'Revoir cette entrée lors de la prochaine session projet.';
+  if (actionType === 'create_project_spec') return 'Structurer cette idée en cahier des charges.';
 
   return 'Action enregistrée.';
 }
@@ -383,7 +346,7 @@ function ensureProject(store, userId, projectName, sourceText) {
     user_id: userId,
     name: projectName,
     key: projectKey,
-    description: `Projet détecté automatiquement à partir des captures Nyra.`,
+    description: 'Projet détecté automatiquement à partir des captures Nyra.',
     status: 'active',
     tags: ['project', projectKey],
     source: 'auto_detection',
@@ -421,6 +384,27 @@ function relationExists(store, userId, sourceId, targetId, relationType) {
   });
 }
 
+function getProjectRelatedItems(store, userId, projectId) {
+  const relations = store.relations.filter(relation => {
+    return (
+      relation.user_id === userId &&
+      relation.target_id === projectId &&
+      relation.relation_type === 'belongs_to_project'
+    );
+  });
+
+  const relatedItemIds = relations.map(relation => relation.source_id);
+
+  const items = store.items.filter(item => {
+    return item.user_id === userId && relatedItemIds.includes(item.id);
+  });
+
+  return {
+    relations,
+    items,
+  };
+}
+
 function buildContextSummary(project, relatedItems) {
   const recentItems = relatedItems
     .slice(-8)
@@ -437,19 +421,8 @@ function buildContextSummary(project, relatedItems) {
 function updateProjectContext(store, userId, project) {
   if (!project) return null;
 
-  const projectRelations = store.relations.filter(relation => {
-    return (
-      relation.user_id === userId &&
-      relation.target_id === project.id &&
-      relation.relation_type === 'belongs_to_project'
-    );
-  });
-
-  const relatedItemIds = projectRelations.map(relation => relation.source_id);
-
-  const relatedItems = store.items.filter(item => {
-    return item.user_id === userId && relatedItemIds.includes(item.id);
-  });
+  const { relations, items } = getProjectRelatedItems(store, userId, project.id);
+  const relatedItemIds = relations.map(relation => relation.source_id);
 
   let context = store.contexts.find(existingContext => {
     return (
@@ -476,7 +449,7 @@ function updateProjectContext(store, userId, project) {
   }
 
   context.related_items = relatedItemIds;
-  context.summary = buildContextSummary(project, relatedItems);
+  context.summary = buildContextSummary(project, items);
   context.updated_at = nowIso();
 
   return context;
@@ -551,8 +524,7 @@ function analyzeMessage(message) {
       'mal',
     ])
   ) {
-    analysis.type =
-      analysis.is_task || analysis.is_idea ? 'mixed' : 'emotion';
+    analysis.type = analysis.is_task || analysis.is_idea ? 'mixed' : 'emotion';
     analysis.is_emotion = true;
     analysis.suggested_bucket =
       analysis.is_task || analysis.is_idea ? 'inbox' : 'journal';
@@ -774,9 +746,7 @@ function buildSuggestions(analysis, action) {
 
   const suggestions = [];
 
-  if (analysis.urgency === 'high') {
-    suggestions.push('Traiter maintenant');
-  }
+  if (analysis.urgency === 'high') suggestions.push('Traiter maintenant');
 
   if (analysis.is_task) {
     suggestions.push('Ajouter à aujourd’hui');
@@ -827,7 +797,14 @@ function createStoredItem({ userId, message, analysis, action }) {
     priority: action ? action.priority : detectPriority(message, analysis),
     datetime_hint: action ? action.datetime_hint : analysis.datetime_hint,
 
-    tags: action ? uniqueArray(['action', action.action_type, action.provider, analysis.project_name ? normalizeKey(analysis.project_name) : null]) : analysis.tags,
+    tags: action
+      ? uniqueArray([
+          'action',
+          action.action_type,
+          action.provider,
+          analysis.project_name ? normalizeKey(analysis.project_name) : null,
+        ])
+      : analysis.tags,
     status: action ? action.status : analysis.is_task ? 'todo' : 'captured',
 
     project_name: analysis.project_name || null,
@@ -1002,34 +979,13 @@ function buildActionReply(action) {
     return '✔ Action préparée. Une connexion externe sera nécessaire pour la synchroniser.';
   }
 
-  if (action.action_type === 'add_to_today') {
-    return '✔ Ajouté à tes priorités d’aujourd’hui.';
-  }
-
-  if (action.action_type === 'create_reminder') {
-    return '✔ Rappel préparé. Prochaine étape : choisir l’heure exacte.';
-  }
-
-  if (action.action_type === 'plan_now') {
-    return '✔ Plan créé : fais une seule action simple maintenant.';
-  }
-
-  if (action.action_type === 'process_now') {
-    return '✔ On traite maintenant : commence par la plus petite action possible.';
-  }
-
-  if (action.action_type === 'classify_as_idea') {
-    return '✔ Classé dans tes idées.';
-  }
-
-  if (action.action_type === 'idea_to_task') {
-    return '✔ Transformé en tâche concrète.';
-  }
-
-  if (action.action_type === 'add_to_roadmap') {
-    return '✔ Ajouté à la roadmap projet.';
-  }
-
+  if (action.action_type === 'add_to_today') return '✔ Ajouté à tes priorités d’aujourd’hui.';
+  if (action.action_type === 'create_reminder') return '✔ Rappel préparé. Prochaine étape : choisir l’heure exacte.';
+  if (action.action_type === 'plan_now') return '✔ Plan créé : fais une seule action simple maintenant.';
+  if (action.action_type === 'process_now') return '✔ On traite maintenant : commence par la plus petite action possible.';
+  if (action.action_type === 'classify_as_idea') return '✔ Classé dans tes idées.';
+  if (action.action_type === 'idea_to_task') return '✔ Transformé en tâche concrète.';
+  if (action.action_type === 'add_to_roadmap') return '✔ Ajouté à la roadmap projet.';
   if (action.action_type === 'create_project_spec') {
     return '✔ Idée capturée. Prochaine étape : la transformer en cahier des charges structuré.';
   }
@@ -1067,6 +1023,150 @@ Règles de réponse :
 - ne parle pas de fichier JSON
 - ne parle pas de tes mécanismes internes
 `.trim();
+}
+
+function buildProjectSpecPrompt(project, items, existingContext) {
+  const captures = items
+    .slice(-40)
+    .map((item, index) => {
+      return `${index + 1}. [${item.type || item.bucket || 'note'}] ${item.content || item.title}`;
+    })
+    .join('\n');
+
+  return `
+Tu es Nyra, une IA de structuration projet.
+
+Tu dois transformer des captures brutes en cahier des charges clair, exploitable, premium et structuré.
+
+Projet :
+${project.name}
+
+Description actuelle :
+${project.description || 'Aucune description.'}
+
+Contexte existant :
+${existingContext?.summary || 'Aucun contexte existant.'}
+
+Captures liées au projet :
+${captures || 'Aucune capture liée.'}
+
+Génère un cahier des charges en français, au format Markdown.
+
+Structure obligatoire :
+
+# Cahier des charges — ${project.name}
+
+## 1. Vision du projet
+Explique l’intention globale du projet.
+
+## 2. Problème à résoudre
+Décris le problème principal.
+
+## 3. Objectif principal
+Décris le résultat recherché.
+
+## 4. Utilisateurs concernés
+Liste les types d’utilisateurs.
+
+## 5. Fonctionnalités principales
+Liste les fonctionnalités importantes.
+
+## 6. Fonctionnalités MVP
+Liste ce qui doit être construit en premier.
+
+## 7. Parcours utilisateur
+Décris le parcours simple.
+
+## 8. Données à stocker
+Liste les données importantes.
+
+## 9. Automatisations intelligentes
+Liste ce que l’IA doit comprendre, organiser ou proposer.
+
+## 10. Contraintes importantes
+Liste les contraintes techniques, UX ou produit.
+
+## 11. Roadmap recommandée
+Découpe en étapes claires.
+
+## 12. Questions à clarifier
+Liste les zones encore floues.
+
+## 13. Prochaine meilleure action
+Donne une seule action concrète à faire ensuite.
+
+Règles :
+- sois structuré
+- sois concret
+- ne fais pas semblant d’avoir des informations absentes
+- quand une info manque, mets-la dans “Questions à clarifier”
+- ne parle pas de JSON
+- ne parle pas de mécanismes internes
+`.trim();
+}
+
+async function generateProjectSpec({ project, items, existingContext }) {
+  const completion = await openai.chat.completions.create({
+    model: OPENAI_MODEL,
+    temperature: 0.35,
+    max_tokens: 1800,
+    messages: [
+      {
+        role: 'system',
+        content: 'Tu es une IA experte en cahiers des charges produit, UX, architecture fonctionnelle et structuration de projets.',
+      },
+      {
+        role: 'user',
+        content: buildProjectSpecPrompt(project, items, existingContext),
+      },
+    ],
+  });
+
+  return normalizeText(completion.choices?.[0]?.message?.content) ||
+    `# Cahier des charges — ${project.name}\n\nImpossible de générer le cahier des charges pour le moment.`;
+}
+
+function saveProjectSpecContext({ store, userId, project, specMarkdown, relatedItems }) {
+  let specContext = store.contexts.find(context => {
+    return (
+      context.user_id === userId &&
+      context.context_type === 'project_spec' &&
+      context.project_id === project.id
+    );
+  });
+
+  if (!specContext) {
+    specContext = {
+      id: crypto.randomUUID(),
+      user_id: userId,
+      context_type: 'project_spec',
+      project_id: project.id,
+      name: `Cahier des charges — ${project.name}`,
+      summary: '',
+      content: '',
+      format: 'markdown',
+      version_number: 1,
+      related_items: [],
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    };
+
+    store.contexts.push(specContext);
+  } else {
+    specContext.version_number = Number(specContext.version_number || 1) + 1;
+  }
+
+  specContext.summary = `Cahier des charges généré pour le projet ${project.name}.`;
+  specContext.content = specMarkdown;
+  specContext.format = 'markdown';
+  specContext.related_items = relatedItems.map(item => item.id);
+  specContext.updated_at = nowIso();
+
+  project.updated_at = nowIso();
+  project.has_project_spec = true;
+  project.project_spec_context_id = specContext.id;
+
+  return specContext;
 }
 
 app.get('/', (req, res) => {
@@ -1227,15 +1327,7 @@ app.get('/store/project/:projectId', (req, res) => {
     });
   }
 
-  const relations = store.relations.filter(relation => {
-    return relation.user_id === userId && relation.target_id === project.id;
-  });
-
-  const relatedItemIds = relations.map(relation => relation.source_id);
-
-  const items = store.items.filter(item => {
-    return item.user_id === userId && relatedItemIds.includes(item.id);
-  });
+  const { relations, items } = getProjectRelatedItems(store, userId, project.id);
 
   const context = store.contexts.find(existingContext => {
     return (
@@ -1245,14 +1337,89 @@ app.get('/store/project/:projectId', (req, res) => {
     );
   });
 
+  const projectSpec = store.contexts.find(existingContext => {
+    return (
+      existingContext.user_id === userId &&
+      existingContext.context_type === 'project_spec' &&
+      existingContext.project_id === project.id
+    );
+  });
+
   res.json({
     ok: true,
     userId,
     project,
     context: context || null,
+    project_spec: projectSpec || null,
     relations,
     items,
   });
+});
+
+app.post('/store/project/:projectId/spec', async (req, res) => {
+  const startedAt = Date.now();
+
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const projectId = normalizeText(req.params.projectId);
+
+  try {
+    const store = readStore();
+
+    const project = store.projects.find(item => {
+      return item.user_id === userId && item.id === projectId;
+    });
+
+    if (!project) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Projet introuvable',
+      });
+    }
+
+    const { items } = getProjectRelatedItems(store, userId, project.id);
+
+    const existingContext = store.contexts.find(context => {
+      return (
+        context.user_id === userId &&
+        context.context_type === 'project' &&
+        context.project_id === project.id
+      );
+    });
+
+    const specMarkdown = await generateProjectSpec({
+      project,
+      items,
+      existingContext,
+    });
+
+    const specContext = saveProjectSpecContext({
+      store,
+      userId,
+      project,
+      specMarkdown,
+      relatedItems: items,
+    });
+
+    writeStore(store);
+
+    res.json({
+      ok: true,
+      userId,
+      project,
+      project_spec: specContext,
+      markdown: specMarkdown,
+      perf: {
+        total_ms: Date.now() - startedAt,
+      },
+    });
+  } catch (error) {
+    console.error('❌ /store/project/:projectId/spec error:', error.message);
+
+    res.status(500).json({
+      ok: false,
+      error: 'Erreur génération cahier des charges',
+    });
+  }
 });
 
 app.get('/store/connected-accounts', (req, res) => {
@@ -1359,5 +1526,5 @@ app.post('/chat', async (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Nyra backend memory graph lancé sur le port ${PORT}`);
+  console.log(`🚀 Nyra backend project spec lancé sur le port ${PORT}`);
 });
