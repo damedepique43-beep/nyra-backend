@@ -39,7 +39,7 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
-const STORE_VERSION = 'google-tasks-create-task-v1';
+const STORE_VERSION = 'executive-actions-persistence-v1';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -57,6 +57,7 @@ function createEmptyStore() {
     users: [],
     items: [],
     actions: [],
+    action_events: [],
     conversations: [],
     projects: [],
     relations: [],
@@ -83,6 +84,7 @@ function readStore() {
       users: Array.isArray(parsed.users) ? parsed.users : [],
       items: Array.isArray(parsed.items) ? parsed.items : [],
       actions: Array.isArray(parsed.actions) ? parsed.actions : [],
+      action_events: Array.isArray(parsed.action_events) ? parsed.action_events : [],
       conversations: Array.isArray(parsed.conversations) ? parsed.conversations : [],
       projects: Array.isArray(parsed.projects) ? parsed.projects : [],
       relations: Array.isArray(parsed.relations) ? parsed.relations : [],
@@ -105,6 +107,7 @@ function writeStore(store) {
     const safeStore = {
       ...store,
       users: Array.isArray(store.users) ? store.users : [],
+      action_events: Array.isArray(store.action_events) ? store.action_events : [],
       version: STORE_VERSION,
       updated_at: nowIso(),
     };
@@ -436,6 +439,212 @@ function buildStructuredAction({ userId, message, actionType, label, status, ana
     created_at: nowIso(),
     updated_at: nowIso(),
   };
+}
+
+
+const ACTION_STATUS_VALUES = ['suggested', 'draft', 'executing', 'done', 'failed', 'cancelled'];
+
+function normalizeActionStatus(status, fallback = 'suggested') {
+  const normalized = normalizeKey(status || fallback).replace(/-/g, '_');
+
+  if (ACTION_STATUS_VALUES.includes(normalized)) return normalized;
+  if (normalized === 'todo') return 'suggested';
+  if (normalized === 'completed' || normalized === 'complete' || normalized === 'success') return 'done';
+  if (normalized === 'error') return 'failed';
+  if (normalized === 'canceled') return 'cancelled';
+
+  return fallback;
+}
+
+function buildActionEvent({ userId, actionId, fromStatus, toStatus, reason, metadata, source }) {
+  return {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    action_id: actionId,
+    from_status: fromStatus || null,
+    to_status: normalizeActionStatus(toStatus),
+    reason: normalizeText(reason || ''),
+    metadata: metadata && typeof metadata === 'object' ? metadata : {},
+    source: source || 'backend',
+    created_at: nowIso(),
+  };
+}
+
+function attachInitialActionHistory(action, reason = 'Action créée par Nyra.') {
+  const initialStatus = normalizeActionStatus(action.status || 'suggested');
+  const event = buildActionEvent({
+    userId: action.user_id,
+    actionId: action.id,
+    fromStatus: null,
+    toStatus: initialStatus,
+    reason,
+    metadata: {
+      action_type: action.action_type || action.type || null,
+      provider: action.provider || null,
+    },
+    source: 'creation',
+  });
+
+  action.status = initialStatus;
+  action.status_history = Array.isArray(action.status_history) ? action.status_history : [];
+  action.status_history.push(event);
+  action.execution_count = Number(action.execution_count || 0);
+  action.retry_count = Number(action.retry_count || 0);
+  action.last_error = action.last_error || null;
+  action.updated_at = nowIso();
+
+  if (initialStatus === 'done') action.completed_at = action.completed_at || nowIso();
+  if (initialStatus === 'failed') action.failed_at = action.failed_at || nowIso();
+  if (initialStatus === 'cancelled') action.cancelled_at = action.cancelled_at || nowIso();
+
+  return event;
+}
+
+function ensureActionRuntimeFields(action) {
+  action.status = normalizeActionStatus(action.status || 'suggested');
+  action.status_history = Array.isArray(action.status_history) ? action.status_history : [];
+  action.execution_count = Number(action.execution_count || 0);
+  action.retry_count = Number(action.retry_count || 0);
+  action.last_error = action.last_error || null;
+  action.updated_at = action.updated_at || action.created_at || nowIso();
+  return action;
+}
+
+function findUserAction(store, userId, actionId) {
+  const index = store.actions.findIndex(action => {
+    return action.user_id === userId && action.id === actionId;
+  });
+
+  if (index === -1) return null;
+
+  return {
+    index,
+    action: ensureActionRuntimeFields(store.actions[index]),
+  };
+}
+
+function syncLinkedItemWithAction(store, action) {
+  if (!action?.item_id) return null;
+
+  const item = store.items.find(existingItem => {
+    return existingItem.user_id === action.user_id && existingItem.id === action.item_id;
+  });
+
+  if (!item) return null;
+
+  item.status = action.status;
+  item.sync_status = action.sync_status || item.sync_status || 'local_only';
+  item.external_id = action.external_id || item.external_id || null;
+  item.updated_at = nowIso();
+
+  return item;
+}
+
+function updateActionStatusInStore({ store, userId, actionId, status, reason, metadata, source }) {
+  const found = findUserAction(store, userId, actionId);
+
+  if (!found) {
+    return {
+      ok: false,
+      error: 'ACTION_NOT_FOUND',
+    };
+  }
+
+  const action = found.action;
+  const previousStatus = action.status;
+  const nextStatus = normalizeActionStatus(status, previousStatus);
+
+  if (previousStatus === nextStatus) {
+    action.updated_at = nowIso();
+    return {
+      ok: true,
+      changed: false,
+      action,
+      event: null,
+      item: syncLinkedItemWithAction(store, action),
+    };
+  }
+
+  const event = buildActionEvent({
+    userId,
+    actionId,
+    fromStatus: previousStatus,
+    toStatus: nextStatus,
+    reason,
+    metadata,
+    source: source || 'manual_update',
+  });
+
+  action.status = nextStatus;
+  action.updated_at = nowIso();
+  action.status_history.push(event);
+
+  if (nextStatus === 'executing') {
+    action.execution_count = Number(action.execution_count || 0) + 1;
+    action.started_at = nowIso();
+    action.sync_status = action.requires_connection ? 'pending_sync' : 'local_only';
+  }
+
+  if (nextStatus === 'done') {
+    action.completed_at = nowIso();
+    action.last_error = null;
+    action.sync_status = action.requires_connection ? (action.external_id ? 'synced' : action.sync_status || 'pending_sync') : 'local_only';
+  }
+
+  if (nextStatus === 'failed') {
+    action.failed_at = nowIso();
+    action.last_error = normalizeText(metadata?.error || reason || 'Erreur inconnue') || 'Erreur inconnue';
+    action.sync_status = 'failed';
+  }
+
+  if (nextStatus === 'cancelled') {
+    action.cancelled_at = nowIso();
+    action.sync_status = 'cancelled';
+  }
+
+  if (nextStatus === 'suggested' || nextStatus === 'draft') {
+    action.sync_status = action.requires_connection ? 'requires_connection' : 'local_only';
+  }
+
+  store.action_events = Array.isArray(store.action_events) ? store.action_events : [];
+  store.action_events.push(event);
+  store.action_events = store.action_events.slice(-1000);
+
+  return {
+    ok: true,
+    changed: true,
+    action,
+    event,
+    item: syncLinkedItemWithAction(store, action),
+  };
+}
+
+function retryActionInStore({ store, userId, actionId, reason, metadata }) {
+  const found = findUserAction(store, userId, actionId);
+
+  if (!found) {
+    return {
+      ok: false,
+      error: 'ACTION_NOT_FOUND',
+    };
+  }
+
+  const action = found.action;
+  action.retry_count = Number(action.retry_count || 0) + 1;
+  action.last_error = null;
+
+  return updateActionStatusInStore({
+    store,
+    userId,
+    actionId,
+    status: 'suggested',
+    reason: reason || 'Action remise en attente pour nouvelle tentative.',
+    metadata: {
+      ...(metadata && typeof metadata === 'object' ? metadata : {}),
+      retry_count: action.retry_count,
+    },
+    source: 'retry',
+  });
 }
 
 function detectKnownProjectName(text) {
@@ -1025,6 +1234,10 @@ function saveCapture({ userId, message, reply, analysis, action }) {
       updated_at: nowIso(),
     };
 
+    const initialActionEvent = attachInitialActionHistory(actionRecord);
+    store.action_events = Array.isArray(store.action_events) ? store.action_events : [];
+    store.action_events.push(initialActionEvent);
+
     store.actions.push(actionRecord);
 
     if (linkedProject && !relationExists(store, userId, actionRecord.id, linkedProject.id, 'action_for_project')) {
@@ -1061,6 +1274,7 @@ function saveCapture({ userId, message, reply, analysis, action }) {
 
   store.items = store.items.slice(-500);
   store.actions = store.actions.slice(-300);
+  store.action_events = Array.isArray(store.action_events) ? store.action_events.slice(-1000) : [];
   store.conversations = store.conversations.slice(-200);
   store.projects = store.projects.slice(-100);
   store.relations = store.relations.slice(-1000);
@@ -1097,6 +1311,12 @@ function getStoreSummary(userId) {
     plans: userItems.filter(item => item.bucket === 'plans').length,
     inbox: userItems.filter(item => item.bucket === 'inbox').length,
     actions: userActions.length,
+    suggested_actions: userActions.filter(action => action.status === 'suggested').length,
+    draft_actions: userActions.filter(action => action.status === 'draft').length,
+    executing_actions: userActions.filter(action => action.status === 'executing').length,
+    done_actions: userActions.filter(action => action.status === 'done').length,
+    failed_actions: userActions.filter(action => action.status === 'failed').length,
+    cancelled_actions: userActions.filter(action => action.status === 'cancelled').length,
     project_count: userProjects.length,
     relation_count: userRelations.length,
     context_count: userContexts.length,
@@ -1636,7 +1856,7 @@ async function handleExportProjectSpecToDrive(req, res, routeLabel) {
     };
     project.updated_at = nowIso();
 
-    store.actions.push({
+    const exportAction = {
       id: crypto.randomUUID(),
       user_id: userId,
       action_type: 'export_project_spec_to_drive',
@@ -1657,7 +1877,12 @@ async function handleExportProjectSpecToDrive(req, res, routeLabel) {
       project_name: project.name,
       created_at: nowIso(),
       updated_at: nowIso(),
-    });
+    };
+
+    const exportActionEvent = attachInitialActionHistory(exportAction, 'Cahier des charges exporté vers Google Drive.');
+    store.action_events = Array.isArray(store.action_events) ? store.action_events : [];
+    store.action_events.push(exportActionEvent);
+    store.actions.push(exportAction);
 
     writeStore(store);
 
@@ -1765,7 +1990,7 @@ async function handleCreateCalendarEvent(req, res) {
 
     const store = readStore();
 
-    store.actions.push({
+    const calendarAction = {
       id: crypto.randomUUID(),
       user_id: userId,
       action_type: 'create_calendar_event',
@@ -1789,9 +2014,15 @@ async function handleCreateCalendarEvent(req, res) {
       event_timezone: timezone,
       created_at: nowIso(),
       updated_at: nowIso(),
-    });
+    };
+
+    const calendarActionEvent = attachInitialActionHistory(calendarAction, 'Événement créé dans Google Agenda.');
+    store.action_events = Array.isArray(store.action_events) ? store.action_events : [];
+    store.action_events.push(calendarActionEvent);
+    store.actions.push(calendarAction);
 
     store.actions = store.actions.slice(-300);
+    store.action_events = store.action_events.slice(-1000);
 
     writeStore(store);
 
@@ -1870,7 +2101,7 @@ async function handleCreateGoogleTask(req, res) {
 
     const store = readStore();
 
-    store.actions.push({
+    const taskAction = {
       id: crypto.randomUUID(),
       user_id: userId,
       action_type: 'create_google_task',
@@ -1892,9 +2123,15 @@ async function handleCreateGoogleTask(req, res) {
       task_due: due || null,
       created_at: nowIso(),
       updated_at: nowIso(),
-    });
+    };
+
+    const taskActionEvent = attachInitialActionHistory(taskAction, 'Tâche créée dans Google Tasks.');
+    store.action_events = Array.isArray(store.action_events) ? store.action_events : [];
+    store.action_events.push(taskActionEvent);
+    store.actions.push(taskAction);
 
     store.actions = store.actions.slice(-300);
+    store.action_events = store.action_events.slice(-1000);
 
     writeStore(store);
 
@@ -2191,6 +2428,221 @@ app.get('/store/actions', (req, res) => {
     userId,
     count: actions.length,
     actions,
+  });
+});
+
+
+app.get('/store/action-events', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const actionId = normalizeText(req.query?.actionId || '');
+  const store = readStore();
+
+  let events = Array.isArray(store.action_events)
+    ? store.action_events.filter(event => event.user_id === userId)
+    : [];
+
+  if (actionId) {
+    events = events.filter(event => event.action_id === actionId);
+  }
+
+  res.json({
+    ok: true,
+    userId,
+    actionId: actionId || null,
+    count: events.length,
+    events,
+  });
+});
+
+app.get('/store/actions/:actionId', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const actionId = normalizeText(req.params.actionId);
+  const store = readStore();
+  const found = findUserAction(store, userId, actionId);
+
+  if (!found) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Action introuvable',
+    });
+  }
+
+  const events = Array.isArray(store.action_events)
+    ? store.action_events.filter(event => event.user_id === userId && event.action_id === actionId)
+    : [];
+
+  return res.json({
+    ok: true,
+    userId,
+    action: found.action,
+    events,
+  });
+});
+
+app.patch('/store/actions/:actionId/status', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const actionId = normalizeText(req.params.actionId);
+  const status = normalizeText(req.body?.status || '');
+  const reason = normalizeText(req.body?.reason || 'Mise à jour manuelle du statut.');
+  const metadata = req.body?.metadata && typeof req.body.metadata === 'object'
+    ? req.body.metadata
+    : {};
+
+  if (!status) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Statut manquant',
+      allowed_statuses: ACTION_STATUS_VALUES,
+    });
+  }
+
+  const normalizedStatus = normalizeActionStatus(status, '');
+
+  if (!ACTION_STATUS_VALUES.includes(normalizedStatus)) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Statut invalide',
+      allowed_statuses: ACTION_STATUS_VALUES,
+    });
+  }
+
+  const store = readStore();
+  const result = updateActionStatusInStore({
+    store,
+    userId,
+    actionId,
+    status: normalizedStatus,
+    reason,
+    metadata,
+    source: 'api_status_update',
+  });
+
+  if (!result.ok) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Action introuvable',
+    });
+  }
+
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    changed: result.changed,
+    action: result.action,
+    event: result.event,
+    linked_item: result.item,
+  });
+});
+
+app.post('/store/actions/:actionId/retry', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const actionId = normalizeText(req.params.actionId);
+  const reason = normalizeText(req.body?.reason || 'Nouvelle tentative demandée.');
+  const metadata = req.body?.metadata && typeof req.body.metadata === 'object'
+    ? req.body.metadata
+    : {};
+
+  const store = readStore();
+  const result = retryActionInStore({
+    store,
+    userId,
+    actionId,
+    reason,
+    metadata,
+  });
+
+  if (!result.ok) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Action introuvable',
+    });
+  }
+
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    action: result.action,
+    event: result.event,
+    linked_item: result.item,
+    message: 'Action remise en attente pour une nouvelle tentative.',
+  });
+});
+
+app.post('/store/actions/:actionId/complete', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const actionId = normalizeText(req.params.actionId);
+  const reason = normalizeText(req.body?.reason || 'Action marquée comme terminée.');
+  const metadata = req.body?.metadata && typeof req.body.metadata === 'object'
+    ? req.body.metadata
+    : {};
+
+  const store = readStore();
+  const result = updateActionStatusInStore({
+    store,
+    userId,
+    actionId,
+    status: 'done',
+    reason,
+    metadata,
+    source: 'api_complete',
+  });
+
+  if (!result.ok) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Action introuvable',
+    });
+  }
+
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    action: result.action,
+    event: result.event,
+    linked_item: result.item,
+  });
+});
+
+app.post('/store/actions/:actionId/cancel', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const actionId = normalizeText(req.params.actionId);
+  const reason = normalizeText(req.body?.reason || 'Action annulée.');
+  const metadata = req.body?.metadata && typeof req.body.metadata === 'object'
+    ? req.body.metadata
+    : {};
+
+  const store = readStore();
+  const result = updateActionStatusInStore({
+    store,
+    userId,
+    actionId,
+    status: 'cancelled',
+    reason,
+    metadata,
+    source: 'api_cancel',
+  });
+
+  if (!result.ok) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Action introuvable',
+    });
+  }
+
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    action: result.action,
+    event: result.event,
+    linked_item: result.item,
   });
 });
 
