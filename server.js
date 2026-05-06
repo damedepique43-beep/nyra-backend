@@ -37,7 +37,7 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
-const STORE_VERSION = 'google-drive-doc-v1';
+const STORE_VERSION = 'google-user-v1';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -52,6 +52,7 @@ function nowIso() {
 function createEmptyStore() {
   return {
     version: STORE_VERSION,
+    users: [],
     items: [],
     actions: [],
     conversations: [],
@@ -77,6 +78,7 @@ function readStore() {
 
     return {
       version: parsed.version || STORE_VERSION,
+      users: Array.isArray(parsed.users) ? parsed.users : [],
       items: Array.isArray(parsed.items) ? parsed.items : [],
       actions: Array.isArray(parsed.actions) ? parsed.actions : [],
       conversations: Array.isArray(parsed.conversations) ? parsed.conversations : [],
@@ -100,6 +102,7 @@ function writeStore(store) {
 
     const safeStore = {
       ...store,
+      users: Array.isArray(store.users) ? store.users : [],
       version: STORE_VERSION,
       updated_at: nowIso(),
     };
@@ -130,6 +133,11 @@ function normalizeKey(value) {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
+}
+
+function buildGoogleNyraUserId(googleUserId, googleEmail) {
+  const stableSource = normalizeText(googleUserId || googleEmail || crypto.randomUUID());
+  return `google-${normalizeKey(stableSource)}`;
 }
 
 function buildSafeFileName(value) {
@@ -1334,15 +1342,77 @@ function createGoogleOAuthClient() {
   );
 }
 
+function findGoogleAccountByIdentity(store, { userId, googleUserId, email }) {
+  return store.connected_accounts.find(account => {
+    const sameProvider =
+      account.provider === 'google' &&
+      account.connection_type === 'google_drive';
+
+    if (!sameProvider) return false;
+
+    return (
+      account.user_id === userId ||
+      account.legacy_user_id === userId ||
+      account.google_user_id === googleUserId ||
+      account.email === email
+    );
+  });
+}
+
 function getGoogleDriveAccount(store, userId) {
   return store.connected_accounts.find(account => {
     return (
-      account.user_id === userId &&
       account.provider === 'google' &&
       account.connection_type === 'google_drive' &&
-      account.status === 'connected'
+      account.status === 'connected' &&
+      (
+        account.user_id === userId ||
+        account.legacy_user_id === userId ||
+        account.google_user_id === userId
+      )
     );
   });
+}
+
+function upsertGoogleUser(store, googleProfile, requestedUserId) {
+  const googleUserId = normalizeText(googleProfile.id || '');
+  const email = normalizeText(googleProfile.email || '');
+  const realUserId = buildGoogleNyraUserId(googleUserId, email);
+
+  let user = store.users.find(existingUser => {
+    return (
+      existingUser.id === realUserId ||
+      existingUser.google_user_id === googleUserId ||
+      existingUser.email === email
+    );
+  });
+
+  if (!user) {
+    user = {
+      id: realUserId,
+      provider: 'google',
+      google_user_id: googleUserId || null,
+      email: email || null,
+      name: googleProfile.name || null,
+      picture: googleProfile.picture || null,
+      legacy_user_id: requestedUserId || null,
+      access_type: requestedUserId === 'local-user' ? 'founder_or_local' : 'standard',
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    };
+
+    store.users.push(user);
+  } else {
+    user.provider = 'google';
+    user.google_user_id = googleUserId || user.google_user_id || null;
+    user.email = email || user.email || null;
+    user.name = googleProfile.name || user.name || null;
+    user.picture = googleProfile.picture || user.picture || null;
+    user.legacy_user_id = user.legacy_user_id || requestedUserId || null;
+    user.updated_at = nowIso();
+  }
+
+  return user;
 }
 
 async function getAuthenticatedDriveClient(userId) {
@@ -1598,14 +1668,14 @@ app.get('/auth/google/callback', async (req, res) => {
       return res.status(400).send('Code Google manquant.');
     }
 
-    let userId = 'local-user';
+    let requestedUserId = 'local-user';
 
     if (rawState) {
       try {
         const parsedState = JSON.parse(Buffer.from(rawState, 'base64url').toString('utf8'));
-        userId = normalizeText(parsedState.userId || 'local-user');
+        requestedUserId = normalizeText(parsedState.userId || 'local-user');
       } catch {
-        userId = 'local-user';
+        requestedUserId = 'local-user';
       }
     }
 
@@ -1624,23 +1694,26 @@ app.get('/auth/google/callback', async (req, res) => {
 
     const store = readStore();
 
-    let account = store.connected_accounts.find(existingAccount => {
-      return (
-        existingAccount.user_id === userId &&
-        existingAccount.provider === 'google' &&
-        existingAccount.connection_type === 'google_drive'
-      );
+    const googleUser = upsertGoogleUser(store, userInfo.data, requestedUserId);
+    const googleUserId = normalizeText(userInfo.data.id || '');
+    const googleEmail = normalizeText(userInfo.data.email || '');
+
+    let account = findGoogleAccountByIdentity(store, {
+      userId: requestedUserId,
+      googleUserId,
+      email: googleEmail,
     });
 
     if (!account) {
       account = {
         id: crypto.randomUUID(),
-        user_id: userId,
+        user_id: googleUser.id,
+        legacy_user_id: requestedUserId,
         provider: 'google',
         connection_type: 'google_drive',
         status: 'connected',
-        google_user_id: userInfo.data.id || null,
-        email: userInfo.data.email || null,
+        google_user_id: googleUserId || null,
+        email: googleEmail || null,
         name: userInfo.data.name || null,
         picture: userInfo.data.picture || null,
         scopes: GOOGLE_DRIVE_SCOPES,
@@ -1651,9 +1724,11 @@ app.get('/auth/google/callback', async (req, res) => {
 
       store.connected_accounts.push(account);
     } else {
+      account.user_id = googleUser.id;
+      account.legacy_user_id = account.legacy_user_id || requestedUserId;
       account.status = 'connected';
-      account.google_user_id = userInfo.data.id || account.google_user_id || null;
-      account.email = userInfo.data.email || account.email || null;
+      account.google_user_id = googleUserId || account.google_user_id || null;
+      account.email = googleEmail || account.email || null;
       account.name = userInfo.data.name || account.name || null;
       account.picture = userInfo.data.picture || account.picture || null;
       account.scopes = GOOGLE_DRIVE_SCOPES;
@@ -1666,6 +1741,12 @@ app.get('/auth/google/callback', async (req, res) => {
     }
 
     writeStore(store);
+
+    console.log('✅ GOOGLE USER CONNECTED:', {
+      user_id: googleUser.id,
+      legacy_user_id: requestedUserId,
+      email: googleEmail,
+    });
 
     return res.send(`
       <!doctype html>
@@ -1706,13 +1787,20 @@ app.get('/auth/google/callback', async (req, res) => {
               color: #d8b4fe;
               font-weight: 700;
             }
+            .small {
+              font-size: 12px;
+              color: #a1a1aa;
+              word-break: break-all;
+            }
           </style>
         </head>
         <body>
           <div class="card">
             <h1>Google Drive est connecté à Nyra ✅</h1>
-            <p>Compte connecté : <span class="email">${userInfo.data.email || 'Google'}</span></p>
-            <p>Tu peux revenir dans Nyra. L’export vers Google Drive est maintenant disponible côté backend.</p>
+            <p>Compte connecté : <span class="email">${googleEmail || 'Google'}</span></p>
+            <p>Identité Nyra créée : <span class="email">${googleUser.name || googleEmail || 'Utilisateur Google'}</span></p>
+            <p class="small">User ID Nyra : ${googleUser.id}</p>
+            <p>Tu peux revenir dans Nyra. L’export vers Google Drive est disponible.</p>
           </div>
         </body>
       </html>
@@ -1725,6 +1813,59 @@ app.get('/auth/google/callback', async (req, res) => {
       <p>${error.message}</p>
     `);
   }
+});
+
+app.get('/auth/me', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const account = getGoogleDriveAccount(store, userId);
+
+  if (!account) {
+    return res.json({
+      ok: true,
+      connected: false,
+      userId,
+      user: null,
+      account: null,
+      connect_url: `/auth/google?userId=${encodeURIComponent(userId)}`,
+      full_connect_url: `https://nyra-backend-production-d168.up.railway.app/auth/google?userId=${encodeURIComponent(userId)}`,
+    });
+  }
+
+  const user = store.users.find(existingUser => {
+    return (
+      existingUser.id === account.user_id ||
+      existingUser.google_user_id === account.google_user_id ||
+      existingUser.email === account.email
+    );
+  });
+
+  return res.json({
+    ok: true,
+    connected: true,
+    userId,
+    effective_user_id: account.user_id,
+    legacy_user_id: account.legacy_user_id || null,
+    user: user || null,
+    account: {
+      id: account.id,
+      user_id: account.user_id,
+      legacy_user_id: account.legacy_user_id || null,
+      provider: account.provider,
+      connection_type: account.connection_type,
+      status: account.status,
+      google_user_id: account.google_user_id || null,
+      email: account.email || null,
+      name: account.name || null,
+      picture: account.picture || null,
+      scopes: account.scopes || [],
+      has_tokens: Boolean(account.tokens),
+      has_refresh_token: Boolean(account.tokens?.refresh_token),
+      created_at: account.created_at,
+      updated_at: account.updated_at,
+    },
+  });
 });
 
 app.get('/store', (req, res) => {
@@ -1866,13 +2007,21 @@ app.get('/store/connected-accounts', (req, res) => {
   const store = readStore();
 
   const accounts = store.connected_accounts
-    .filter(account => account.user_id === userId)
+    .filter(account => {
+      return (
+        account.user_id === userId ||
+        account.legacy_user_id === userId ||
+        account.google_user_id === userId
+      );
+    })
     .map(account => ({
       id: account.id,
       user_id: account.user_id,
+      legacy_user_id: account.legacy_user_id || null,
       provider: account.provider,
       connection_type: account.connection_type,
       status: account.status,
+      google_user_id: account.google_user_id || null,
       email: account.email || null,
       name: account.name || null,
       picture: account.picture || null,
@@ -2136,5 +2285,5 @@ app.post('/chat', async (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Nyra backend Google Docs Drive lancé sur le port ${PORT}`);
+  console.log(`🚀 Nyra backend Google User lancé sur le port ${PORT}`);
 });
