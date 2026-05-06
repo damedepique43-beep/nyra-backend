@@ -39,7 +39,7 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
-const STORE_VERSION = 'google-tasks-create-task-v1';
+const STORE_VERSION = 'executive-actions-v1';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -938,6 +938,181 @@ function buildSuggestions(analysis, action) {
   return uniqueArray(suggestions).slice(0, 4);
 }
 
+function buildExecutiveAction({ userId, type, title, description, priority, datetimeHint, projectName, provider, confidence, reason, payload }) {
+  return {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    type,
+    action_type: type,
+    title: cleanActionTitle(title || description || 'Action Nyra'),
+    description: normalizeMultilineText(description || ''),
+    priority: priority || 'normal',
+    datetime_hint: datetimeHint || null,
+    project_name: projectName || null,
+    provider: provider || 'local',
+    status: 'suggested',
+    execution_status: 'not_executed',
+    requires_confirmation: true,
+    confidence: typeof confidence === 'number' ? confidence : 0.75,
+    reason: normalizeText(reason || ''),
+    payload: payload || {},
+    source: 'executive_layer',
+    created_at: nowIso(),
+  };
+}
+
+function buildExecutiveActions({ userId, message, analysis, action }) {
+  const executiveActions = [];
+  const text = normalizeText(message);
+  const priority = detectPriority(text, analysis);
+  const datetimeHint = analysis.datetime_hint || detectDatetimeHint(text);
+  const projectName = analysis.project_name || null;
+
+  if (action) {
+    executiveActions.push(
+      buildExecutiveAction({
+        userId,
+        type: action.action_type || action.type || 'local_action',
+        title: action.title || action.label || text,
+        description: action.target || text,
+        priority: action.priority || priority,
+        datetimeHint: action.datetime_hint || datetimeHint,
+        projectName: action.project_name || projectName,
+        provider: action.provider || 'local',
+        confidence: 0.94,
+        reason: 'Action structurée déjà détectée par Nyra.',
+        payload: {
+          action_id: action.id || null,
+          label: action.label || null,
+          target: action.target || null,
+        },
+      })
+    );
+  }
+
+  if (analysis.is_task) {
+    executiveActions.push(
+      buildExecutiveAction({
+        userId,
+        type: 'create_google_task',
+        title: text,
+        description: text,
+        priority,
+        datetimeHint,
+        projectName,
+        provider: 'google_tasks',
+        confidence: 0.9,
+        reason: 'Le message contient une tâche ou une action à faire.',
+        payload: {
+          title: cleanActionTitle(text),
+          notes: text,
+          due_hint: datetimeHint,
+        },
+      })
+    );
+  }
+
+  if (analysis.urgency === 'high' || datetimeHint === 'today') {
+    executiveActions.push(
+      buildExecutiveAction({
+        userId,
+        type: 'add_to_today',
+        title: text,
+        description: text,
+        priority: 'high',
+        datetimeHint: datetimeHint || 'today',
+        projectName,
+        provider: 'local',
+        confidence: 0.86,
+        reason: 'Le message semble important ou à traiter rapidement.',
+        payload: {
+          bucket: 'today',
+          content: text,
+        },
+      })
+    );
+  }
+
+  if (datetimeHint && includesAny(text, ['planifie', 'planning', 'agenda', 'créneau', 'creneau', 'rendez-vous', 'rdv', 'session', 'demain', 'ce soir'])) {
+    executiveActions.push(
+      buildExecutiveAction({
+        userId,
+        type: 'create_calendar_event',
+        title: text,
+        description: text,
+        priority,
+        datetimeHint,
+        projectName,
+        provider: 'google_calendar',
+        confidence: 0.78,
+        reason: 'Le message contient un indice de planification ou de moment.',
+        payload: {
+          title: cleanActionTitle(text),
+          description: text,
+          datetime_hint: datetimeHint,
+          timezone: 'Europe/Paris',
+          duration_minutes: 60,
+          needs_exact_time: true,
+        },
+      })
+    );
+  }
+
+  if (analysis.is_project) {
+    executiveActions.push(
+      buildExecutiveAction({
+        userId,
+        type: 'add_to_roadmap',
+        title: text,
+        description: text,
+        priority,
+        datetimeHint,
+        projectName,
+        provider: 'local',
+        confidence: 0.82,
+        reason: 'Le message est lié à un projet actif.',
+        payload: {
+          project_name: projectName,
+          content: text,
+        },
+      })
+    );
+
+    if (includesAny(text, ['cahier des charges', 'structure', 'fonctionnalité', 'mvp', 'roadmap', 'architecture'])) {
+      executiveActions.push(
+        buildExecutiveAction({
+          userId,
+          type: 'create_project_spec',
+          title: projectName ? `Cahier des charges — ${projectName}` : text,
+          description: text,
+          priority,
+          datetimeHint,
+          projectName,
+          provider: 'google_drive',
+          confidence: 0.8,
+          reason: 'Le message contient une intention de structuration projet.',
+          payload: {
+            project_name: projectName,
+            content: text,
+            exportable_to_drive: true,
+          },
+        })
+      );
+    }
+  }
+
+  const seen = new Set();
+
+  return executiveActions.filter(executiveAction => {
+    const key = `${executiveAction.type}:${normalizeKey(executiveAction.title)}:${executiveAction.provider}`;
+
+    if (seen.has(key)) return false;
+    seen.add(key);
+
+    return true;
+  }).slice(0, 5);
+}
+
 function createStoredItem({ userId, message, analysis, action }) {
   const bucket = action ? actionToBucket(action.action_type) : analysis.suggested_bucket;
 
@@ -975,7 +1150,7 @@ function createStoredItem({ userId, message, analysis, action }) {
   };
 }
 
-function saveCapture({ userId, message, reply, analysis, action }) {
+function saveCapture({ userId, message, reply, analysis, action, executiveActions }) {
   const store = readStore();
 
   const item = createStoredItem({
@@ -1051,6 +1226,7 @@ function saveCapture({ userId, message, reply, analysis, action }) {
     nyra_reply: reply,
     analysis,
     action,
+    executive_actions: Array.isArray(executiveActions) ? executiveActions : [],
     stored_item_id: item.id,
     action_id: actionRecord ? actionRecord.id : null,
     project_id: linkedProject ? linkedProject.id : null,
@@ -2529,6 +2705,12 @@ app.post('/chat', async (req, res) => {
     const analysis = analyzeMessage(userMessage);
     const action = detectAction(userMessage, userId, analysis);
     const suggestions = buildSuggestions(analysis, action);
+    const executiveActions = buildExecutiveActions({
+      userId,
+      message: userMessage,
+      analysis,
+      action,
+    });
     const memorySummary = getStoreSummary(userId);
 
     let reply = buildActionReply(action);
@@ -2561,6 +2743,7 @@ app.post('/chat', async (req, res) => {
       reply,
       analysis,
       action,
+      executiveActions,
     });
 
     res.json({
@@ -2569,6 +2752,7 @@ app.post('/chat', async (req, res) => {
       message: reply,
       analysis,
       action,
+      executive_actions: executiveActions,
       suggestions,
       stored_item: saved.item,
       stored_action: saved.action,
