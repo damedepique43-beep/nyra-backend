@@ -39,7 +39,7 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
-const STORE_VERSION = 'google-calendar-tasks-scopes-v1';
+const STORE_VERSION = 'google-calendar-create-event-v1';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -1417,14 +1417,14 @@ function upsertGoogleUser(store, googleProfile, requestedUserId) {
   return user;
 }
 
-async function getAuthenticatedDriveClient(userId) {
+async function getAuthenticatedGoogleClient(userId) {
   const store = readStore();
   const account = getGoogleDriveAccount(store, userId);
 
   if (!account || !account.tokens) {
     return {
       ok: false,
-      error: 'GOOGLE_DRIVE_NOT_CONNECTED',
+      error: 'GOOGLE_NOT_CONNECTED',
     };
   }
 
@@ -1446,15 +1446,54 @@ async function getAuthenticatedDriveClient(userId) {
     }
   });
 
+  return {
+    ok: true,
+    oauth2Client,
+    account,
+  };
+}
+
+async function getAuthenticatedDriveClient(userId) {
+  const authResult = await getAuthenticatedGoogleClient(userId);
+
+  if (!authResult.ok) {
+    return {
+      ok: false,
+      error: 'GOOGLE_DRIVE_NOT_CONNECTED',
+    };
+  }
+
   const drive = google.drive({
     version: 'v3',
-    auth: oauth2Client,
+    auth: authResult.oauth2Client,
   });
 
   return {
     ok: true,
     drive,
-    account,
+    account: authResult.account,
+  };
+}
+
+async function getAuthenticatedCalendarClient(userId) {
+  const authResult = await getAuthenticatedGoogleClient(userId);
+
+  if (!authResult.ok) {
+    return {
+      ok: false,
+      error: 'GOOGLE_CALENDAR_NOT_CONNECTED',
+    };
+  }
+
+  const calendar = google.calendar({
+    version: 'v3',
+    auth: authResult.oauth2Client,
+  });
+
+  return {
+    ok: true,
+    calendar,
+    account: authResult.account,
   };
 }
 
@@ -1620,6 +1659,137 @@ async function handleExportProjectSpecToDrive(req, res, routeLabel) {
     return res.status(500).json({
       ok: false,
       error: 'Erreur export Google Drive',
+      details: error.message,
+    });
+  }
+}
+
+async function handleCreateCalendarEvent(req, res) {
+  const startedAt = Date.now();
+
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const title = normalizeText(req.body?.title || '');
+  const description = normalizeMultilineText(req.body?.description || '');
+  const startTime = normalizeText(req.body?.startTime || '');
+  const endTime = normalizeText(req.body?.endTime || '');
+  const timezone = normalizeText(req.body?.timezone || 'Europe/Paris');
+  const location = normalizeText(req.body?.location || '');
+  const calendarId = normalizeText(req.body?.calendarId || 'primary');
+
+  if (!title) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Titre manquant',
+    });
+  }
+
+  if (!startTime || !endTime) {
+    return res.status(400).json({
+      ok: false,
+      error: 'startTime et endTime sont obligatoires',
+    });
+  }
+
+  const startDate = new Date(startTime);
+  const endDate = new Date(endTime);
+
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Format de date invalide',
+    });
+  }
+
+  if (endDate <= startDate) {
+    return res.status(400).json({
+      ok: false,
+      error: 'La date de fin doit être après la date de début',
+    });
+  }
+
+  try {
+    const authResult = await getAuthenticatedCalendarClient(userId);
+
+    if (!authResult.ok) {
+      return res.status(401).json({
+        ok: false,
+        error: authResult.error,
+        connect_url: `/auth/google?userId=${encodeURIComponent(userId)}`,
+        full_connect_url: `https://nyra-backend-production-d168.up.railway.app/auth/google?userId=${encodeURIComponent(userId)}`,
+      });
+    }
+
+    const eventBody = {
+      summary: title,
+      description: description || 'Événement créé depuis Nyra.',
+      location: location || undefined,
+      start: {
+        dateTime: startTime,
+        timeZone: timezone,
+      },
+      end: {
+        dateTime: endTime,
+        timeZone: timezone,
+      },
+      reminders: {
+        useDefault: true,
+      },
+    };
+
+    const created = await authResult.calendar.events.insert({
+      calendarId,
+      requestBody: eventBody,
+    });
+
+    const store = readStore();
+
+    store.actions.push({
+      id: crypto.randomUUID(),
+      user_id: userId,
+      action_type: 'create_calendar_event',
+      type: 'create_calendar_event',
+      label: 'Créer un événement Google Agenda',
+      title,
+      target: description || title,
+      status: 'done',
+      priority: 'normal',
+      datetime_hint: null,
+      next_step: 'L’événement est créé dans Google Agenda.',
+      provider: 'google_calendar',
+      sync_status: 'synced',
+      external_id: created.data.id || null,
+      external_link: created.data.htmlLink || null,
+      requires_connection: true,
+      connection_type: 'google_calendar',
+      calendar_id: calendarId,
+      event_start: startTime,
+      event_end: endTime,
+      event_timezone: timezone,
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    });
+
+    store.actions = store.actions.slice(-300);
+
+    writeStore(store);
+
+    return res.json({
+      ok: true,
+      userId,
+      calendar_event: created.data,
+      event_id: created.data.id || null,
+      event_link: created.data.htmlLink || null,
+      message: 'Événement créé dans Google Agenda.',
+      perf: {
+        total_ms: Date.now() - startedAt,
+      },
+    });
+  } catch (error) {
+    console.error('❌ /calendar/create-event error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: 'Erreur création événement Google Agenda',
       details: error.message,
     });
   }
@@ -2200,6 +2370,10 @@ app.post('/store/project/:projectId/export-drive', async (req, res) => {
   return handleExportProjectSpecToDrive(req, res, '/store/project/:projectId/export-drive');
 });
 
+app.post('/calendar/create-event', async (req, res) => {
+  return handleCreateCalendarEvent(req, res);
+});
+
 app.post('/store/reset', (req, res) => {
   writeStore(createEmptyStore());
 
@@ -2288,5 +2462,5 @@ app.post('/chat', async (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Nyra backend Calendar Tasks Scopes lancé sur le port ${PORT}`);
+  console.log(`🚀 Nyra backend Calendar Create Event lancé sur le port ${PORT}`);
 });
