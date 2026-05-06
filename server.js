@@ -23,11 +23,13 @@ const GOOGLE_REDIRECT_URI =
   process.env.GOOGLE_REDIRECT_URI ||
   'https://nyra-backend-production-d168.up.railway.app/auth/google/callback';
 
-const GOOGLE_DRIVE_SCOPES = [
+const GOOGLE_SCOPES = [
   'openid',
   'email',
   'profile',
   'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/tasks',
 ];
 
 const openai = new OpenAI({
@@ -37,7 +39,7 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
-const STORE_VERSION = 'google-user-v1';
+const STORE_VERSION = 'google-calendar-tasks-scopes-v1';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -1652,7 +1654,7 @@ app.get('/auth/google', (req, res) => {
   const url = oauth2Client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
-    scope: GOOGLE_DRIVE_SCOPES,
+    scope: GOOGLE_SCOPES,
     state,
   });
 
@@ -1716,7 +1718,7 @@ app.get('/auth/google/callback', async (req, res) => {
         email: googleEmail || null,
         name: userInfo.data.name || null,
         picture: userInfo.data.picture || null,
-        scopes: GOOGLE_DRIVE_SCOPES,
+        scopes: GOOGLE_SCOPES,
         tokens,
         created_at: nowIso(),
         updated_at: nowIso(),
@@ -1731,7 +1733,7 @@ app.get('/auth/google/callback', async (req, res) => {
       account.email = googleEmail || account.email || null;
       account.name = userInfo.data.name || account.name || null;
       account.picture = userInfo.data.picture || account.picture || null;
-      account.scopes = GOOGLE_DRIVE_SCOPES;
+      account.scopes = GOOGLE_SCOPES;
       account.tokens = {
         ...account.tokens,
         ...tokens,
@@ -1746,6 +1748,7 @@ app.get('/auth/google/callback', async (req, res) => {
       user_id: googleUser.id,
       legacy_user_id: requestedUserId,
       email: googleEmail,
+      scopes: GOOGLE_SCOPES,
     });
 
     return res.send(`
@@ -1796,11 +1799,11 @@ app.get('/auth/google/callback', async (req, res) => {
         </head>
         <body>
           <div class="card">
-            <h1>Google Drive est connecté à Nyra ✅</h1>
+            <h1>Google est connecté à Nyra ✅</h1>
             <p>Compte connecté : <span class="email">${googleEmail || 'Google'}</span></p>
-            <p>Identité Nyra créée : <span class="email">${googleUser.name || googleEmail || 'Utilisateur Google'}</span></p>
+            <p>Drive, Agenda et Tasks sont maintenant autorisés côté backend.</p>
             <p class="small">User ID Nyra : ${googleUser.id}</p>
-            <p>Tu peux revenir dans Nyra. L’export vers Google Drive est disponible.</p>
+            <p>Tu peux revenir dans Nyra.</p>
           </div>
         </body>
       </html>
@@ -2285,5 +2288,5 @@ app.post('/chat', async (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Nyra backend Google User lancé sur le port ${PORT}`);
+  console.log(`🚀 Nyra backend Calendar Tasks Scopes lancé sur le port ${PORT}`);
 });
