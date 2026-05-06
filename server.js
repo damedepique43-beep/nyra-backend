@@ -5,7 +5,9 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { Readable } = require('stream');
 const OpenAI = require('openai');
+const { google } = require('googleapis');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -15,6 +17,19 @@ app.use(express.json({ limit: '1mb' }));
 
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const GOOGLE_REDIRECT_URI =
+  process.env.GOOGLE_REDIRECT_URI ||
+  'https://nyra-backend-production-d168.up.railway.app/auth/google/callback';
+
+const GOOGLE_DRIVE_SCOPES = [
+  'openid',
+  'email',
+  'profile',
+  'https://www.googleapis.com/auth/drive.file',
+];
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
@@ -22,7 +37,7 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
-const STORE_VERSION = 'project-spec-v1';
+const STORE_VERSION = 'google-drive-v1';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -1192,12 +1207,298 @@ function getLatestProjectSpec(store, userId, projectId) {
   return specs[0] || null;
 }
 
+function createGoogleOAuthClient() {
+  return new google.auth.OAuth2(
+    GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET,
+    GOOGLE_REDIRECT_URI
+  );
+}
+
+function getGoogleDriveAccount(store, userId) {
+  return store.connected_accounts.find(account => {
+    return (
+      account.user_id === userId &&
+      account.provider === 'google' &&
+      account.connection_type === 'google_drive' &&
+      account.status === 'connected'
+    );
+  });
+}
+
+async function getAuthenticatedDriveClient(userId) {
+  const store = readStore();
+  const account = getGoogleDriveAccount(store, userId);
+
+  if (!account || !account.tokens) {
+    return {
+      ok: false,
+      error: 'GOOGLE_DRIVE_NOT_CONNECTED',
+    };
+  }
+
+  const oauth2Client = createGoogleOAuthClient();
+
+  oauth2Client.setCredentials(account.tokens);
+
+  oauth2Client.on('tokens', tokens => {
+    const freshStore = readStore();
+    const freshAccount = getGoogleDriveAccount(freshStore, userId);
+
+    if (freshAccount) {
+      freshAccount.tokens = {
+        ...freshAccount.tokens,
+        ...tokens,
+      };
+      freshAccount.updated_at = nowIso();
+      writeStore(freshStore);
+    }
+  });
+
+  const drive = google.drive({
+    version: 'v3',
+    auth: oauth2Client,
+  });
+
+  return {
+    ok: true,
+    drive,
+    account,
+  };
+}
+
+async function findOrCreateDriveFolder(drive, folderName) {
+  const safeFolderName = normalizeText(folderName || 'Nyra');
+
+  const search = await drive.files.list({
+    q: `mimeType='application/vnd.google-apps.folder' and name='${safeFolderName.replace(/'/g, "\\'")}' and trashed=false`,
+    spaces: 'drive',
+    fields: 'files(id, name)',
+    pageSize: 1,
+  });
+
+  const existingFolder = search.data.files?.[0];
+
+  if (existingFolder?.id) {
+    return existingFolder;
+  }
+
+  const created = await drive.files.create({
+    requestBody: {
+      name: safeFolderName,
+      mimeType: 'application/vnd.google-apps.folder',
+    },
+    fields: 'id, name',
+  });
+
+  return created.data;
+}
+
+async function uploadMarkdownToDrive({ userId, project, markdown }) {
+  const authResult = await getAuthenticatedDriveClient(userId);
+
+  if (!authResult.ok) {
+    return authResult;
+  }
+
+  const drive = authResult.drive;
+  const rootFolder = await findOrCreateDriveFolder(drive, 'Nyra');
+  const specsFolder = await findOrCreateDriveFolder(drive, 'Nyra - Cahiers des charges');
+
+  const fileName = `${buildSafeFileName(project.name)}-cahier-des-charges.md`;
+
+  const uploaded = await drive.files.create({
+    requestBody: {
+      name: fileName,
+      parents: [specsFolder.id || rootFolder.id],
+      mimeType: 'text/markdown',
+    },
+    media: {
+      mimeType: 'text/markdown',
+      body: Readable.from([markdown]),
+    },
+    fields: 'id, name, mimeType, webViewLink, webContentLink, createdTime',
+  });
+
+  return {
+    ok: true,
+    file: uploaded.data,
+    fileName,
+  };
+}
+
 app.get('/', (req, res) => {
   res.json({
     ok: true,
     app: 'Nyra backend',
     version: STORE_VERSION,
+    google_configured: Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET),
   });
+});
+
+app.get('/auth/google', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+    return res.status(500).send('Google OAuth non configuré côté serveur.');
+  }
+
+  const oauth2Client = createGoogleOAuthClient();
+
+  const state = Buffer.from(
+    JSON.stringify({
+      userId,
+      nonce: crypto.randomUUID(),
+      created_at: nowIso(),
+    })
+  ).toString('base64url');
+
+  const url = oauth2Client.generateAuthUrl({
+    access_type: 'offline',
+    prompt: 'consent',
+    scope: GOOGLE_DRIVE_SCOPES,
+    state,
+  });
+
+  return res.redirect(url);
+});
+
+app.get('/auth/google/callback', async (req, res) => {
+  try {
+    const code = normalizeText(req.query?.code || '');
+    const rawState = normalizeText(req.query?.state || '');
+
+    if (!code) {
+      return res.status(400).send('Code Google manquant.');
+    }
+
+    let userId = 'local-user';
+
+    if (rawState) {
+      try {
+        const parsedState = JSON.parse(Buffer.from(rawState, 'base64url').toString('utf8'));
+        userId = normalizeText(parsedState.userId || 'local-user');
+      } catch {
+        userId = 'local-user';
+      }
+    }
+
+    const oauth2Client = createGoogleOAuthClient();
+    const tokenResponse = await oauth2Client.getToken(code);
+    const tokens = tokenResponse.tokens;
+
+    oauth2Client.setCredentials(tokens);
+
+    const oauth2 = google.oauth2({
+      version: 'v2',
+      auth: oauth2Client,
+    });
+
+    const userInfo = await oauth2.userinfo.get();
+
+    const store = readStore();
+
+    let account = store.connected_accounts.find(existingAccount => {
+      return (
+        existingAccount.user_id === userId &&
+        existingAccount.provider === 'google' &&
+        existingAccount.connection_type === 'google_drive'
+      );
+    });
+
+    if (!account) {
+      account = {
+        id: crypto.randomUUID(),
+        user_id: userId,
+        provider: 'google',
+        connection_type: 'google_drive',
+        status: 'connected',
+        google_user_id: userInfo.data.id || null,
+        email: userInfo.data.email || null,
+        name: userInfo.data.name || null,
+        picture: userInfo.data.picture || null,
+        scopes: GOOGLE_DRIVE_SCOPES,
+        tokens,
+        created_at: nowIso(),
+        updated_at: nowIso(),
+      };
+
+      store.connected_accounts.push(account);
+    } else {
+      account.status = 'connected';
+      account.google_user_id = userInfo.data.id || account.google_user_id || null;
+      account.email = userInfo.data.email || account.email || null;
+      account.name = userInfo.data.name || account.name || null;
+      account.picture = userInfo.data.picture || account.picture || null;
+      account.scopes = GOOGLE_DRIVE_SCOPES;
+      account.tokens = {
+        ...account.tokens,
+        ...tokens,
+        refresh_token: tokens.refresh_token || account.tokens?.refresh_token,
+      };
+      account.updated_at = nowIso();
+    }
+
+    writeStore(store);
+
+    return res.send(`
+      <!doctype html>
+      <html lang="fr">
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>Nyra — Google connecté</title>
+          <style>
+            body {
+              margin: 0;
+              min-height: 100vh;
+              background: #050505;
+              color: #fff;
+              font-family: Arial, sans-serif;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              padding: 24px;
+            }
+            .card {
+              max-width: 520px;
+              background: #111;
+              border: 1px solid #7c3aed;
+              border-radius: 24px;
+              padding: 28px;
+              box-shadow: 0 0 28px rgba(168, 85, 247, 0.25);
+            }
+            h1 {
+              margin: 0 0 12px;
+              font-size: 26px;
+            }
+            p {
+              color: #d4d4d8;
+              line-height: 1.5;
+            }
+            .email {
+              color: #d8b4fe;
+              font-weight: 700;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <h1>Google Drive est connecté à Nyra ✅</h1>
+            <p>Compte connecté : <span class="email">${userInfo.data.email || 'Google'}</span></p>
+            <p>Tu peux revenir dans Nyra. L’export vers Google Drive est maintenant disponible côté backend.</p>
+          </div>
+        </body>
+      </html>
+    `);
+  } catch (error) {
+    console.error('❌ /auth/google/callback error:', error.message);
+
+    return res.status(500).send(`
+      <h1>Erreur connexion Google</h1>
+      <p>${error.message}</p>
+    `);
+  }
 });
 
 app.get('/store', (req, res) => {
@@ -1331,6 +1632,36 @@ app.get('/store/contexts', (req, res) => {
     userId,
     count: contexts.length,
     contexts,
+  });
+});
+
+app.get('/store/connected-accounts', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const accounts = store.connected_accounts
+    .filter(account => account.user_id === userId)
+    .map(account => ({
+      id: account.id,
+      user_id: account.user_id,
+      provider: account.provider,
+      connection_type: account.connection_type,
+      status: account.status,
+      email: account.email || null,
+      name: account.name || null,
+      picture: account.picture || null,
+      scopes: account.scopes || [],
+      created_at: account.created_at,
+      updated_at: account.updated_at,
+      has_tokens: Boolean(account.tokens),
+      has_refresh_token: Boolean(account.tokens?.refresh_token),
+    }));
+
+  res.json({
+    ok: true,
+    userId,
+    count: accounts.length,
+    accounts,
   });
 });
 
@@ -1483,20 +1814,104 @@ app.get('/store/project/:projectId/export-markdown', (req, res) => {
   }
 });
 
-app.get('/store/connected-accounts', (req, res) => {
-  const userId = normalizeText(req.query?.userId || 'local-user');
-  const store = readStore();
+app.post('/store/project/:projectId/export-drive', async (req, res) => {
+  const startedAt = Date.now();
 
-  const accounts = store.connected_accounts.filter(
-    account => account.user_id === userId
-  );
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const projectId = normalizeText(req.params.projectId);
 
-  res.json({
-    ok: true,
-    userId,
-    count: accounts.length,
-    accounts,
-  });
+  try {
+    const store = readStore();
+
+    const project = store.projects.find(item => {
+      return item.user_id === userId && item.id === projectId;
+    });
+
+    if (!project) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Projet introuvable',
+      });
+    }
+
+    const projectSpec = getLatestProjectSpec(store, userId, project.id);
+
+    if (!projectSpec || !projectSpec.content) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Aucun cahier des charges trouvé pour ce projet',
+      });
+    }
+
+    const uploadResult = await uploadMarkdownToDrive({
+      userId,
+      project,
+      markdown: projectSpec.content,
+    });
+
+    if (!uploadResult.ok) {
+      return res.status(401).json({
+        ok: false,
+        error: uploadResult.error,
+        connect_url: `/auth/google?userId=${encodeURIComponent(userId)}`,
+        full_connect_url: `https://nyra-backend-production-d168.up.railway.app/auth/google?userId=${encodeURIComponent(userId)}`,
+      });
+    }
+
+    project.last_drive_export = {
+      file_id: uploadResult.file.id,
+      file_name: uploadResult.file.name,
+      web_view_link: uploadResult.file.webViewLink || null,
+      web_content_link: uploadResult.file.webContentLink || null,
+      exported_at: nowIso(),
+    };
+    project.updated_at = nowIso();
+
+    store.actions.push({
+      id: crypto.randomUUID(),
+      user_id: userId,
+      action_type: 'export_project_spec_to_drive',
+      type: 'export_project_spec_to_drive',
+      label: 'Exporter vers Google Drive',
+      title: `Exporter ${project.name} vers Google Drive`,
+      target: project.name,
+      status: 'done',
+      priority: 'normal',
+      datetime_hint: null,
+      next_step: 'Le cahier des charges est sauvegardé dans Google Drive.',
+      provider: 'google_drive',
+      sync_status: 'synced',
+      external_id: uploadResult.file.id,
+      requires_connection: true,
+      connection_type: 'google_drive',
+      project_id: project.id,
+      project_name: project.name,
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    });
+
+    writeStore(store);
+
+    return res.json({
+      ok: true,
+      userId,
+      project,
+      drive_file: uploadResult.file,
+      file_name: uploadResult.fileName,
+      message: 'Cahier des charges exporté vers Google Drive.',
+      perf: {
+        total_ms: Date.now() - startedAt,
+      },
+    });
+  } catch (error) {
+    console.error('❌ /store/project/:projectId/export-drive error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: 'Erreur export Google Drive',
+      details: error.message,
+    });
+  }
 });
 
 app.post('/store/reset', (req, res) => {
@@ -1587,5 +2002,5 @@ app.post('/chat', async (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Nyra backend project spec lancé sur le port ${PORT}`);
+  console.log(`🚀 Nyra backend Google Drive lancé sur le port ${PORT}`);
 });
