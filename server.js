@@ -37,7 +37,7 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
-const STORE_VERSION = 'google-drive-v1';
+const STORE_VERSION = 'google-drive-doc-v1';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -114,6 +114,15 @@ function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function normalizeMultilineText(value) {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function normalizeKey(value) {
   return normalizeText(value)
     .toLowerCase()
@@ -127,6 +136,130 @@ function buildSafeFileName(value) {
   const safe = normalizeKey(value || 'nyra-projet');
   if (!safe) return 'nyra-projet';
   return safe.slice(0, 80);
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function markdownInlineToHtml(value) {
+  return escapeHtml(value)
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>');
+}
+
+function markdownToGoogleDocHtml(markdown, projectName) {
+  const normalized = normalizeMultilineText(markdown);
+  const lines = normalized.split('\n');
+
+  const htmlParts = [];
+  let listOpen = false;
+
+  function closeListIfNeeded() {
+    if (listOpen) {
+      htmlParts.push('</ul>');
+      listOpen = false;
+    }
+  }
+
+  lines.forEach(rawLine => {
+    const line = rawLine.trim();
+
+    if (!line) {
+      closeListIfNeeded();
+      htmlParts.push('<p></p>');
+      return;
+    }
+
+    if (line.startsWith('# ')) {
+      closeListIfNeeded();
+      htmlParts.push(`<h1>${markdownInlineToHtml(line.replace(/^#\s+/, ''))}</h1>`);
+      return;
+    }
+
+    if (line.startsWith('## ')) {
+      closeListIfNeeded();
+      htmlParts.push(`<h2>${markdownInlineToHtml(line.replace(/^##\s+/, ''))}</h2>`);
+      return;
+    }
+
+    if (line.startsWith('### ')) {
+      closeListIfNeeded();
+      htmlParts.push(`<h3>${markdownInlineToHtml(line.replace(/^###\s+/, ''))}</h3>`);
+      return;
+    }
+
+    if (/^[-•]\s+/.test(line)) {
+      if (!listOpen) {
+        htmlParts.push('<ul>');
+        listOpen = true;
+      }
+
+      htmlParts.push(`<li>${markdownInlineToHtml(line.replace(/^[-•]\s+/, ''))}</li>`);
+      return;
+    }
+
+    if (/^\d+\.\s+/.test(line)) {
+      closeListIfNeeded();
+      htmlParts.push(`<p>${markdownInlineToHtml(line)}</p>`);
+      return;
+    }
+
+    closeListIfNeeded();
+    htmlParts.push(`<p>${markdownInlineToHtml(line)}</p>`);
+  });
+
+  closeListIfNeeded();
+
+  return `
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(projectName || 'Cahier des charges Nyra')}</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        color: #111827;
+        line-height: 1.6;
+      }
+      h1 {
+        font-size: 28px;
+        margin: 0 0 18px;
+        color: #111827;
+      }
+      h2 {
+        font-size: 20px;
+        margin: 26px 0 10px;
+        color: #4c1d95;
+      }
+      h3 {
+        font-size: 16px;
+        margin: 18px 0 8px;
+        color: #6d28d9;
+      }
+      p {
+        margin: 0 0 10px;
+      }
+      ul {
+        margin: 0 0 14px 22px;
+        padding: 0;
+      }
+      li {
+        margin: 0 0 6px;
+      }
+    </style>
+  </head>
+  <body>
+    ${htmlParts.join('\n')}
+  </body>
+</html>
+`.trim();
 }
 
 function includesAny(text, words) {
@@ -1129,7 +1262,7 @@ async function generateProjectSpec({ project, items, existingContext }) {
     ],
   });
 
-  return normalizeText(completion.choices?.[0]?.message?.content) ||
+  return normalizeMultilineText(completion.choices?.[0]?.message?.content) ||
     `# Cahier des charges — ${project.name}\n\nImpossible de générer le cahier des charges pour le moment.`;
 }
 
@@ -1164,7 +1297,7 @@ function saveProjectSpecContext({ store, userId, project, specMarkdown, relatedI
   }
 
   specContext.summary = `Cahier des charges généré pour le projet ${project.name}.`;
-  specContext.content = specMarkdown;
+  specContext.content = normalizeMultilineText(specMarkdown);
   specContext.format = 'markdown';
   specContext.related_items = relatedItems.map(item => item.id);
   specContext.updated_at = nowIso();
@@ -1280,7 +1413,7 @@ async function findOrCreateDriveFolder(drive, folderName) {
   return created.data;
 }
 
-async function uploadMarkdownToDrive({ userId, project, markdown }) {
+async function uploadProjectSpecAsGoogleDoc({ userId, project, markdown }) {
   const authResult = await getAuthenticatedDriveClient(userId);
 
   if (!authResult.ok) {
@@ -1291,17 +1424,18 @@ async function uploadMarkdownToDrive({ userId, project, markdown }) {
   const rootFolder = await findOrCreateDriveFolder(drive, 'Nyra');
   const specsFolder = await findOrCreateDriveFolder(drive, 'Nyra - Cahiers des charges');
 
-  const fileName = `${buildSafeFileName(project.name)}-cahier-des-charges.md`;
+  const fileName = `${buildSafeFileName(project.name)}-cahier-des-charges`;
+  const html = markdownToGoogleDocHtml(markdown, `Cahier des charges — ${project.name}`);
 
   const uploaded = await drive.files.create({
     requestBody: {
       name: fileName,
       parents: [specsFolder.id || rootFolder.id],
-      mimeType: 'text/markdown',
+      mimeType: 'application/vnd.google-apps.document',
     },
     media: {
-      mimeType: 'text/markdown',
-      body: Readable.from([markdown]),
+      mimeType: 'text/html',
+      body: Readable.from([html]),
     },
     fields: 'id, name, mimeType, webViewLink, webContentLink, createdTime',
   });
@@ -1342,7 +1476,7 @@ async function handleExportProjectSpecToDrive(req, res, routeLabel) {
       });
     }
 
-    const uploadResult = await uploadMarkdownToDrive({
+    const uploadResult = await uploadProjectSpecAsGoogleDoc({
       userId,
       project,
       markdown: projectSpec.content,
@@ -1360,10 +1494,12 @@ async function handleExportProjectSpecToDrive(req, res, routeLabel) {
     project.last_drive_export = {
       file_id: uploadResult.file.id,
       file_name: uploadResult.file.name,
+      mime_type: uploadResult.file.mimeType || null,
       web_view_link: uploadResult.file.webViewLink || null,
       web_content_link: uploadResult.file.webContentLink || null,
       exported_at: nowIso(),
       route_used: routeLabel,
+      export_format: 'google_doc',
     };
     project.updated_at = nowIso();
 
@@ -1378,7 +1514,7 @@ async function handleExportProjectSpecToDrive(req, res, routeLabel) {
       status: 'done',
       priority: 'normal',
       datetime_hint: null,
-      next_step: 'Le cahier des charges est sauvegardé dans Google Drive.',
+      next_step: 'Le cahier des charges est sauvegardé dans Google Drive au format Google Docs.',
       provider: 'google_drive',
       sync_status: 'synced',
       external_id: uploadResult.file.id,
@@ -1400,7 +1536,8 @@ async function handleExportProjectSpecToDrive(req, res, routeLabel) {
       file_name: uploadResult.fileName,
       drive_link: uploadResult.file.webViewLink || null,
       file_id: uploadResult.file.id,
-      message: 'Cahier des charges exporté vers Google Drive.',
+      export_format: 'google_doc',
+      message: 'Cahier des charges exporté vers Google Drive au format Google Docs.',
       perf: {
         total_ms: Date.now() - startedAt,
       },
@@ -1999,5 +2136,5 @@ app.post('/chat', async (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Nyra backend Google Drive lancé sur le port ${PORT}`);
+  console.log(`🚀 Nyra backend Google Docs Drive lancé sur le port ${PORT}`);
 });
