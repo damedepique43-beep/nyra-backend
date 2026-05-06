@@ -510,10 +510,51 @@ function ensureActionRuntimeFields(action) {
   return action;
 }
 
+function actionBelongsToUser(action, userId) {
+  const normalizedUserId = normalizeText(userId || 'local-user');
+
+  if (!normalizedUserId || normalizedUserId === 'local-user') {
+    return true;
+  }
+
+  return (
+    action.user_id === normalizedUserId ||
+    action.legacy_user_id === normalizedUserId ||
+    action.google_user_id === normalizedUserId
+  );
+}
+
+function actionMatchesId(action, actionId) {
+  const normalizedActionId = normalizeText(actionId);
+
+  if (!normalizedActionId) return false;
+
+  return (
+    action.id === normalizedActionId ||
+    action.action_id === normalizedActionId ||
+    action.item_id === normalizedActionId ||
+    action.stored_item_id === normalizedActionId
+  );
+}
+
 function findUserAction(store, userId, actionId) {
-  const index = store.actions.findIndex(action => {
-    return action.user_id === userId && action.id === actionId;
+  const normalizedUserId = normalizeText(userId || 'local-user');
+  const normalizedActionId = normalizeText(actionId);
+
+  if (!normalizedActionId) return null;
+
+  const safeActions = Array.isArray(store.actions) ? store.actions : [];
+
+  let index = safeActions.findIndex(action => {
+    return actionMatchesId(action, normalizedActionId) && actionBelongsToUser(action, normalizedUserId);
   });
+
+  // Robust fallback pour les anciennes cartes déjà affichées dans l'app :
+  // elles peuvent envoyer l'id de l'item mémoire au lieu de l'id de l'action,
+  // ou un userId local alors que Google a créé un user_id stable.
+  if (index === -1) {
+    index = safeActions.findIndex(action => actionMatchesId(action, normalizedActionId));
+  }
 
   if (index === -1) return null;
 
@@ -527,7 +568,7 @@ function syncLinkedItemWithAction(store, action) {
   if (!action?.item_id) return null;
 
   const item = store.items.find(existingItem => {
-    return existingItem.user_id === action.user_id && existingItem.id === action.item_id;
+    return existingItem.id === action.item_id;
   });
 
   if (!item) return null;
@@ -535,6 +576,7 @@ function syncLinkedItemWithAction(store, action) {
   item.status = action.status;
   item.sync_status = action.sync_status || item.sync_status || 'local_only';
   item.external_id = action.external_id || item.external_id || null;
+  item.action_id = action.id;
   item.updated_at = nowIso();
 
   return item;
@@ -566,12 +608,16 @@ function updateActionStatusInStore({ store, userId, actionId, status, reason, me
   }
 
   const event = buildActionEvent({
-    userId,
-    actionId,
+    userId: action.user_id || userId,
+    actionId: action.id || actionId,
     fromStatus: previousStatus,
     toStatus: nextStatus,
     reason,
-    metadata,
+    metadata: {
+      ...(metadata || {}),
+      requested_user_id: userId,
+      requested_action_id: actionId,
+    },
     source: source || 'manual_update',
   });
 
@@ -2468,12 +2514,13 @@ app.get('/store/actions/:actionId', (req, res) => {
   }
 
   const events = Array.isArray(store.action_events)
-    ? store.action_events.filter(event => event.user_id === userId && event.action_id === actionId)
+    ? store.action_events.filter(event => event.action_id === found.action.id)
     : [];
 
   return res.json({
     ok: true,
     userId,
+    effective_user_id: found.action.user_id || userId,
     action: found.action,
     events,
   });
