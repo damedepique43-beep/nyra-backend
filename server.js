@@ -39,7 +39,7 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
-const STORE_VERSION = 'google-calendar-create-event-v1';
+const STORE_VERSION = 'google-tasks-create-task-v1';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -1497,6 +1497,28 @@ async function getAuthenticatedCalendarClient(userId) {
   };
 }
 
+async function getAuthenticatedTasksClient(userId) {
+  const authResult = await getAuthenticatedGoogleClient(userId);
+
+  if (!authResult.ok) {
+    return {
+      ok: false,
+      error: 'GOOGLE_TASKS_NOT_CONNECTED',
+    };
+  }
+
+  const tasks = google.tasks({
+    version: 'v1',
+    auth: authResult.oauth2Client,
+  });
+
+  return {
+    ok: true,
+    tasks,
+    account: authResult.account,
+  };
+}
+
 async function findOrCreateDriveFolder(drive, folderName) {
   const safeFolderName = normalizeText(folderName || 'Nyra');
 
@@ -1790,6 +1812,109 @@ async function handleCreateCalendarEvent(req, res) {
     return res.status(500).json({
       ok: false,
       error: 'Erreur création événement Google Agenda',
+      details: error.message,
+    });
+  }
+}
+
+async function handleCreateGoogleTask(req, res) {
+  const startedAt = Date.now();
+
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const title = normalizeText(req.body?.title || '');
+  const notes = normalizeMultilineText(req.body?.notes || req.body?.description || '');
+  const due = normalizeText(req.body?.due || '');
+  const taskListId = normalizeText(req.body?.taskListId || '@default');
+
+  if (!title) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Titre manquant',
+    });
+  }
+
+  if (due) {
+    const dueDate = new Date(due);
+
+    if (Number.isNaN(dueDate.getTime())) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Format de date due invalide',
+      });
+    }
+  }
+
+  try {
+    const authResult = await getAuthenticatedTasksClient(userId);
+
+    if (!authResult.ok) {
+      return res.status(401).json({
+        ok: false,
+        error: authResult.error,
+        connect_url: `/auth/google?userId=${encodeURIComponent(userId)}`,
+        full_connect_url: `https://nyra-backend-production-d168.up.railway.app/auth/google?userId=${encodeURIComponent(userId)}`,
+      });
+    }
+
+    const taskBody = {
+      title,
+      notes: notes || undefined,
+      due: due || undefined,
+      status: 'needsAction',
+    };
+
+    const created = await authResult.tasks.tasks.insert({
+      tasklist: taskListId,
+      requestBody: taskBody,
+    });
+
+    const store = readStore();
+
+    store.actions.push({
+      id: crypto.randomUUID(),
+      user_id: userId,
+      action_type: 'create_google_task',
+      type: 'create_google_task',
+      label: 'Créer une tâche Google Tasks',
+      title,
+      target: notes || title,
+      status: 'done',
+      priority: 'normal',
+      datetime_hint: due ? 'scheduled' : null,
+      next_step: 'La tâche est créée dans Google Tasks.',
+      provider: 'google_tasks',
+      sync_status: 'synced',
+      external_id: created.data.id || null,
+      external_link: created.data.webViewLink || null,
+      requires_connection: true,
+      connection_type: 'google_tasks',
+      task_list_id: taskListId,
+      task_due: due || null,
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    });
+
+    store.actions = store.actions.slice(-300);
+
+    writeStore(store);
+
+    return res.json({
+      ok: true,
+      userId,
+      google_task: created.data,
+      task_id: created.data.id || null,
+      task_link: created.data.webViewLink || null,
+      message: 'Tâche créée dans Google Tasks.',
+      perf: {
+        total_ms: Date.now() - startedAt,
+      },
+    });
+  } catch (error) {
+    console.error('❌ /tasks/create-task error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: 'Erreur création tâche Google Tasks',
       details: error.message,
     });
   }
@@ -2374,6 +2499,10 @@ app.post('/calendar/create-event', async (req, res) => {
   return handleCreateCalendarEvent(req, res);
 });
 
+app.post('/tasks/create-task', async (req, res) => {
+  return handleCreateGoogleTask(req, res);
+});
+
 app.post('/store/reset', (req, res) => {
   writeStore(createEmptyStore());
 
@@ -2462,5 +2591,5 @@ app.post('/chat', async (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Nyra backend Calendar Create Event lancé sur le port ${PORT}`);
+  console.log(`🚀 Nyra backend Google Tasks Create Task lancé sur le port ${PORT}`);
 });
