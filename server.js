@@ -39,7 +39,7 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
-const STORE_VERSION = 'executive-actions-v1';
+const STORE_VERSION = 'executive-actions-rich-v2';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -358,6 +358,168 @@ function detectPriority(text, analysis) {
   }
 
   return 'normal';
+}
+
+function detectDurationMinutes(text) {
+  const lower = normalizeText(text).toLowerCase();
+
+  const hourMatch = lower.match(/(\d+(?:[,.]\d+)?)\s*(h|heure|heures)/i);
+  if (hourMatch && hourMatch[1]) {
+    const hours = Number(String(hourMatch[1]).replace(',', '.'));
+    if (!Number.isNaN(hours) && hours > 0) {
+      return Math.round(hours * 60);
+    }
+  }
+
+  const minuteMatch = lower.match(/(\d+)\s*(min|minute|minutes)/i);
+  if (minuteMatch && minuteMatch[1]) {
+    const minutes = Number(minuteMatch[1]);
+    if (!Number.isNaN(minutes) && minutes > 0) {
+      return minutes;
+    }
+  }
+
+  if (includesAny(lower, ['session focus', 'deep work', 'concentration'])) return 60;
+
+  return null;
+}
+
+function detectEnergyMode(text) {
+  const lower = normalizeText(text).toLowerCase();
+
+  if (includesAny(lower, ['focus', 'deep work', 'concentration', 'session profonde', 'sprint'])) {
+    return 'deep_work';
+  }
+
+  if (includesAny(lower, ['fatiguée', 'fatigué', 'épuisée', 'épuisé', 'doucement', 'petite étape'])) {
+    return 'low_energy';
+  }
+
+  if (includesAny(lower, ['urgent', 'vite', 'rapidement', 'maintenant'])) {
+    return 'activation';
+  }
+
+  if (includesAny(lower, ['angoisse', 'stress', 'peur', 'panique', 'mal'])) {
+    return 'emotional_regulation';
+  }
+
+  return 'neutral';
+}
+
+function detectExecutionMode(text, analysis) {
+  const lower = normalizeText(text).toLowerCase();
+
+  if (includesAny(lower, ['faire maintenant', 'traiter maintenant', 'attaque maintenant', 'on le fait maintenant'])) {
+    return 'execute_now';
+  }
+
+  if (includesAny(lower, ['rappelle', 'rappel', 'ne pas oublier', 'demain', 'ce soir', 'cette semaine'])) {
+    return 'schedule_or_remind';
+  }
+
+  if (analysis?.is_project) return 'project_planning';
+  if (analysis?.is_emotion) return 'regulate';
+  if (analysis?.is_task) return 'capture_then_execute';
+
+  return 'capture';
+}
+
+function detectRoadmapMilestone(text, projectName) {
+  const lower = normalizeText(text).toLowerCase();
+
+  if (includesAny(lower, ['voix', 'vocal', 'wake word', 'ok nyra', 'micro'])) {
+    return 'Couche vocale et activation mains libres';
+  }
+
+  if (includesAny(lower, ['renderer', 'interface', 'ui', 'carte', 'cartes'])) {
+    return 'Interface cognitive et rendu des actions';
+  }
+
+  if (includesAny(lower, ['mémoire', 'memoire', 'relation', 'contexte'])) {
+    return 'Mémoire relationnelle profonde';
+  }
+
+  if (includesAny(lower, ['backend', 'api', 'architecture', 'serveur'])) {
+    return 'Architecture backend et orchestration';
+  }
+
+  if (includesAny(lower, ['google', 'drive', 'agenda', 'tasks'])) {
+    return 'Intégrations Google';
+  }
+
+  if (projectName) return `Roadmap ${projectName}`;
+
+  return 'Roadmap projet';
+}
+
+function buildActionSubtitle(executiveActionType, datetimeHint, durationMin) {
+  if (executiveActionType === 'focus_session') {
+    return durationMin
+      ? `Session focus de ${durationMin} min`
+      : 'Session focus à planifier';
+  }
+
+  if (executiveActionType === 'create_calendar_event') {
+    return datetimeHint
+      ? 'Événement à caler dans Google Agenda'
+      : 'Événement à planifier';
+  }
+
+  if (executiveActionType === 'create_google_task') return 'Tâche exécutable dans Google Tasks';
+  if (executiveActionType === 'roadmap_action') return 'Action à ajouter à la roadmap';
+  if (executiveActionType === 'create_project_spec') return 'Structuration projet';
+  if (executiveActionType === 'add_to_today') return 'Priorité du jour';
+  if (executiveActionType === 'breathing_reset') return 'Recentrage rapide';
+  if (executiveActionType === 'clarify_time') return 'Heure à préciser';
+
+  return 'Action proposée par Nyra';
+}
+
+function buildExecutiveNextStep(executiveActionType, payload) {
+  if (executiveActionType === 'focus_session') {
+    return payload?.needs_exact_time
+      ? 'Choisir l’heure exacte de la session focus.'
+      : 'Lancer la session focus au moment prévu.';
+  }
+
+  if (executiveActionType === 'create_calendar_event') {
+    return payload?.needs_exact_time
+      ? 'Confirmer l’heure exacte avant création dans Google Agenda.'
+      : 'Créer l’événement dans Google Agenda.';
+  }
+
+  if (executiveActionType === 'create_google_task') {
+    return 'Créer cette tâche dans Google Tasks ou la garder dans Nyra.';
+  }
+
+  if (executiveActionType === 'roadmap_action') {
+    return 'Ajouter cette action à la roadmap du projet.';
+  }
+
+  if (executiveActionType === 'create_project_spec') {
+    return 'Générer ou mettre à jour le cahier des charges du projet.';
+  }
+
+  if (executiveActionType === 'add_to_today') {
+    return 'Traiter cette action aujourd’hui.';
+  }
+
+  if (executiveActionType === 'breathing_reset') {
+    return 'Faire un reset de 2 minutes avant de reprendre.';
+  }
+
+  if (executiveActionType === 'clarify_time') {
+    return 'Demander une heure précise à l’utilisateur.';
+  }
+
+  return 'Valider ou ignorer cette action.';
+}
+
+function getActionProvider(executiveActionType) {
+  if (executiveActionType === 'create_google_task') return 'google_tasks';
+  if (executiveActionType === 'create_calendar_event') return 'google_calendar';
+  if (executiveActionType === 'create_project_spec') return 'google_drive';
+  return 'local';
 }
 
 function actionToProvider() {
@@ -938,24 +1100,49 @@ function buildSuggestions(analysis, action) {
   return uniqueArray(suggestions).slice(0, 4);
 }
 
-function buildExecutiveAction({ userId, type, title, description, priority, datetimeHint, projectName, provider, confidence, reason, payload }) {
+function buildExecutiveAction({
+  userId,
+  type,
+  title,
+  description,
+  priority,
+  datetimeHint,
+  projectName,
+  provider,
+  confidence,
+  reason,
+  payload,
+  display,
+}) {
+  const safePayload = payload || {};
+  const durationMin = safePayload.duration_min || safePayload.duration_minutes || null;
+
   return {
     id: crypto.randomUUID(),
     user_id: userId,
     type,
     action_type: type,
     title: cleanActionTitle(title || description || 'Action Nyra'),
+    subtitle: display?.subtitle || buildActionSubtitle(type, datetimeHint, durationMin),
     description: normalizeMultilineText(description || ''),
     priority: priority || 'normal',
     datetime_hint: datetimeHint || null,
     project_name: projectName || null,
-    provider: provider || 'local',
+    provider: provider || getActionProvider(type),
     status: 'suggested',
     execution_status: 'not_executed',
     requires_confirmation: true,
     confidence: typeof confidence === 'number' ? confidence : 0.75,
     reason: normalizeText(reason || ''),
-    payload: payload || {},
+    next_step: display?.next_step || buildExecutiveNextStep(type, safePayload),
+    display: {
+      icon: display?.icon || '✨',
+      color: display?.color || 'purple',
+      category: display?.category || 'action',
+      cta_label: display?.cta_label || 'Valider',
+      secondary_label: display?.secondary_label || 'Plus tard',
+    },
+    payload: safePayload,
     source: 'executive_layer',
     created_at: nowIso(),
   };
@@ -964,9 +1151,14 @@ function buildExecutiveAction({ userId, type, title, description, priority, date
 function buildExecutiveActions({ userId, message, analysis, action }) {
   const executiveActions = [];
   const text = normalizeText(message);
+  const lower = text.toLowerCase();
   const priority = detectPriority(text, analysis);
   const datetimeHint = analysis.datetime_hint || detectDatetimeHint(text);
   const projectName = analysis.project_name || null;
+  const durationMin = detectDurationMinutes(text);
+  const energyMode = detectEnergyMode(text);
+  const executionMode = detectExecutionMode(text, analysis);
+  const roadmapMilestone = detectRoadmapMilestone(text, projectName);
 
   if (action) {
     executiveActions.push(
@@ -985,6 +1177,55 @@ function buildExecutiveActions({ userId, message, analysis, action }) {
           action_id: action.id || null,
           label: action.label || null,
           target: action.target || null,
+          execution_mode: executionMode,
+        },
+        display: {
+          icon: '✔️',
+          color: 'purple',
+          category: 'local_action',
+          cta_label: 'Voir action',
+          secondary_label: 'Ignorer',
+        },
+      })
+    );
+  }
+
+  if (
+    includesAny(lower, ['focus', 'session focus', 'deep work', 'concentration', 'sprint']) ||
+    (durationMin && analysis.is_project)
+  ) {
+    executiveActions.push(
+      buildExecutiveAction({
+        userId,
+        type: 'focus_session',
+        title: projectName
+          ? `Session focus — ${projectName}`
+          : cleanActionTitle(text),
+        description: text,
+        priority: priority === 'normal' && datetimeHint ? 'high' : priority,
+        datetimeHint,
+        projectName,
+        provider: 'local',
+        confidence: 0.9,
+        reason: 'Le message indique une session de concentration ou un bloc de travail.',
+        payload: {
+          duration_min: durationMin || 60,
+          energy_mode: energyMode,
+          project_name: projectName,
+          needs_exact_time: Boolean(datetimeHint && !includesAny(lower, ['14h', '15h', '16h', '17h', '18h', '19h', '20h'])),
+          suggested_structure: [
+            'Clarifier le résultat attendu',
+            'Couper les distractions',
+            'Travailler en bloc unique',
+            'Noter la prochaine action',
+          ],
+        },
+        display: {
+          icon: '🎯',
+          color: 'indigo',
+          category: 'focus',
+          cta_label: 'Planifier focus',
+          secondary_label: 'Garder en tâche',
         },
       })
     );
@@ -1007,6 +1248,15 @@ function buildExecutiveActions({ userId, message, analysis, action }) {
           title: cleanActionTitle(text),
           notes: text,
           due_hint: datetimeHint,
+          project_name: projectName,
+          energy_mode: energyMode,
+        },
+        display: {
+          icon: '✅',
+          color: 'amber',
+          category: 'task',
+          cta_label: 'Créer la tâche',
+          secondary_label: 'Garder local',
         },
       })
     );
@@ -1028,12 +1278,24 @@ function buildExecutiveActions({ userId, message, analysis, action }) {
         payload: {
           bucket: 'today',
           content: text,
+          project_name: projectName,
+          energy_mode: energyMode,
+        },
+        display: {
+          icon: '📌',
+          color: 'red',
+          category: 'today',
+          cta_label: 'Ajouter à aujourd’hui',
+          secondary_label: 'Pas maintenant',
         },
       })
     );
   }
 
-  if (datetimeHint && includesAny(text, ['planifie', 'planning', 'agenda', 'créneau', 'creneau', 'rendez-vous', 'rdv', 'session', 'demain', 'ce soir'])) {
+  if (
+    datetimeHint &&
+    includesAny(lower, ['planifie', 'planning', 'agenda', 'calendrier', 'créneau', 'creneau', 'rendez-vous', 'rdv', 'session', 'demain', 'ce soir'])
+  ) {
     executiveActions.push(
       buildExecutiveAction({
         userId,
@@ -1044,15 +1306,23 @@ function buildExecutiveActions({ userId, message, analysis, action }) {
         datetimeHint,
         projectName,
         provider: 'google_calendar',
-        confidence: 0.78,
+        confidence: 0.82,
         reason: 'Le message contient un indice de planification ou de moment.',
         payload: {
           title: cleanActionTitle(text),
           description: text,
           datetime_hint: datetimeHint,
           timezone: 'Europe/Paris',
-          duration_minutes: 60,
+          duration_minutes: durationMin || 60,
           needs_exact_time: true,
+          project_name: projectName,
+        },
+        display: {
+          icon: '📅',
+          color: 'green',
+          category: 'calendar',
+          cta_label: 'Créer événement',
+          secondary_label: 'Choisir heure',
         },
       })
     );
@@ -1062,23 +1332,33 @@ function buildExecutiveActions({ userId, message, analysis, action }) {
     executiveActions.push(
       buildExecutiveAction({
         userId,
-        type: 'add_to_roadmap',
+        type: 'roadmap_action',
         title: text,
         description: text,
         priority,
         datetimeHint,
         projectName,
         provider: 'local',
-        confidence: 0.82,
-        reason: 'Le message est lié à un projet actif.',
+        confidence: 0.86,
+        reason: 'Le message est lié à un projet actif et peut nourrir la roadmap.',
         payload: {
           project_name: projectName,
+          milestone: roadmapMilestone,
           content: text,
+          dependency_hint: includesAny(lower, ['avant', 'après', 'apres', 'dépend', 'depend']) ? 'has_dependency' : null,
+          recommended_order: includesAny(lower, ['avant']) ? 'before_next_phase' : 'normal',
+        },
+        display: {
+          icon: '🗺️',
+          color: 'blue',
+          category: 'roadmap',
+          cta_label: 'Ajouter roadmap',
+          secondary_label: 'Voir projet',
         },
       })
     );
 
-    if (includesAny(text, ['cahier des charges', 'structure', 'fonctionnalité', 'mvp', 'roadmap', 'architecture'])) {
+    if (includesAny(lower, ['cahier des charges', 'structure', 'structurer', 'fonctionnalité', 'fonctionnalite', 'mvp', 'roadmap', 'architecture'])) {
       executiveActions.push(
         buildExecutiveAction({
           userId,
@@ -1089,28 +1369,122 @@ function buildExecutiveActions({ userId, message, analysis, action }) {
           datetimeHint,
           projectName,
           provider: 'google_drive',
-          confidence: 0.8,
+          confidence: 0.82,
           reason: 'Le message contient une intention de structuration projet.',
           payload: {
             project_name: projectName,
             content: text,
             exportable_to_drive: true,
+            suggested_sections: [
+              'Vision',
+              'Objectifs',
+              'Fonctionnalités',
+              'Roadmap',
+              'Questions à clarifier',
+            ],
+          },
+          display: {
+            icon: '📄',
+            color: 'purple',
+            category: 'project_spec',
+            cta_label: 'Générer cahier',
+            secondary_label: 'Voir projet',
           },
         })
       );
     }
   }
 
+  if (analysis.is_emotion && energyMode === 'emotional_regulation') {
+    executiveActions.push(
+      buildExecutiveAction({
+        userId,
+        type: 'breathing_reset',
+        title: 'Reset émotionnel rapide',
+        description: text,
+        priority,
+        datetimeHint,
+        projectName,
+        provider: 'local',
+        confidence: 0.76,
+        reason: 'Le message contient une charge émotionnelle à poser avant d’agir.',
+        payload: {
+          duration_min: 2,
+          protocol: [
+            'Respirer lentement 3 fois',
+            'Nommer ce qui est là',
+            'Choisir une micro-action',
+          ],
+        },
+        display: {
+          icon: '🌬️',
+          color: 'cyan',
+          category: 'regulation',
+          cta_label: 'Me recentrer',
+          secondary_label: 'Plus tard',
+        },
+      })
+    );
+  }
+
+  if (
+    datetimeHint &&
+    executiveActions.some(item => item.type === 'create_calendar_event') &&
+    !includesAny(lower, ['0h', '1h', '2h', '3h', '4h', '5h', '6h', '7h', '8h', '9h', '10h', '11h', '12h', '13h', '14h', '15h', '16h', '17h', '18h', '19h', '20h', '21h', '22h', '23h'])
+  ) {
+    executiveActions.push(
+      buildExecutiveAction({
+        userId,
+        type: 'clarify_time',
+        title: 'Préciser l’heure',
+        description: 'Nyra a compris le moment, mais pas encore l’heure exacte.',
+        priority,
+        datetimeHint,
+        projectName,
+        provider: 'local',
+        confidence: 0.88,
+        reason: 'Une action agenda nécessite une heure précise.',
+        payload: {
+          question: 'À quelle heure veux-tu que je le planifie ?',
+          datetime_hint: datetimeHint,
+        },
+        display: {
+          icon: '🕒',
+          color: 'gray',
+          category: 'clarification',
+          cta_label: 'Choisir heure',
+          secondary_label: 'Pas maintenant',
+        },
+      })
+    );
+  }
+
+  const typePriority = {
+    focus_session: 1,
+    create_calendar_event: 2,
+    create_google_task: 3,
+    add_to_today: 4,
+    roadmap_action: 5,
+    create_project_spec: 6,
+    breathing_reset: 7,
+    clarify_time: 8,
+  };
+
   const seen = new Set();
 
-  return executiveActions.filter(executiveAction => {
-    const key = `${executiveAction.type}:${normalizeKey(executiveAction.title)}:${executiveAction.provider}`;
+  return executiveActions
+    .filter(executiveAction => {
+      const key = `${executiveAction.type}:${normalizeKey(executiveAction.title)}:${executiveAction.provider}`;
 
-    if (seen.has(key)) return false;
-    seen.add(key);
+      if (seen.has(key)) return false;
+      seen.add(key);
 
-    return true;
-  }).slice(0, 5);
+      return true;
+    })
+    .sort((a, b) => {
+      return (typePriority[a.type] || 99) - (typePriority[b.type] || 99);
+    })
+    .slice(0, 6);
 }
 
 function createStoredItem({ userId, message, analysis, action }) {
@@ -1340,10 +1714,11 @@ Règles de réponse :
 - sois directe, humaine, chaleureuse
 - maximum 90 mots
 - pas de long pavé
-- si c’est une tâche : reformule clairement l’action
+- si c’est une tâche : reformule clairement l’action et la prochaine étape
 - si c’est une idée : dis que l’idée est capturée et propose où la ranger
 - si c’est une émotion : valide brièvement et aide à poser le poids
 - si c’est un projet : dis que c’est relié au projet concerné si un projet est détecté
+- si c’est une session de travail : aide à cadrer le focus simplement
 - si c’est mixte : trie mentalement pour l’utilisateur
 - tu peux dire que c’est capturé dans Nyra
 - ne parle pas de fichier JSON
