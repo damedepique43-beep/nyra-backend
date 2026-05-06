@@ -1501,6 +1501,50 @@ app.get('/store/connected-accounts', (req, res) => {
   });
 });
 
+app.get('/store/project/:projectId/export-markdown', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const projectId = normalizeText(req.params.projectId);
+
+  const store = readStore();
+
+  const project = store.projects.find(item => {
+    return item.user_id === userId && item.id === projectId;
+  });
+
+  if (!project) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Projet introuvable',
+    });
+  }
+
+  const projectSpec = store.contexts.find(context => {
+    return (
+      context.user_id === userId &&
+      context.context_type === 'project_spec' &&
+      context.project_id === project.id
+    );
+  });
+
+  if (!projectSpec || !projectSpec.content) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Aucun cahier des charges généré',
+    });
+  }
+
+  const safeFileName = normalizeKey(project.name || 'projet');
+
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="${safeFileName}-cahier-des-charges.md"`
+  );
+
+  res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+
+  return res.send(projectSpec.content);
+});
+
 app.post('/store/reset', (req, res) => {
   writeStore(createEmptyStore());
 
