@@ -39,7 +39,7 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
-const STORE_VERSION = 'executive-actions-rich-v2';
+const STORE_VERSION = 'executable-actions-v1';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -3052,6 +3052,433 @@ app.post('/calendar/create-event', async (req, res) => {
 
 app.post('/tasks/create-task', async (req, res) => {
   return handleCreateGoogleTask(req, res);
+});
+
+
+function resolveExecutionDateRange(datetimeHint, durationMinutes) {
+  const duration = Number(durationMinutes || 60);
+  const now = new Date();
+  const start = new Date(now);
+
+  if (datetimeHint === 'tomorrow_morning') {
+    start.setDate(start.getDate() + 1);
+    start.setHours(9, 0, 0, 0);
+  } else if (datetimeHint === 'tomorrow_afternoon') {
+    start.setDate(start.getDate() + 1);
+    start.setHours(14, 0, 0, 0);
+  } else if (datetimeHint === 'tomorrow_evening') {
+    start.setDate(start.getDate() + 1);
+    start.setHours(19, 0, 0, 0);
+  } else if (datetimeHint === 'tomorrow') {
+    start.setDate(start.getDate() + 1);
+    start.setHours(9, 0, 0, 0);
+  } else if (datetimeHint === 'today') {
+    start.setHours(start.getHours() + 1, 0, 0, 0);
+  } else if (datetimeHint === 'this_week') {
+    start.setDate(start.getDate() + 1);
+    start.setHours(9, 0, 0, 0);
+  } else if (datetimeHint === 'weekend') {
+    const day = start.getDay();
+    const daysUntilSaturday = day === 6 ? 0 : (6 - day + 7) % 7;
+    start.setDate(start.getDate() + daysUntilSaturday);
+    start.setHours(10, 0, 0, 0);
+  } else {
+    start.setHours(start.getHours() + 1, 0, 0, 0);
+  }
+
+  const end = new Date(start.getTime() + duration * 60 * 1000);
+
+  return {
+    startTime: start.toISOString(),
+    endTime: end.toISOString(),
+  };
+}
+
+function getActionExecutionKey(action) {
+  return `${action?.type || action?.action_type || 'action'}:${normalizeKey(action?.title || action?.description || '')}`;
+}
+
+function saveExecutedActionRecord({ userId, action, provider, status, externalId, externalLink, resultMessage, payload }) {
+  const store = readStore();
+  const actionType = action?.type || action?.action_type || 'executive_action';
+
+  const record = {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    action_type: actionType,
+    type: actionType,
+    label: action?.display?.cta_label || action?.subtitle || 'Action exécutée',
+    title: action?.title || 'Action Nyra',
+    target: action?.description || action?.title || '',
+    status,
+    priority: action?.priority || 'normal',
+    datetime_hint: action?.datetime_hint || null,
+    next_step: resultMessage || 'Action exécutée.',
+    provider: provider || action?.provider || 'local',
+    sync_status: status === 'done' ? 'synced' : 'failed',
+    external_id: externalId || null,
+    external_link: externalLink || null,
+    requires_connection: Boolean(action?.provider && action.provider !== 'local'),
+    connection_type: action?.provider || null,
+    project_name: action?.project_name || action?.payload?.project_name || null,
+    execution_key: getActionExecutionKey(action),
+    executive_action_id: action?.id || null,
+    payload: payload || action?.payload || {},
+    created_at: nowIso(),
+    updated_at: nowIso(),
+  };
+
+  store.actions.push(record);
+  store.actions = store.actions.slice(-500);
+  writeStore(store);
+
+  return record;
+}
+
+async function executeGoogleTaskAction(userId, action) {
+  const authResult = await getAuthenticatedTasksClient(userId);
+
+  if (!authResult.ok) {
+    return {
+      ok: false,
+      status: 401,
+      error: authResult.error,
+    };
+  }
+
+  const payload = action?.payload || {};
+  const title = normalizeText(payload.title || action?.title || 'Action Nyra');
+  const notes = normalizeMultilineText(payload.notes || action?.description || action?.reason || '');
+
+  const created = await authResult.tasks.tasks.insert({
+    tasklist: '@default',
+    requestBody: {
+      title,
+      notes: notes || undefined,
+      status: 'needsAction',
+    },
+  });
+
+  const record = saveExecutedActionRecord({
+    userId,
+    action,
+    provider: 'google_tasks',
+    status: 'done',
+    externalId: created.data.id || null,
+    externalLink: created.data.webViewLink || null,
+    resultMessage: 'La tâche a été créée dans Google Tasks.',
+    payload: {
+      ...payload,
+      google_task: created.data,
+    },
+  });
+
+  return {
+    ok: true,
+    message: 'Tâche créée dans Google Tasks.',
+    record,
+    result: created.data,
+    external_link: created.data.webViewLink || null,
+  };
+}
+
+async function executeCalendarAction(userId, action) {
+  const authResult = await getAuthenticatedCalendarClient(userId);
+
+  if (!authResult.ok) {
+    return {
+      ok: false,
+      status: 401,
+      error: authResult.error,
+    };
+  }
+
+  const payload = action?.payload || {};
+  const duration = Number(payload.duration_minutes || payload.duration_min || 60);
+  const range = resolveExecutionDateRange(action?.datetime_hint || payload.datetime_hint, duration);
+
+  const title = normalizeText(payload.title || action?.title || 'Événement Nyra');
+  const description = normalizeMultilineText(payload.description || action?.description || 'Événement créé depuis Nyra.');
+
+  const created = await authResult.calendar.events.insert({
+    calendarId: normalizeText(payload.calendarId || 'primary'),
+    requestBody: {
+      summary: title,
+      description: description || 'Événement créé depuis Nyra.',
+      start: {
+        dateTime: range.startTime,
+        timeZone: payload.timezone || 'Europe/Paris',
+      },
+      end: {
+        dateTime: range.endTime,
+        timeZone: payload.timezone || 'Europe/Paris',
+      },
+      reminders: {
+        useDefault: true,
+      },
+    },
+  });
+
+  const record = saveExecutedActionRecord({
+    userId,
+    action,
+    provider: 'google_calendar',
+    status: 'done',
+    externalId: created.data.id || null,
+    externalLink: created.data.htmlLink || null,
+    resultMessage: 'L’événement a été créé dans Google Agenda.',
+    payload: {
+      ...payload,
+      startTime: range.startTime,
+      endTime: range.endTime,
+      calendar_event: created.data,
+    },
+  });
+
+  return {
+    ok: true,
+    message: 'Événement créé dans Google Agenda.',
+    record,
+    result: created.data,
+    external_link: created.data.htmlLink || null,
+  };
+}
+
+function executeLocalAction(userId, action) {
+  const store = readStore();
+  const actionType = action?.type || action?.action_type || 'local_action';
+  const title = cleanActionTitle(action?.title || action?.description || 'Action Nyra');
+  const content = normalizeMultilineText(action?.description || action?.payload?.content || title);
+  const projectName = action?.project_name || action?.payload?.project_name || null;
+
+  let bucket = 'actions';
+  let itemType = 'action_result';
+  let status = 'done';
+
+  if (actionType === 'add_to_today') {
+    bucket = 'today';
+    itemType = 'task';
+    status = 'todo';
+  }
+
+  if (actionType === 'roadmap_action') {
+    bucket = 'projects';
+    itemType = 'roadmap_action';
+  }
+
+  if (actionType === 'focus_session') {
+    bucket = 'plans';
+    itemType = 'focus_session';
+  }
+
+  const item = {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    type: itemType,
+    bucket,
+    title,
+    content,
+    urgency: action?.priority === 'high' ? 'high' : 'normal',
+    priority: action?.priority || 'normal',
+    datetime_hint: action?.datetime_hint || null,
+    tags: uniqueArray([
+      'executed_action',
+      actionType,
+      projectName ? normalizeKey(projectName) : null,
+    ]),
+    status,
+    project_name: projectName,
+    project_id: null,
+    action_type: actionType,
+    provider: 'local',
+    sync_status: 'local_only',
+    external_id: null,
+    requires_connection: false,
+    connection_type: null,
+    payload: action?.payload || {},
+    created_at: nowIso(),
+    updated_at: nowIso(),
+  };
+
+  let linkedProject = null;
+
+  if (projectName) {
+    linkedProject = ensureProject(store, userId, projectName, content);
+    item.project_id = linkedProject.id;
+    item.project_name = linkedProject.name;
+  }
+
+  store.items.push(item);
+
+  if (linkedProject && !relationExists(store, userId, item.id, linkedProject.id, 'belongs_to_project')) {
+    store.relations.push(
+      createRelation({
+        userId,
+        sourceId: item.id,
+        targetId: linkedProject.id,
+        relationType: 'belongs_to_project',
+        confidence: 0.94,
+        metadata: {
+          project_name: linkedProject.name,
+          detection: 'executed_action',
+          action_type: actionType,
+        },
+      })
+    );
+
+    updateProjectContext(store, userId, linkedProject);
+  }
+
+  store.items = store.items.slice(-500);
+  writeStore(store);
+
+  const record = saveExecutedActionRecord({
+    userId,
+    action,
+    provider: 'local',
+    status: 'done',
+    externalId: item.id,
+    externalLink: null,
+    resultMessage: 'Action exécutée dans Nyra.',
+    payload: {
+      ...(action?.payload || {}),
+      stored_item_id: item.id,
+    },
+  });
+
+  return {
+    ok: true,
+    message: 'Action exécutée dans Nyra.',
+    record,
+    stored_item: item,
+  };
+}
+
+async function executeProjectSpecAction(userId, action) {
+  const store = readStore();
+  const projectName = action?.project_name || action?.payload?.project_name;
+
+  const project = store.projects.find(item => {
+    return item.user_id === userId && normalizeKey(item.name) === normalizeKey(projectName);
+  });
+
+  if (!project) {
+    return {
+      ok: false,
+      status: 404,
+      error: 'Projet introuvable pour générer le cahier des charges',
+    };
+  }
+
+  const { items } = getProjectRelatedItems(store, userId, project.id);
+
+  const existingContext = store.contexts.find(context => {
+    return (
+      context.user_id === userId &&
+      context.context_type === 'project' &&
+      context.project_id === project.id
+    );
+  });
+
+  const specMarkdown = await generateProjectSpec({
+    project,
+    items,
+    existingContext,
+  });
+
+  const specContext = saveProjectSpecContext({
+    store,
+    userId,
+    project,
+    specMarkdown,
+    relatedItems: items,
+  });
+
+  writeStore(store);
+
+  const record = saveExecutedActionRecord({
+    userId,
+    action,
+    provider: 'google_drive',
+    status: 'done',
+    externalId: specContext.id,
+    externalLink: null,
+    resultMessage: 'Cahier des charges généré dans Nyra.',
+    payload: {
+      ...(action?.payload || {}),
+      project_spec_context_id: specContext.id,
+    },
+  });
+
+  return {
+    ok: true,
+    message: 'Cahier des charges généré dans Nyra.',
+    record,
+    project_spec: specContext,
+  };
+}
+
+async function handleExecuteExecutiveAction(req, res) {
+  const startedAt = Date.now();
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const action = req.body?.action;
+
+  if (!action || typeof action !== 'object') {
+    return res.status(400).json({
+      ok: false,
+      error: 'Action manquante',
+    });
+  }
+
+  const actionType = action.type || action.action_type;
+
+  try {
+    let result;
+
+    if (actionType === 'create_google_task') {
+      result = await executeGoogleTaskAction(userId, action);
+    } else if (actionType === 'create_calendar_event') {
+      result = await executeCalendarAction(userId, action);
+    } else if (actionType === 'create_project_spec') {
+      result = await executeProjectSpecAction(userId, action);
+    } else {
+      result = executeLocalAction(userId, action);
+    }
+
+    if (!result.ok) {
+      return res.status(result.status || 500).json({
+        ok: false,
+        error: result.error || 'Erreur exécution action',
+        connect_url: `/auth/google?userId=${encodeURIComponent(userId)}`,
+        full_connect_url: `https://nyra-backend-production-d168.up.railway.app/auth/google?userId=${encodeURIComponent(userId)}`,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      userId,
+      action_type: actionType,
+      message: result.message || 'Action exécutée.',
+      execution_result: result,
+      external_link: result.external_link || null,
+      memory_summary: getStoreSummary(userId),
+      perf: {
+        total_ms: Date.now() - startedAt,
+      },
+    });
+  } catch (error) {
+    console.error('❌ /actions/execute error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: 'Erreur exécution action',
+      details: error.message,
+    });
+  }
+}
+
+app.post('/actions/execute', async (req, res) => {
+  return handleExecuteExecutiveAction(req, res);
 });
 
 app.post('/store/reset', (req, res) => {
