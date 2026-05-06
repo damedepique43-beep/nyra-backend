@@ -108,6 +108,14 @@ function normalizeKey(value) {
     .replace(/^-+|-+$/g, '');
 }
 
+function buildSafeFileName(value) {
+  const safe = normalizeKey(value || 'nyra-projet');
+
+  if (!safe) return 'nyra-projet';
+
+  return safe.slice(0, 80);
+}
+
 function includesAny(text, words) {
   const lower = normalizeText(text).toLowerCase();
   return words.some(word => lower.includes(word));
@@ -1169,6 +1177,23 @@ function saveProjectSpecContext({ store, userId, project, specMarkdown, relatedI
   return specContext;
 }
 
+function getLatestProjectSpec(store, userId, projectId) {
+  const specs = store.contexts
+    .filter(context => {
+      return (
+        context.user_id === userId &&
+        context.context_type === 'project_spec' &&
+        context.project_id === projectId
+      );
+    })
+    .sort((a, b) => {
+      return new Date(b.updated_at || b.created_at || 0).getTime() -
+        new Date(a.updated_at || a.created_at || 0).getTime();
+    });
+
+  return specs[0] || null;
+}
+
 app.get('/', (req, res) => {
   res.json({
     ok: true,
@@ -1337,13 +1362,7 @@ app.get('/store/project/:projectId', (req, res) => {
     );
   });
 
-  const projectSpec = store.contexts.find(existingContext => {
-    return (
-      existingContext.user_id === userId &&
-      existingContext.context_type === 'project_spec' &&
-      existingContext.project_id === project.id
-    );
-  });
+  const projectSpec = getLatestProjectSpec(store, userId, project.id);
 
   res.json({
     ok: true,
@@ -1418,6 +1437,50 @@ app.post('/store/project/:projectId/spec', async (req, res) => {
     res.status(500).json({
       ok: false,
       error: 'Erreur génération cahier des charges',
+    });
+  }
+});
+
+app.get('/store/project/:projectId/export-markdown', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const projectId = normalizeText(req.params.projectId);
+
+  try {
+    const store = readStore();
+
+    const project = store.projects.find(item => {
+      return item.user_id === userId && item.id === projectId;
+    });
+
+    if (!project) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Projet introuvable',
+      });
+    }
+
+    const projectSpec = getLatestProjectSpec(store, userId, project.id);
+
+    if (!projectSpec || !projectSpec.content) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Aucun cahier des charges trouvé pour ce projet',
+      });
+    }
+
+    const fileName = `${buildSafeFileName(project.name)}-cahier-des-charges.md`;
+
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('X-Nyra-File-Name', fileName);
+
+    return res.send(projectSpec.content);
+  } catch (error) {
+    console.error('❌ /store/project/:projectId/export-markdown error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: 'Erreur export markdown',
     });
   }
 });
