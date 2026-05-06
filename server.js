@@ -39,7 +39,7 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
-const STORE_VERSION = 'executive-actions-persistence-v1';
+const STORE_VERSION = 'executive-actions-recovery-v2';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -564,6 +564,171 @@ function findUserAction(store, userId, actionId) {
   };
 }
 
+
+function findItemForActionRecovery(store, userId, actionId) {
+  const normalizedUserId = normalizeText(userId || 'local-user');
+  const normalizedActionId = normalizeText(actionId);
+
+  if (!normalizedActionId) return null;
+
+  const safeItems = Array.isArray(store.items) ? store.items : [];
+
+  let index = safeItems.findIndex(item => {
+    return (
+      item.user_id === normalizedUserId &&
+      (
+        item.id === normalizedActionId ||
+        item.action_id === normalizedActionId ||
+        item.stored_item_id === normalizedActionId
+      )
+    );
+  });
+
+  if (index === -1) {
+    index = safeItems.findIndex(item => {
+      return (
+        item.id === normalizedActionId ||
+        item.action_id === normalizedActionId ||
+        item.stored_item_id === normalizedActionId
+      );
+    });
+  }
+
+  if (index === -1) return null;
+
+  return {
+    index,
+    item: safeItems[index],
+  };
+}
+
+function createRecoverableActionFromItem({ store, userId, actionId, item }) {
+  const normalizedUserId = normalizeText(userId || item?.user_id || 'local-user');
+  const normalizedActionId = normalizeText(actionId);
+  const existingActionId = normalizeText(item?.action_id || '');
+  const actionType = normalizeText(item?.action_type || item?.type || 'manual_action') || 'manual_action';
+  const recoveredActionId = existingActionId || crypto.randomUUID();
+
+  const recoveredAction = ensureActionRuntimeFields({
+    id: recoveredActionId,
+    user_id: item?.user_id || normalizedUserId,
+    item_id: item?.id || normalizedActionId,
+    action_type: actionType,
+    type: actionType,
+    label: item?.action_label || item?.label || 'Action Nyra',
+    title: item?.title || cleanActionTitle(item?.content || item?.target || 'Action Nyra'),
+    target: item?.content || item?.target || item?.title || '',
+    status: normalizeActionStatus(item?.status || 'suggested'),
+    priority: item?.priority || 'normal',
+    datetime_hint: item?.datetime_hint || null,
+    next_step: item?.next_step || 'Action récupérée depuis la mémoire Nyra.',
+    provider: item?.provider || 'local',
+    sync_status: item?.sync_status || 'local_only',
+    external_id: item?.external_id || null,
+    external_link: item?.external_link || null,
+    requires_connection: Boolean(item?.requires_connection),
+    connection_type: item?.connection_type || null,
+    source: 'recovered_from_memory_item',
+    source_message: item?.content || item?.title || '',
+    recovery_requested_action_id: normalizedActionId,
+    created_at: item?.created_at || nowIso(),
+    updated_at: nowIso(),
+  });
+
+  store.actions = Array.isArray(store.actions) ? store.actions : [];
+  store.actions.push(recoveredAction);
+
+  if (item) {
+    item.action_id = recoveredAction.id;
+    item.action_type = recoveredAction.action_type;
+    item.status = recoveredAction.status;
+    item.sync_status = recoveredAction.sync_status;
+    item.updated_at = nowIso();
+  }
+
+  const recoveryEvent = buildActionEvent({
+    userId: recoveredAction.user_id,
+    actionId: recoveredAction.id,
+    fromStatus: null,
+    toStatus: recoveredAction.status,
+    reason: 'Action reconstruite automatiquement depuis un item mémoire.',
+    metadata: {
+      requested_user_id: normalizedUserId,
+      requested_action_id: normalizedActionId,
+      item_id: item?.id || null,
+      recovery: true,
+    },
+    source: 'action_recovery',
+  });
+
+  recoveredAction.status_history.push(recoveryEvent);
+  store.action_events = Array.isArray(store.action_events) ? store.action_events : [];
+  store.action_events.push(recoveryEvent);
+
+  return recoveredAction;
+}
+
+function findOrRecoverUserAction(store, userId, actionId) {
+  const found = findUserAction(store, userId, actionId);
+
+  if (found) {
+    return found;
+  }
+
+  const foundItem = findItemForActionRecovery(store, userId, actionId);
+
+  if (!foundItem?.item) {
+    return null;
+  }
+
+  const recoveredAction = createRecoverableActionFromItem({
+    store,
+    userId,
+    actionId,
+    item: foundItem.item,
+  });
+
+  return {
+    index: store.actions.length - 1,
+    action: recoveredAction,
+    recovered: true,
+    recovered_from_item: foundItem.item,
+  };
+}
+
+function buildActionNotFoundDebug(store, userId, actionId) {
+  const normalizedUserId = normalizeText(userId || 'local-user');
+  const normalizedActionId = normalizeText(actionId);
+  const safeActions = Array.isArray(store.actions) ? store.actions : [];
+  const safeItems = Array.isArray(store.items) ? store.items : [];
+
+  return {
+    requested_user_id: normalizedUserId,
+    requested_action_id: normalizedActionId,
+    total_actions: safeActions.length,
+    total_items: safeItems.length,
+    recent_actions: safeActions.slice(-5).map(action => ({
+      id: action.id || null,
+      user_id: action.user_id || null,
+      item_id: action.item_id || null,
+      action_type: action.action_type || action.type || null,
+      status: action.status || null,
+      title: action.title || null,
+    })),
+    recent_action_items: safeItems
+      .filter(item => item.action_id || item.action_type)
+      .slice(-5)
+      .map(item => ({
+        id: item.id || null,
+        user_id: item.user_id || null,
+        action_id: item.action_id || null,
+        action_type: item.action_type || null,
+        status: item.status || null,
+        title: item.title || null,
+      })),
+  };
+}
+
 function syncLinkedItemWithAction(store, action) {
   if (!action?.item_id) return null;
 
@@ -583,12 +748,13 @@ function syncLinkedItemWithAction(store, action) {
 }
 
 function updateActionStatusInStore({ store, userId, actionId, status, reason, metadata, source }) {
-  const found = findUserAction(store, userId, actionId);
+  const found = findOrRecoverUserAction(store, userId, actionId);
 
   if (!found) {
     return {
       ok: false,
       error: 'ACTION_NOT_FOUND',
+      debug: buildActionNotFoundDebug(store, userId, actionId),
     };
   }
 
@@ -2504,13 +2670,18 @@ app.get('/store/actions/:actionId', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const actionId = normalizeText(req.params.actionId);
   const store = readStore();
-  const found = findUserAction(store, userId, actionId);
+  const found = findOrRecoverUserAction(store, userId, actionId);
 
   if (!found) {
     return res.status(404).json({
       ok: false,
       error: 'Action introuvable',
+      debug: buildActionNotFoundDebug(store, userId, actionId),
     });
+  }
+
+  if (found.recovered) {
+    writeStore(store);
   }
 
   const events = Array.isArray(store.action_events)
@@ -2554,7 +2725,7 @@ app.patch('/store/actions/:actionId/status', (req, res) => {
   }
 
   const store = readStore();
-  const result = updateActionStatusInStore({
+  let result = updateActionStatusInStore({
     store,
     userId,
     actionId,
@@ -2568,6 +2739,7 @@ app.patch('/store/actions/:actionId/status', (req, res) => {
     return res.status(404).json({
       ok: false,
       error: 'Action introuvable',
+      debug: result.debug || buildActionNotFoundDebug(store, userId, actionId),
     });
   }
 
