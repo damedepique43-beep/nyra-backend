@@ -274,28 +274,22 @@ function buildStructuredAction({ userId, message, actionType, label, status, ana
   return {
     id: crypto.randomUUID(),
     user_id: userId,
-
     action_type: actionType,
     type: actionType,
     label,
     title: cleanActionTitle(target),
     target,
-
     status,
     priority,
     datetime_hint: datetimeHint,
     next_step: buildNextStep(actionType, datetimeHint),
-
     provider,
     sync_status: requiresConnection ? 'requires_connection' : 'local_only',
     external_id: null,
-
     requires_connection: requiresConnection,
     connection_type: connectionType,
-
     source: 'user_capture',
     source_message: message,
-
     created_at: nowIso(),
     updated_at: nowIso(),
   };
@@ -807,17 +801,13 @@ function createStoredItem({ userId, message, analysis, action }) {
   return {
     id: crypto.randomUUID(),
     user_id: userId,
-
     type: action ? 'action_result' : analysis.type,
     bucket,
-
     title: action ? action.title : cleanActionTitle(message),
     content: action ? action.target : message,
-
     urgency: analysis.urgency,
     priority: action ? action.priority : detectPriority(message, analysis),
     datetime_hint: action ? action.datetime_hint : analysis.datetime_hint,
-
     tags: action
       ? uniqueArray([
           'action',
@@ -827,20 +817,16 @@ function createStoredItem({ userId, message, analysis, action }) {
         ])
       : analysis.tags,
     status: action ? action.status : analysis.is_task ? 'todo' : 'captured',
-
     project_name: analysis.project_name || null,
     project_id: null,
-
     action_type: action ? action.action_type : null,
     action_label: action ? action.label : null,
     action_id: action ? action.id : null,
-
     provider: action ? action.provider : 'local',
     sync_status: action ? action.sync_status : 'local_only',
     external_id: action ? action.external_id : null,
     requires_connection: action ? action.requires_connection : false,
     connection_type: action ? action.connection_type : null,
-
     created_at: nowIso(),
     updated_at: nowIso(),
   };
@@ -1325,6 +1311,109 @@ async function uploadMarkdownToDrive({ userId, project, markdown }) {
     file: uploaded.data,
     fileName,
   };
+}
+
+async function handleExportProjectSpecToDrive(req, res, routeLabel) {
+  const startedAt = Date.now();
+
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const projectId = normalizeText(req.params.projectId);
+
+  try {
+    const store = readStore();
+
+    const project = store.projects.find(item => {
+      return item.user_id === userId && item.id === projectId;
+    });
+
+    if (!project) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Projet introuvable',
+      });
+    }
+
+    const projectSpec = getLatestProjectSpec(store, userId, project.id);
+
+    if (!projectSpec || !projectSpec.content) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Aucun cahier des charges trouvé pour ce projet',
+      });
+    }
+
+    const uploadResult = await uploadMarkdownToDrive({
+      userId,
+      project,
+      markdown: projectSpec.content,
+    });
+
+    if (!uploadResult.ok) {
+      return res.status(401).json({
+        ok: false,
+        error: uploadResult.error,
+        connect_url: `/auth/google?userId=${encodeURIComponent(userId)}`,
+        full_connect_url: `https://nyra-backend-production-d168.up.railway.app/auth/google?userId=${encodeURIComponent(userId)}`,
+      });
+    }
+
+    project.last_drive_export = {
+      file_id: uploadResult.file.id,
+      file_name: uploadResult.file.name,
+      web_view_link: uploadResult.file.webViewLink || null,
+      web_content_link: uploadResult.file.webContentLink || null,
+      exported_at: nowIso(),
+      route_used: routeLabel,
+    };
+    project.updated_at = nowIso();
+
+    store.actions.push({
+      id: crypto.randomUUID(),
+      user_id: userId,
+      action_type: 'export_project_spec_to_drive',
+      type: 'export_project_spec_to_drive',
+      label: 'Exporter vers Google Drive',
+      title: `Exporter ${project.name} vers Google Drive`,
+      target: project.name,
+      status: 'done',
+      priority: 'normal',
+      datetime_hint: null,
+      next_step: 'Le cahier des charges est sauvegardé dans Google Drive.',
+      provider: 'google_drive',
+      sync_status: 'synced',
+      external_id: uploadResult.file.id,
+      requires_connection: true,
+      connection_type: 'google_drive',
+      project_id: project.id,
+      project_name: project.name,
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    });
+
+    writeStore(store);
+
+    return res.json({
+      ok: true,
+      userId,
+      project,
+      drive_file: uploadResult.file,
+      file_name: uploadResult.fileName,
+      drive_link: uploadResult.file.webViewLink || null,
+      file_id: uploadResult.file.id,
+      message: 'Cahier des charges exporté vers Google Drive.',
+      perf: {
+        total_ms: Date.now() - startedAt,
+      },
+    });
+  } catch (error) {
+    console.error(`❌ ${routeLabel} error:`, error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: 'Erreur export Google Drive',
+      details: error.message,
+    });
+  }
 }
 
 app.get('/', (req, res) => {
@@ -1814,104 +1903,12 @@ app.get('/store/project/:projectId/export-markdown', (req, res) => {
   }
 });
 
+app.post('/store/project/:projectId/export-google-drive', async (req, res) => {
+  return handleExportProjectSpecToDrive(req, res, '/store/project/:projectId/export-google-drive');
+});
+
 app.post('/store/project/:projectId/export-drive', async (req, res) => {
-  const startedAt = Date.now();
-
-  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
-  const projectId = normalizeText(req.params.projectId);
-
-  try {
-    const store = readStore();
-
-    const project = store.projects.find(item => {
-      return item.user_id === userId && item.id === projectId;
-    });
-
-    if (!project) {
-      return res.status(404).json({
-        ok: false,
-        error: 'Projet introuvable',
-      });
-    }
-
-    const projectSpec = getLatestProjectSpec(store, userId, project.id);
-
-    if (!projectSpec || !projectSpec.content) {
-      return res.status(404).json({
-        ok: false,
-        error: 'Aucun cahier des charges trouvé pour ce projet',
-      });
-    }
-
-    const uploadResult = await uploadMarkdownToDrive({
-      userId,
-      project,
-      markdown: projectSpec.content,
-    });
-
-    if (!uploadResult.ok) {
-      return res.status(401).json({
-        ok: false,
-        error: uploadResult.error,
-        connect_url: `/auth/google?userId=${encodeURIComponent(userId)}`,
-        full_connect_url: `https://nyra-backend-production-d168.up.railway.app/auth/google?userId=${encodeURIComponent(userId)}`,
-      });
-    }
-
-    project.last_drive_export = {
-      file_id: uploadResult.file.id,
-      file_name: uploadResult.file.name,
-      web_view_link: uploadResult.file.webViewLink || null,
-      web_content_link: uploadResult.file.webContentLink || null,
-      exported_at: nowIso(),
-    };
-    project.updated_at = nowIso();
-
-    store.actions.push({
-      id: crypto.randomUUID(),
-      user_id: userId,
-      action_type: 'export_project_spec_to_drive',
-      type: 'export_project_spec_to_drive',
-      label: 'Exporter vers Google Drive',
-      title: `Exporter ${project.name} vers Google Drive`,
-      target: project.name,
-      status: 'done',
-      priority: 'normal',
-      datetime_hint: null,
-      next_step: 'Le cahier des charges est sauvegardé dans Google Drive.',
-      provider: 'google_drive',
-      sync_status: 'synced',
-      external_id: uploadResult.file.id,
-      requires_connection: true,
-      connection_type: 'google_drive',
-      project_id: project.id,
-      project_name: project.name,
-      created_at: nowIso(),
-      updated_at: nowIso(),
-    });
-
-    writeStore(store);
-
-    return res.json({
-      ok: true,
-      userId,
-      project,
-      drive_file: uploadResult.file,
-      file_name: uploadResult.fileName,
-      message: 'Cahier des charges exporté vers Google Drive.',
-      perf: {
-        total_ms: Date.now() - startedAt,
-      },
-    });
-  } catch (error) {
-    console.error('❌ /store/project/:projectId/export-drive error:', error.message);
-
-    return res.status(500).json({
-      ok: false,
-      error: 'Erreur export Google Drive',
-      details: error.message,
-    });
-  }
+  return handleExportProjectSpecToDrive(req, res, '/store/project/:projectId/export-drive');
 });
 
 app.post('/store/reset', (req, res) => {
