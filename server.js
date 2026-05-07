@@ -39,7 +39,7 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
-const STORE_VERSION = 'executive-actions-recovery-v2';
+const STORE_VERSION = 'context-engine-v1';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -63,6 +63,7 @@ function createEmptyStore() {
     relations: [],
     contexts: [],
     connected_accounts: [],
+    user_states: [],
     updated_at: null,
   };
 }
@@ -92,6 +93,9 @@ function readStore() {
       connected_accounts: Array.isArray(parsed.connected_accounts)
         ? parsed.connected_accounts
         : [],
+      user_states: Array.isArray(parsed.user_states)
+        ? parsed.user_states
+        : [],
       updated_at: parsed.updated_at || null,
     };
   } catch (error) {
@@ -108,6 +112,7 @@ function writeStore(store) {
       ...store,
       users: Array.isArray(store.users) ? store.users : [],
       action_events: Array.isArray(store.action_events) ? store.action_events : [],
+      user_states: Array.isArray(store.user_states) ? store.user_states : [],
       version: STORE_VERSION,
       updated_at: nowIso(),
     };
@@ -1492,6 +1497,8 @@ function saveCapture({ userId, message, reply, analysis, action }) {
   store.relations = store.relations.slice(-1000);
   store.contexts = store.contexts.slice(-200);
 
+  const userState = saveUserStateSnapshot(store, userId);
+
   writeStore(store);
 
   return {
@@ -1500,8 +1507,449 @@ function saveCapture({ userId, message, reply, analysis, action }) {
     project: linkedProject,
     relation: createdRelation,
     context: updatedContext,
+    user_state: userState,
   };
 }
+
+
+function clampNumber(value, min, max) {
+  const numeric = Number(value);
+
+  if (Number.isNaN(numeric)) return min;
+
+  return Math.max(min, Math.min(max, numeric));
+}
+
+function getRecentUserItems(store, userId, limit = 80) {
+  return (Array.isArray(store.items) ? store.items : [])
+    .filter(item => item.user_id === userId)
+    .slice(-limit);
+}
+
+function getRecentUserActions(store, userId, limit = 80) {
+  return (Array.isArray(store.actions) ? store.actions : [])
+    .filter(action => action.user_id === userId)
+    .slice(-limit);
+}
+
+function getRecentUserConversations(store, userId, limit = 60) {
+  return (Array.isArray(store.conversations) ? store.conversations : [])
+    .filter(conversation => conversation.user_id === userId)
+    .slice(-limit);
+}
+
+function countItemsMatching(items, predicate) {
+  return items.reduce((total, item) => {
+    return predicate(item) ? total + 1 : total;
+  }, 0);
+}
+
+function detectUserStateSignals({ items, actions, conversations }) {
+  const sourceTexts = [
+    ...items.map(item => `${item.title || ''} ${item.content || ''}`),
+    ...actions.map(action => `${action.title || ''} ${action.target || ''} ${action.next_step || ''}`),
+    ...conversations.map(conversation => `${conversation.user_message || ''} ${conversation.nyra_reply || ''}`),
+  ];
+
+  const joinedText = normalizeText(sourceTexts.join(' ')).toLowerCase();
+
+  const openActions = actions.filter(action => {
+    const status = normalizeActionStatus(action.status || 'suggested');
+    return ['suggested', 'draft', 'executing'].includes(status);
+  });
+
+  const doneActions = actions.filter(action => normalizeActionStatus(action.status) === 'done');
+  const failedActions = actions.filter(action => normalizeActionStatus(action.status) === 'failed');
+  const cancelledActions = actions.filter(action => normalizeActionStatus(action.status) === 'cancelled');
+
+  const projectNames = uniqueArray(
+    items
+      .map(item => item.project_name)
+      .concat(actions.map(action => action.project_name))
+      .filter(Boolean)
+  );
+
+  const emotionItems = items.filter(item => {
+    return item.type === 'emotion' || item.bucket === 'journal' || (Array.isArray(item.tags) && item.tags.includes('émotion'));
+  });
+
+  const urgentItems = items.filter(item => {
+    return item.urgency === 'high' || item.priority === 'high' || (Array.isArray(item.tags) && item.tags.includes('urgent'));
+  });
+
+  const fatigueKeywords = [
+    'fatiguée',
+    'fatiguee',
+    'fatigué',
+    'fatigue',
+    'épuisée',
+    'epuisee',
+    'épuisé',
+    'epuise',
+    'crevée',
+    'crevee',
+    'vidée',
+    'videe',
+    'plus d’énergie',
+    "plus d'energie",
+    'plus de force',
+  ];
+
+  const overwhelmKeywords = [
+    'surcharge',
+    'trop',
+    'débordée',
+    'debordee',
+    'submergée',
+    'submergee',
+    'je panique',
+    'panique',
+    'je sais pas par où commencer',
+    'je sais pas par ou commencer',
+    'tout se mélange',
+    'tout se melange',
+    'charge mentale',
+  ];
+
+  const avoidanceKeywords = [
+    'je repousse',
+    'procrastine',
+    'procrastination',
+    'j’évite',
+    "j'evite",
+    'j’évite',
+    "j'évite",
+    'pas avancé',
+    'pas avance',
+    'bloquée',
+    'bloquee',
+    'bloqué',
+    'bloque',
+  ];
+
+  const focusKeywords = [
+    'focus',
+    'concentrée',
+    'concentree',
+    'concentré',
+    'concentre',
+    'j’avance',
+    "j'avance",
+    'on avance',
+    'allons y',
+    'vas y',
+    'c’est fait',
+    "c'est fait",
+  ];
+
+  const explorationKeywords = [
+    'idée',
+    'idee',
+    'concept',
+    'j’imagine',
+    "j'imagine",
+    'on pourrait',
+    'ça pourrait',
+    'ca pourrait',
+  ];
+
+  const fatigueMentions = countItemsMatching(sourceTexts, text => includesAny(text, fatigueKeywords));
+  const overwhelmMentions = countItemsMatching(sourceTexts, text => includesAny(text, overwhelmKeywords));
+  const avoidanceMentions = countItemsMatching(sourceTexts, text => includesAny(text, avoidanceKeywords));
+  const focusMentions = countItemsMatching(sourceTexts, text => includesAny(text, focusKeywords));
+  const explorationMentions = countItemsMatching(sourceTexts, text => includesAny(text, explorationKeywords));
+
+  return {
+    item_count: items.length,
+    action_count: actions.length,
+    conversation_count: conversations.length,
+    open_actions: openActions.length,
+    done_actions: doneActions.length,
+    failed_actions: failedActions.length,
+    cancelled_actions: cancelledActions.length,
+    project_count: projectNames.length,
+    emotion_items: emotionItems.length,
+    urgent_items: urgentItems.length,
+    fatigue_mentions: fatigueMentions,
+    overwhelm_mentions: overwhelmMentions,
+    avoidance_mentions: avoidanceMentions,
+    focus_mentions: focusMentions,
+    exploration_mentions: explorationMentions,
+    has_recent_fatigue_language: includesAny(joinedText, fatigueKeywords),
+    has_recent_overwhelm_language: includesAny(joinedText, overwhelmKeywords),
+    has_recent_avoidance_language: includesAny(joinedText, avoidanceKeywords),
+    has_recent_focus_language: includesAny(joinedText, focusKeywords),
+    has_recent_exploration_language: includesAny(joinedText, explorationKeywords),
+    active_projects: projectNames.slice(0, 8),
+  };
+}
+
+function scoreUserOverwhelm(signals) {
+  let score = 0;
+
+  score += signals.open_actions * 5;
+  score += signals.failed_actions * 7;
+  score += signals.urgent_items * 6;
+  score += signals.emotion_items * 4;
+  score += signals.project_count > 2 ? (signals.project_count - 2) * 6 : 0;
+  score += signals.fatigue_mentions * 6;
+  score += signals.overwhelm_mentions * 8;
+  score += signals.avoidance_mentions * 5;
+
+  if (signals.done_actions > 0) {
+    score -= Math.min(18, signals.done_actions * 3);
+  }
+
+  if (signals.focus_mentions > signals.overwhelm_mentions) {
+    score -= 8;
+  }
+
+  return clampNumber(score, 0, 100);
+}
+
+function deriveCognitiveLoad(overwhelmScore) {
+  if (overwhelmScore >= 75) return 'very_high';
+  if (overwhelmScore >= 55) return 'high';
+  if (overwhelmScore >= 30) return 'moderate';
+  return 'low';
+}
+
+function deriveEnergyLevel(signals, overwhelmScore) {
+  if (signals.has_recent_fatigue_language || signals.fatigue_mentions >= 2) return 'low';
+  if (overwhelmScore >= 75) return 'low';
+  if (signals.focus_mentions >= 3 && overwhelmScore < 45) return 'high';
+  if (signals.done_actions > signals.open_actions && overwhelmScore < 50) return 'good';
+  return 'medium';
+}
+
+function deriveFocusState(signals, overwhelmScore) {
+  if (signals.has_recent_overwhelm_language || overwhelmScore >= 70) return 'scattered';
+  if (signals.project_count >= 4 && signals.open_actions >= 4) return 'fragmented';
+  if (signals.has_recent_focus_language && signals.focus_mentions >= signals.exploration_mentions) return 'focused';
+  if (signals.has_recent_exploration_language) return 'exploratory';
+  return 'stable';
+}
+
+function deriveEmotionalState(signals, overwhelmScore) {
+  if (signals.has_recent_overwhelm_language || overwhelmScore >= 75) return 'overwhelmed';
+  if (signals.has_recent_fatigue_language) return 'tired';
+  if (signals.has_recent_avoidance_language) return 'blocked';
+  if (signals.emotion_items >= 3) return 'emotionally_active';
+  if (signals.focus_mentions >= 3) return 'engaged';
+  return 'neutral';
+}
+
+function buildDetectedPatterns(signals, overwhelmScore) {
+  const patterns = [];
+
+  if (signals.project_count >= 3) {
+    patterns.push({
+      id: 'many_parallel_projects',
+      label: 'Plusieurs projets actifs en parallèle.',
+      intensity: signals.project_count >= 5 ? 'high' : 'medium',
+    });
+  }
+
+  if (signals.open_actions >= 5) {
+    patterns.push({
+      id: 'open_actions_accumulation',
+      label: 'Accumulation d’actions ouvertes.',
+      intensity: signals.open_actions >= 8 ? 'high' : 'medium',
+    });
+  }
+
+  if (signals.urgent_items >= 3 || signals.overwhelm_mentions >= 2) {
+    patterns.push({
+      id: 'high_urgency_language',
+      label: 'Langage d’urgence ou de surcharge fréquent.',
+      intensity: 'high',
+    });
+  }
+
+  if (signals.avoidance_mentions >= 1 || signals.failed_actions >= 2) {
+    patterns.push({
+      id: 'execution_friction',
+      label: 'Friction d’exécution ou évitement probable.',
+      intensity: signals.failed_actions >= 3 ? 'high' : 'medium',
+    });
+  }
+
+  if (signals.focus_mentions >= 3 && overwhelmScore < 55) {
+    patterns.push({
+      id: 'productive_momentum',
+      label: 'Dynamique d’avancement détectée.',
+      intensity: 'positive',
+    });
+  }
+
+  if (signals.fatigue_mentions >= 1) {
+    patterns.push({
+      id: 'fatigue_signal',
+      label: 'Signal de fatigue cognitive.',
+      intensity: signals.fatigue_mentions >= 2 ? 'high' : 'medium',
+    });
+  }
+
+  if (patterns.length === 0) {
+    patterns.push({
+      id: 'stable_baseline',
+      label: 'Aucun signal fort détecté pour l’instant.',
+      intensity: 'low',
+    });
+  }
+
+  return patterns;
+}
+
+function buildUserStateRecommendations({ cognitiveLoad, energyLevel, focusState, emotionalState, signals }) {
+  const recommendations = [];
+
+  if (cognitiveLoad === 'very_high' || cognitiveLoad === 'high') {
+    recommendations.push('Réduire l’écran à une seule priorité visible.');
+    recommendations.push('Éviter d’ajouter de nouvelles grosses tâches maintenant.');
+  }
+
+  if (energyLevel === 'low') {
+    recommendations.push('Choisir une micro-action de moins de 5 minutes.');
+    recommendations.push('Prévoir une vraie récupération avant une tâche complexe.');
+  }
+
+  if (focusState === 'scattered' || focusState === 'fragmented') {
+    recommendations.push('Regrouper les captures similaires avant d’agir.');
+    recommendations.push('Mettre en pause les projets non prioritaires.');
+  }
+
+  if (emotionalState === 'blocked') {
+    recommendations.push('Identifier la première action ridiculeusement simple.');
+  }
+
+  if (signals.project_count >= 3) {
+    recommendations.push('Choisir un seul projet actif pour la prochaine session.');
+  }
+
+  if (signals.open_actions >= 5) {
+    recommendations.push('Clôturer, annuler ou reporter les actions ouvertes avant d’en créer de nouvelles.');
+  }
+
+  if (recommendations.length === 0) {
+    recommendations.push('Continuer avec une priorité claire et garder le rythme actuel.');
+  }
+
+  return uniqueArray(recommendations).slice(0, 5);
+}
+
+function analyzeUserState({ store, userId }) {
+  const items = getRecentUserItems(store, userId, 80);
+  const actions = getRecentUserActions(store, userId, 80);
+  const conversations = getRecentUserConversations(store, userId, 60);
+
+  const signals = detectUserStateSignals({
+    items,
+    actions,
+    conversations,
+  });
+
+  const overwhelmScore = scoreUserOverwhelm(signals);
+  const cognitiveLoad = deriveCognitiveLoad(overwhelmScore);
+  const energyLevel = deriveEnergyLevel(signals, overwhelmScore);
+  const focusState = deriveFocusState(signals, overwhelmScore);
+  const emotionalState = deriveEmotionalState(signals, overwhelmScore);
+  const detectedPatterns = buildDetectedPatterns(signals, overwhelmScore);
+  const recommendations = buildUserStateRecommendations({
+    cognitiveLoad,
+    energyLevel,
+    focusState,
+    emotionalState,
+    signals,
+  });
+
+  const dominantMode =
+    cognitiveLoad === 'very_high' || cognitiveLoad === 'high'
+      ? 'reduce_load'
+      : energyLevel === 'low'
+        ? 'recovery'
+        : focusState === 'focused'
+          ? 'execution'
+          : focusState === 'exploratory'
+            ? 'exploration'
+            : 'steady';
+
+  return {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    cognitive_load: cognitiveLoad,
+    emotional_state: emotionalState,
+    energy_level: energyLevel,
+    focus_state: focusState,
+    dominant_mode: dominantMode,
+    overwhelm_score: overwhelmScore,
+    detected_patterns: detectedPatterns,
+    active_signals: signals,
+    recommendations,
+    source_items: items.slice(-20).map(item => item.id).filter(Boolean),
+    source_actions: actions.slice(-20).map(action => action.id).filter(Boolean),
+    created_at: nowIso(),
+    updated_at: nowIso(),
+  };
+}
+
+function saveUserStateSnapshot(store, userId) {
+  store.user_states = Array.isArray(store.user_states) ? store.user_states : [];
+
+  const snapshot = analyzeUserState({
+    store,
+    userId,
+  });
+
+  store.user_states.push(snapshot);
+
+  const userStates = store.user_states.filter(state => state.user_id === userId);
+  const otherStates = store.user_states.filter(state => state.user_id !== userId);
+
+  store.user_states = [
+    ...otherStates,
+    ...userStates.slice(-100),
+  ].slice(-500);
+
+  return snapshot;
+}
+
+function getLatestUserState(store, userId) {
+  const states = Array.isArray(store.user_states)
+    ? store.user_states.filter(state => state.user_id === userId)
+    : [];
+
+  return states
+    .sort((a, b) => {
+      return new Date(b.updated_at || b.created_at || 0).getTime() -
+        new Date(a.updated_at || a.created_at || 0).getTime();
+    })[0] || null;
+}
+
+function getUserStateTrend(store, userId, limit = 12) {
+  const states = Array.isArray(store.user_states)
+    ? store.user_states.filter(state => state.user_id === userId)
+    : [];
+
+  return states
+    .sort((a, b) => {
+      return new Date(a.updated_at || a.created_at || 0).getTime() -
+        new Date(b.updated_at || b.created_at || 0).getTime();
+    })
+    .slice(-limit)
+    .map(state => ({
+      id: state.id,
+      cognitive_load: state.cognitive_load,
+      emotional_state: state.emotional_state,
+      energy_level: state.energy_level,
+      focus_state: state.focus_state,
+      dominant_mode: state.dominant_mode,
+      overwhelm_score: state.overwhelm_score,
+      created_at: state.created_at,
+      updated_at: state.updated_at,
+    }));
+}
+
 
 function getStoreSummary(userId) {
   const store = readStore();
@@ -1532,6 +1980,7 @@ function getStoreSummary(userId) {
     project_count: userProjects.length,
     relation_count: userRelations.length,
     context_count: userContexts.length,
+    user_state_count: (Array.isArray(store.user_states) ? store.user_states : []).filter(state => state.user_id === userId).length,
     local_only: userActions.filter(action => action.sync_status === 'local_only').length,
     pending_sync: userActions.filter(action => action.sync_status === 'pending_sync').length,
     synced: userActions.filter(action => action.sync_status === 'synced').length,
@@ -2615,6 +3064,28 @@ app.get('/auth/me', (req, res) => {
   });
 });
 
+
+app.get('/state/user', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const forceRefresh = normalizeText(req.query?.refresh || '') === 'true';
+  const store = readStore();
+
+  let userState = getLatestUserState(store, userId);
+
+  if (!userState || forceRefresh) {
+    userState = saveUserStateSnapshot(store, userId);
+    writeStore(store);
+  }
+
+  return res.json({
+    ok: true,
+    userId,
+    user_state: userState,
+    trend: getUserStateTrend(store, userId),
+    summary: getStoreSummary(userId),
+  });
+});
+
 app.get('/store', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
@@ -3246,6 +3717,7 @@ app.post('/chat', async (req, res) => {
       linked_project: saved.project,
       created_relation: saved.relation,
       updated_context: saved.context,
+      user_state: saved.user_state,
       memory_summary: getStoreSummary(userId),
       perf: {
         total_ms: Date.now() - startedAt,
