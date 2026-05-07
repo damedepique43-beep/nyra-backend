@@ -13,6 +13,7 @@ const { buildProactiveSignals } = require('./engines/proactiveAssistantEngine');
 const { buildTimelineInsights } = require('./engines/cognitiveTimelineEngine');
 const { buildCognitiveMemoryGraph, buildMemoryGraphInsights } = require('./engines/cognitiveMemoryGraphEngine');
 const { analyzePriorities } = require('./engines/cognitivePriorityEngine');
+const { compressTask } = require('./engines/actionCompressionEngine');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -5159,6 +5160,97 @@ app.post('/chat', async (req, res) => {
     });
   }
 });
+
+
+
+app.post('/compression/analyze', (req, res) => {
+  try {
+    const task = req.body?.task || {};
+    const cognitiveState = req.body?.cognitiveState || {};
+
+    const compression = compressTask({
+      task,
+      cognitiveState,
+    });
+
+    return res.json({
+      ok: true,
+      compression,
+    });
+  } catch (error) {
+    console.error('❌ /compression/analyze error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: 'Erreur compression cognitive',
+      details: error.message,
+    });
+  }
+});
+
+app.post('/compression/from-priority', (req, res) => {
+  try {
+    const userId = normalizeText(
+      req.body?.userId || req.query?.userId || 'local-user'
+    );
+
+    const taskId = normalizeText(
+      req.body?.taskId || ''
+    );
+
+    const store = readStore();
+
+    const latestUserState =
+      getLatestUserState(store, userId) ||
+      saveUserStateSnapshot(store, userId);
+
+    const priorityPayload =
+      buildPriorityPayload(store, userId);
+
+    let selectedTask = null;
+
+    if (taskId) {
+      selectedTask =
+        priorityPayload.analyzed_items.find(
+          item => item.id === taskId
+        ) || null;
+    }
+
+    if (!selectedTask) {
+      selectedTask =
+        priorityPayload.top_priority || null;
+    }
+
+    if (!selectedTask) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Aucune priorité trouvée',
+      });
+    }
+
+    const compression = compressTask({
+      task: selectedTask,
+      cognitiveState: latestUserState,
+    });
+
+    return res.json({
+      ok: true,
+      userId,
+      selected_task: selectedTask,
+      cognitive_state: latestUserState,
+      compression,
+    });
+  } catch (error) {
+    console.error('❌ /compression/from-priority error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: 'Erreur compression depuis priorité',
+      details: error.message,
+    });
+  }
+});
+
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Nyra backend Google Tasks Create Task lancé sur le port ${PORT}`);
