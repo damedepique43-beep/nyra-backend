@@ -3379,12 +3379,80 @@ function buildFocusRecommendation(store, userId) {
   const latestUserState = getLatestUserState(store, userId) || saveUserStateSnapshot(store, userId);
   const profile = recommendFocusProfile(latestUserState);
 
+  const recommendation = {
+    mode: profile.mode,
+    focus_minutes: profile.focus_duration_min,
+    break_minutes: profile.break_duration_min,
+    tone: profile.tone,
+    reason: profile.reason,
+    message: profile.opening_message,
+    structure: buildFocusStructure(profile, latestUserState),
+    cycles_recommended: profile.cycles_recommended,
+    mode_label: getFocusModeLabel(profile.mode),
+
+    // Compatibilité ancienne structure backend
+    focus_duration_min: profile.focus_duration_min,
+    break_duration_min: profile.break_duration_min,
+    opening_message: profile.opening_message,
+    break_message: profile.break_message,
+  };
+
   return {
     ok: true,
     userId,
+    recommendation,
     recommended_profile: profile,
     mode_label: getFocusModeLabel(profile.mode),
     user_state: latestUserState,
+  };
+}
+
+function buildFocusStructure(profile, userState) {
+  const structure = [];
+
+  if (profile.mode === 'gentle_focus') {
+    structure.push('Choisir une seule action simple.');
+    structure.push('Faire 15 minutes sans chercher la perfection.');
+    structure.push('S’arrêter dès que le timer indique la pause.');
+  } else if (profile.mode === 'recovery_focus') {
+    structure.push('Commencer par une micro-action.');
+    structure.push('Avancer doucement, sans pression de performance.');
+    structure.push('Faire une pause plus longue pour récupérer.');
+  } else if (profile.mode === 'deep_focus') {
+    structure.push('Bloquer une tâche importante.');
+    structure.push('Éliminer les distractions visibles.');
+    structure.push('Avancer en profondeur jusqu’à la pause.');
+  } else {
+    structure.push('Choisir une priorité claire.');
+    structure.push('Faire 25 minutes de focus.');
+    structure.push('Prendre 5 minutes de pause réelle.');
+  }
+
+  const cognitiveLoad = normalizeText(userState?.cognitive_load || '');
+
+  if (cognitiveLoad === 'very_high' || cognitiveLoad === 'high') {
+    structure.unshift('Réduire la session à l’essentiel.');
+  }
+
+  return uniqueArray(structure).slice(0, 4);
+}
+
+function decorateFocusSessionForMobile(session) {
+  if (!session) return session;
+
+  return {
+    ...session,
+    userId: session.user_id,
+    focus_minutes: session.focus_minutes || session.focus_duration_min || 25,
+    break_minutes: session.break_minutes || session.break_duration_min || 5,
+    focus_duration_min: session.focus_duration_min || session.focus_minutes || 25,
+    break_duration_min: session.break_duration_min || session.break_minutes || 5,
+    status:
+      session.status === 'active'
+        ? 'running'
+        : session.status === 'suggested'
+          ? 'recommended'
+          : session.status,
   };
 }
 
@@ -3460,7 +3528,17 @@ app.post('/focus/sessions', (req, res) => {
   const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
   const taskId = normalizeText(req.body?.taskId || '');
   const projectId = normalizeText(req.body?.projectId || '');
-  const title = normalizeText(req.body?.title || req.body?.taskTitle || 'Session focus Nyra');
+  const incomingRecommendation =
+    req.body?.recommendation && typeof req.body.recommendation === 'object'
+      ? req.body.recommendation
+      : null;
+  const title = normalizeText(
+    req.body?.title ||
+      req.body?.taskTitle ||
+      incomingRecommendation?.message ||
+      incomingRecommendation?.reason ||
+      'Session focus Nyra'
+  );
   const source = normalizeText(req.body?.source || 'mobile_ui');
 
   const store = readStore();
@@ -3474,6 +3552,39 @@ app.post('/focus/sessions', (req, res) => {
     source,
     userState: latestUserState,
   });
+
+  if (incomingRecommendation) {
+    session.mode = normalizeText(incomingRecommendation.mode || session.mode) || session.mode;
+    session.mode_label = getFocusModeLabel(session.mode);
+    session.focus_duration_min = Number(incomingRecommendation.focus_minutes || incomingRecommendation.focus_duration_min || session.focus_duration_min);
+    session.break_duration_min = Number(incomingRecommendation.break_minutes || incomingRecommendation.break_duration_min || session.break_duration_min);
+    session.focus_minutes = session.focus_duration_min;
+    session.break_minutes = session.break_duration_min;
+    session.tone = normalizeText(incomingRecommendation.tone || session.tone) || session.tone;
+    session.reason = normalizeText(incomingRecommendation.reason || session.reason) || session.reason;
+    session.opening_message = normalizeText(incomingRecommendation.message || incomingRecommendation.opening_message || session.opening_message) || session.opening_message;
+    session.structure = Array.isArray(incomingRecommendation.structure)
+      ? incomingRecommendation.structure
+      : buildFocusStructure(
+          {
+            mode: session.mode,
+            focus_duration_min: session.focus_duration_min,
+            break_duration_min: session.break_duration_min,
+          },
+          latestUserState
+        );
+  } else {
+    session.focus_minutes = session.focus_duration_min;
+    session.break_minutes = session.break_duration_min;
+    session.structure = buildFocusStructure(
+      {
+        mode: session.mode,
+        focus_duration_min: session.focus_duration_min,
+        break_duration_min: session.break_duration_min,
+      },
+      latestUserState
+    );
+  }
 
   store.focus_sessions = Array.isArray(store.focus_sessions) ? store.focus_sessions : [];
   store.focus_sessions.push(session);
@@ -3491,13 +3602,18 @@ app.post('/focus/sessions', (req, res) => {
   return res.json({
     ok: true,
     userId,
-    session,
+    session: decorateFocusSessionForMobile(session),
     recommendation: {
       mode: session.mode,
       mode_label: session.mode_label,
+      focus_minutes: session.focus_duration_min,
+      break_minutes: session.break_duration_min,
       focus_duration_min: session.focus_duration_min,
       break_duration_min: session.break_duration_min,
+      tone: session.tone,
       reason: session.reason,
+      message: session.opening_message,
+      structure: session.structure || [],
     },
   });
 });
@@ -3549,7 +3665,7 @@ app.patch('/focus/sessions/:sessionId/status', (req, res) => {
   return res.json({
     ok: true,
     userId,
-    session: updatedSession,
+    session: decorateFocusSessionForMobile(updatedSession),
   });
 });
 
