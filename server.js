@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const { Readable } = require('stream');
 const OpenAI = require('openai');
 const { google } = require('googleapis');
+const { buildAdaptiveProfile } = require('./engines/adaptiveCognitiveEngine');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -65,6 +66,7 @@ function createEmptyStore() {
     connected_accounts: [],
     user_states: [],
     focus_sessions: [],
+    adaptive_profiles: [],
     updated_at: null,
   };
 }
@@ -100,6 +102,9 @@ function readStore() {
       focus_sessions: Array.isArray(parsed.focus_sessions)
         ? parsed.focus_sessions
         : [],
+      adaptive_profiles: Array.isArray(parsed.adaptive_profiles)
+        ? parsed.adaptive_profiles
+        : [],
       updated_at: parsed.updated_at || null,
     };
   } catch (error) {
@@ -118,6 +123,7 @@ function writeStore(store) {
       action_events: Array.isArray(store.action_events) ? store.action_events : [],
       user_states: Array.isArray(store.user_states) ? store.user_states : [],
       focus_sessions: Array.isArray(store.focus_sessions) ? store.focus_sessions : [],
+      adaptive_profiles: Array.isArray(store.adaptive_profiles) ? store.adaptive_profiles : [],
       version: STORE_VERSION,
       updated_at: nowIso(),
     };
@@ -3377,7 +3383,12 @@ function updateFocusSessionStatus(session, status, metadata = {}) {
 
 function buildFocusRecommendation(store, userId) {
   const latestUserState = getLatestUserState(store, userId) || saveUserStateSnapshot(store, userId);
-  const profile = recommendFocusProfile(latestUserState);
+  const adaptiveProfile = getOrCreateAdaptiveProfile(store, userId);
+  const profile = applyAdaptiveProfileToFocusRecommendation(
+    recommendFocusProfile(latestUserState),
+    adaptiveProfile,
+    latestUserState
+  );
 
   const recommendation = {
     mode: profile.mode,
@@ -3386,9 +3397,16 @@ function buildFocusRecommendation(store, userId) {
     tone: profile.tone,
     reason: profile.reason,
     message: profile.opening_message,
-    structure: buildFocusStructure(profile, latestUserState),
+    structure: buildFocusStructure(profile, latestUserState, adaptiveProfile),
     cycles_recommended: profile.cycles_recommended,
     mode_label: getFocusModeLabel(profile.mode),
+    adaptive_profile_applied: true,
+    adaptive_profile_summary: {
+      preferred_focus_duration: adaptiveProfile?.preferred_focus_duration || null,
+      overload_threshold: adaptiveProfile?.overload_threshold || null,
+      average_completion_rate: adaptiveProfile?.average_completion_rate ?? null,
+      learned_patterns: adaptiveProfile?.learned_patterns || [],
+    },
 
     // Compatibilité ancienne structure backend
     focus_duration_min: profile.focus_duration_min,
@@ -3402,12 +3420,58 @@ function buildFocusRecommendation(store, userId) {
     userId,
     recommendation,
     recommended_profile: profile,
+    adaptive_profile: adaptiveProfile,
     mode_label: getFocusModeLabel(profile.mode),
     user_state: latestUserState,
   };
 }
 
-function buildFocusStructure(profile, userState) {
+function applyAdaptiveProfileToFocusRecommendation(profile, adaptiveProfile, userState) {
+  if (!adaptiveProfile) return profile;
+
+  const nextProfile = {
+    ...profile,
+  };
+
+  const preferredDuration = Number(adaptiveProfile.preferred_focus_duration || 0);
+  const overloadThreshold = Number(adaptiveProfile.overload_threshold || 70);
+  const currentOverwhelm = Number(userState?.overwhelm_score || 0);
+  const completionRate = Number(adaptiveProfile.average_completion_rate || 0);
+
+  if (preferredDuration > 0 && currentOverwhelm < overloadThreshold) {
+    nextProfile.focus_duration_min = preferredDuration;
+  }
+
+  if (currentOverwhelm >= overloadThreshold) {
+    nextProfile.mode = 'gentle_focus';
+    nextProfile.focus_duration_min = Math.min(preferredDuration || 15, 15);
+    nextProfile.break_duration_min = Math.max(Number(nextProfile.break_duration_min || 5), 5);
+    nextProfile.tone = 'gentle';
+    nextProfile.reason = 'Nyra adapte la session à ton profil : surcharge au-dessus de ton seuil habituel.';
+    nextProfile.opening_message = 'On réduit volontairement. Une seule micro-action suffit.';
+  }
+
+  if (completionRate > 0 && completionRate < 0.45) {
+    nextProfile.mode = 'gentle_focus';
+    nextProfile.focus_duration_min = Math.min(Number(nextProfile.focus_duration_min || 25), 15);
+    nextProfile.reason = 'Nyra adapte la session : les cycles courts semblent plus réalistes pour toi en ce moment.';
+    nextProfile.opening_message = 'Objectif réduit : juste commencer, sans te mettre en échec.';
+  }
+
+  if (preferredDuration >= 40 && currentOverwhelm < 50 && completionRate >= 0.65) {
+    nextProfile.mode = 'deep_focus';
+    nextProfile.focus_duration_min = preferredDuration;
+    nextProfile.break_duration_min = Math.max(Number(nextProfile.break_duration_min || 5), 10);
+    nextProfile.reason = 'Nyra adapte la session : ton profil semble tolérer les sessions profondes.';
+    nextProfile.opening_message = 'Tu peux viser une session plus profonde, mais sans multiplier les objectifs.';
+  }
+
+  nextProfile.mode_label = getFocusModeLabel(nextProfile.mode);
+
+  return nextProfile;
+}
+
+function buildFocusStructure(profile, userState, adaptiveProfile = null) {
   const structure = [];
 
   if (profile.mode === 'gentle_focus') {
@@ -3434,6 +3498,14 @@ function buildFocusStructure(profile, userState) {
     structure.unshift('Réduire la session à l’essentiel.');
   }
 
+  if (adaptiveProfile?.learned_patterns?.length) {
+    const firstPattern = adaptiveProfile.learned_patterns[0];
+
+    if (firstPattern?.label) {
+      structure.push(`Profil appris : ${firstPattern.label}`);
+    }
+  }
+
   return uniqueArray(structure).slice(0, 4);
 }
 
@@ -3455,6 +3527,171 @@ function decorateFocusSessionForMobile(session) {
           : session.status,
   };
 }
+
+
+function getUserAdaptiveProfile(store, userId) {
+  const profiles = Array.isArray(store.adaptive_profiles)
+    ? store.adaptive_profiles.filter(profile => profile.user_id === userId)
+    : [];
+
+  return profiles
+    .sort((a, b) => {
+      return new Date(b.updated_at || b.created_at || 0).getTime() -
+        new Date(a.updated_at || a.created_at || 0).getTime();
+    })[0] || null;
+}
+
+function getAdaptiveProfileSourceData(store, userId) {
+  const focusSessions = Array.isArray(store.focus_sessions)
+    ? store.focus_sessions.filter(session => session.user_id === userId)
+    : [];
+
+  const userStates = Array.isArray(store.user_states)
+    ? store.user_states.filter(state => state.user_id === userId)
+    : [];
+
+  const actions = Array.isArray(store.actions)
+    ? store.actions.filter(action => action.user_id === userId)
+    : [];
+
+  return {
+    focusSessions,
+    userStates,
+    actions,
+  };
+}
+
+function saveAdaptiveProfile(store, userId, profile) {
+  store.adaptive_profiles = Array.isArray(store.adaptive_profiles)
+    ? store.adaptive_profiles
+    : [];
+
+  const existingIndex = store.adaptive_profiles.findIndex(existingProfile => {
+    return existingProfile.user_id === userId;
+  });
+
+  if (existingIndex >= 0) {
+    const previous = store.adaptive_profiles[existingIndex];
+
+    store.adaptive_profiles[existingIndex] = {
+      ...previous,
+      ...profile,
+      id: previous.id || profile.id,
+      user_id: userId,
+      created_at: previous.created_at || profile.created_at || nowIso(),
+      updated_at: nowIso(),
+    };
+
+    return store.adaptive_profiles[existingIndex];
+  }
+
+  const nextProfile = {
+    ...profile,
+    id: profile.id || crypto.randomUUID(),
+    user_id: userId,
+    created_at: profile.created_at || nowIso(),
+    updated_at: nowIso(),
+  };
+
+  store.adaptive_profiles.push(nextProfile);
+  store.adaptive_profiles = store.adaptive_profiles.slice(-500);
+
+  return nextProfile;
+}
+
+function recomputeAdaptiveProfile(store, userId) {
+  const sourceData = getAdaptiveProfileSourceData(store, userId);
+
+  const profile = buildAdaptiveProfile({
+    userId,
+    focusSessions: sourceData.focusSessions,
+    userStates: sourceData.userStates,
+    actions: sourceData.actions,
+  });
+
+  return saveAdaptiveProfile(store, userId, {
+    ...profile,
+    source_counts: {
+      focus_sessions: sourceData.focusSessions.length,
+      user_states: sourceData.userStates.length,
+      actions: sourceData.actions.length,
+    },
+  });
+}
+
+function getOrCreateAdaptiveProfile(store, userId) {
+  const existingProfile = getUserAdaptiveProfile(store, userId);
+
+  if (existingProfile) {
+    return existingProfile;
+  }
+
+  return recomputeAdaptiveProfile(store, userId);
+}
+
+
+app.get('/adaptive/profile', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const refresh = normalizeText(req.query?.refresh || '') === 'true';
+  const store = readStore();
+
+  let profile = refresh
+    ? recomputeAdaptiveProfile(store, userId)
+    : getOrCreateAdaptiveProfile(store, userId);
+
+  if (refresh || !getUserAdaptiveProfile(store, userId)) {
+    writeStore(store);
+  }
+
+  return res.json({
+    ok: true,
+    userId,
+    profile,
+  });
+});
+
+app.post('/adaptive/recompute', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const profile = recomputeAdaptiveProfile(store, userId);
+
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    profile,
+    message: 'Profil cognitif adaptatif recalculé.',
+  });
+});
+
+app.get('/adaptive/summary', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const profile = getOrCreateAdaptiveProfile(store, userId);
+  const sourceData = getAdaptiveProfileSourceData(store, userId);
+
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    summary: {
+      preferred_focus_duration: profile.preferred_focus_duration,
+      optimal_focus_window: profile.optimal_focus_window,
+      overload_threshold: profile.overload_threshold,
+      average_completion_rate: profile.average_completion_rate,
+      average_focus_score: profile.average_focus_score,
+      learned_patterns: profile.learned_patterns || [],
+      total_focus_sessions: sourceData.focusSessions.length,
+      total_user_states: sourceData.userStates.length,
+      total_actions: sourceData.actions.length,
+    },
+    profile,
+  });
+});
 
 app.get('/state/user', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
@@ -3658,6 +3895,14 @@ app.patch('/focus/sessions/:sessionId/status', (req, res) => {
 
   if (normalizedStatus === 'completed' || normalizedStatus === 'cancelled') {
     updatedSession.cognitive_state_after = getLatestUserState(store, userId) || null;
+    updatedSession.learning_metadata = {
+      ...(updatedSession.learning_metadata || {}),
+      final_status: normalizedStatus,
+      completed_at: normalizedStatus === 'completed' ? nowIso() : updatedSession.completed_at || null,
+      cancelled_at: normalizedStatus === 'cancelled' ? nowIso() : updatedSession.cancelled_at || null,
+      metadata_snapshot: metadata,
+    };
+    recomputeAdaptiveProfile(store, userId);
   }
 
   writeStore(store);
