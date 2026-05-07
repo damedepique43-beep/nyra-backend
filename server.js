@@ -3927,9 +3927,12 @@ function getPrioritySourceItems(store, userId) {
   const memoryItems = Array.isArray(store.items)
     ? store.items
         .filter(item => {
+          const status = normalizeText(item.status || '').toLowerCase();
+
           return (
             item.user_id === userId &&
-            ['tasks', 'today', 'plans', 'reminders', 'inbox', 'projects'].includes(item.bucket || '')
+            ['tasks', 'today', 'plans', 'reminders', 'inbox', 'projects'].includes(item.bucket || '') &&
+            !['done', 'completed', 'complete', 'cancelled', 'canceled'].includes(status)
           );
         })
         .slice(-80)
@@ -3984,6 +3987,10 @@ function buildPriorityPayload(store, userId) {
     cognitive_state: latestUserState,
     source_snapshot: {
       item_count: items.length,
+      analyzed_item_count: analysis.analyzed_items.length,
+      deduplicated_item_count: analysis.deduplication?.deduplicated_item_count ?? null,
+      removed_duplicate_count: analysis.deduplication?.removed_duplicate_count ?? null,
+      ignored_completed_count: analysis.deduplication?.ignored_completed_count ?? null,
       overwhelm_score: latestUserState?.overwhelm_score ?? null,
       cognitive_load: latestUserState?.cognitive_load || null,
       energy_level: latestUserState?.energy_level || null,

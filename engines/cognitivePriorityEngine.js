@@ -4,6 +4,138 @@ function normalizeText(value) {
     .trim();
 }
 
+function normalizeComparableText(value) {
+  return normalizeText(value)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[’']/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\b(je|tu|il|elle|on|nous|vous|ils|elles|dois|doit|faire|ajoute|ajouter|une|un|le|la|les|des|du|de|d|a|au|aux|ça|ca|ce|cet|cette|demain|matin|soir|projet|tache|tâche)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getDeduplicationKey(item = {}) {
+  const source = normalizeComparableText(
+    `${item.project_name || ''} ${item.title || ''} ${item.content || item.target || ''}`
+  );
+
+  if (!source) {
+    return item.id || '';
+  }
+
+  const words = source
+    .split(' ')
+    .filter(word => word.length >= 3)
+    .slice(0, 12);
+
+  return words.join('-') || source.slice(0, 80);
+}
+
+function isCompletedItem(item = {}) {
+  const status = normalizeText(item.status || '').toLowerCase();
+
+  return [
+    'done',
+    'completed',
+    'complete',
+    'cancelled',
+    'canceled',
+    'synced',
+  ].includes(status);
+}
+
+function getItemFreshnessScore(item = {}) {
+  const date = new Date(item.updated_at || item.created_at || 0);
+
+  if (Number.isNaN(date.getTime())) {
+    return 0;
+  }
+
+  return date.getTime();
+}
+
+function getItemStatusScore(item = {}) {
+  const status = normalizeText(item.status || '').toLowerCase();
+
+  if (status === 'executing') return 40;
+  if (status === 'todo') return 35;
+  if (status === 'suggested') return 30;
+  if (status === 'draft') return 25;
+  if (status === 'captured') return 10;
+  if (status === 'failed') return 8;
+  if (status === 'done') return -50;
+  if (status === 'cancelled') return -60;
+
+  return 0;
+}
+
+function chooseBestDuplicateItem(current, candidate) {
+  const currentScore =
+    getItemStatusScore(current) +
+    (current.priority === 'high' ? 15 : 0) +
+    (current.urgency === 'high' ? 15 : 0) +
+    (current.project_name ? 5 : 0);
+
+  const candidateScore =
+    getItemStatusScore(candidate) +
+    (candidate.priority === 'high' ? 15 : 0) +
+    (candidate.urgency === 'high' ? 15 : 0) +
+    (candidate.project_name ? 5 : 0);
+
+  if (candidateScore > currentScore) {
+    return candidate;
+  }
+
+  if (candidateScore < currentScore) {
+    return current;
+  }
+
+  return getItemFreshnessScore(candidate) > getItemFreshnessScore(current)
+    ? candidate
+    : current;
+}
+
+function deduplicatePriorityItems(items = []) {
+  const grouped = new Map();
+
+  items.forEach(item => {
+    const key = getDeduplicationKey(item);
+
+    if (!key) return;
+
+    const existing = grouped.get(key);
+
+    if (!existing) {
+      grouped.set(key, {
+        item,
+        duplicate_count: 1,
+        duplicate_ids: item.id ? [item.id] : [],
+      });
+      return;
+    }
+
+    const bestItem = chooseBestDuplicateItem(existing.item, item);
+
+    grouped.set(key, {
+      item: bestItem,
+      duplicate_count: existing.duplicate_count + 1,
+      duplicate_ids: [
+        ...existing.duplicate_ids,
+        item.id,
+      ].filter(Boolean),
+    });
+  });
+
+  return Array.from(grouped.values()).map(group => ({
+    ...group.item,
+    duplicate_count: group.duplicate_count,
+    duplicate_ids: group.duplicate_ids,
+    deduplication_key: getDeduplicationKey(group.item),
+  }));
+}
+
 function estimateCognitiveCost(item = {}) {
   const content = normalizeText(
     `${item.title || ''} ${item.content || item.target || ''}`
@@ -116,6 +248,10 @@ function calculateAdaptivePriority({
     priorityScore -= 20;
   }
 
+  if (isCompletedItem(item)) {
+    priorityScore -= 35;
+  }
+
   return Math.max(
     0,
     Math.min(100, priorityScore)
@@ -131,6 +267,17 @@ function buildExecutiveRecommendation({
   const overwhelmScore = Number(
     cognitiveState?.overwhelm_score || 0
   );
+
+  if (isCompletedItem(item)) {
+    return {
+      type: 'already_done',
+      title: 'Déjà traité',
+      message:
+        'Cette action semble déjà terminée ou clôturée.',
+      recommendation:
+        'Ne pas la remettre dans les priorités actives.',
+    };
+  }
 
   if (
     overwhelmScore >= 80 &&
@@ -188,7 +335,13 @@ function analyzePriorities({
   items = [],
   cognitiveState = {},
 }) {
-  const analyzed = items.map(item => {
+  const activeSourceItems = items.filter(item => {
+    return !isCompletedItem(item);
+  });
+
+  const deduplicatedItems = deduplicatePriorityItems(activeSourceItems);
+
+  const analyzed = deduplicatedItems.map(item => {
     const cognitive_cost =
       estimateCognitiveCost(item);
 
@@ -234,7 +387,8 @@ function analyzePriorities({
     .filter(item => {
       return (
         item.adaptive_priority >= 55 &&
-        item.cognitive_cost <= 70
+        item.cognitive_cost <= 70 &&
+        !isCompletedItem(item)
       );
     })
     .slice(0, 3);
@@ -257,6 +411,13 @@ function analyzePriorities({
       shouldReduceAmbition,
       cognitiveState,
     }),
+    deduplication: {
+      original_item_count: items.length,
+      active_item_count: activeSourceItems.length,
+      deduplicated_item_count: deduplicatedItems.length,
+      removed_duplicate_count: Math.max(0, activeSourceItems.length - deduplicatedItems.length),
+      ignored_completed_count: Math.max(0, items.length - activeSourceItems.length),
+    },
     generated_at:
       new Date().toISOString(),
   };
@@ -277,7 +438,9 @@ function buildPrioritySummary({
       message:
         'Nyra détecte un risque de surcharge. Le plus intelligent est de viser moins, mais mieux.',
       recommendation:
-        'Choisir une seule priorité et transformer le reste en actions minuscules.',
+        topPriority
+          ? `Garder une seule priorité active : ${topPriority.title || topPriority.content || 'la tâche principale'}.`
+          : 'Choisir une seule priorité et transformer le reste en actions minuscules.',
       mode: 'protect_energy',
       overwhelm_score: overwhelmScore,
     };
@@ -323,4 +486,5 @@ module.exports = {
   analyzePriorities,
   estimateCognitiveCost,
   calculateAdaptivePriority,
+  deduplicatePriorityItems,
 };
