@@ -11,6 +11,7 @@ const { google } = require('googleapis');
 const { buildAdaptiveProfile } = require('./engines/adaptiveCognitiveEngine');
 const { buildProactiveSignals } = require('./engines/proactiveAssistantEngine');
 const { buildTimelineInsights } = require('./engines/cognitiveTimelineEngine');
+const { buildCognitiveMemoryGraph, buildMemoryGraphInsights } = require('./engines/cognitiveMemoryGraphEngine');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -71,6 +72,7 @@ function createEmptyStore() {
     adaptive_profiles: [],
     proactive_events: [],
     cognitive_timeline_events: [],
+    cognitive_memory_graphs: [],
     updated_at: null,
   };
 }
@@ -115,6 +117,9 @@ function readStore() {
       cognitive_timeline_events: Array.isArray(parsed.cognitive_timeline_events)
         ? parsed.cognitive_timeline_events
         : [],
+      cognitive_memory_graphs: Array.isArray(parsed.cognitive_memory_graphs)
+        ? parsed.cognitive_memory_graphs
+        : [],
       updated_at: parsed.updated_at || null,
     };
   } catch (error) {
@@ -136,6 +141,7 @@ function writeStore(store) {
       adaptive_profiles: Array.isArray(store.adaptive_profiles) ? store.adaptive_profiles : [],
       proactive_events: Array.isArray(store.proactive_events) ? store.proactive_events : [],
       cognitive_timeline_events: Array.isArray(store.cognitive_timeline_events) ? store.cognitive_timeline_events : [],
+      cognitive_memory_graphs: Array.isArray(store.cognitive_memory_graphs) ? store.cognitive_memory_graphs : [],
       version: STORE_VERSION,
       updated_at: nowIso(),
     };
@@ -2126,6 +2132,7 @@ function getStoreSummary(userId) {
     adaptive_profile_count: (Array.isArray(store.adaptive_profiles) ? store.adaptive_profiles : []).filter(profile => profile.user_id === userId).length,
     proactive_event_count: (Array.isArray(store.proactive_events) ? store.proactive_events : []).filter(event => event.user_id === userId).length,
     cognitive_timeline_event_count: (Array.isArray(store.cognitive_timeline_events) ? store.cognitive_timeline_events : []).filter(event => event.user_id === userId).length,
+    cognitive_memory_graph_count: (Array.isArray(store.cognitive_memory_graphs) ? store.cognitive_memory_graphs : []).filter(graph => graph.user_id === userId).length,
     local_only: userActions.filter(action => action.sync_status === 'local_only').length,
     pending_sync: userActions.filter(action => action.sync_status === 'pending_sync').length,
     synced: userActions.filter(action => action.sync_status === 'synced').length,
@@ -2975,6 +2982,7 @@ app.get('/', (req, res) => {
       adaptive: true,
       proactive: true,
       timeline: true,
+      memory_graph: true,
     },
   });
 });
@@ -3812,6 +3820,156 @@ function getRecentCognitiveTimelineEvents(store, userId, limit = 20) {
     .slice(0, safeLimit);
 }
 
+
+
+function getMemoryGraphSourceData(store, userId) {
+  return {
+    items: Array.isArray(store.items)
+      ? store.items.filter(item => item.user_id === userId).slice(-150)
+      : [],
+    actions: Array.isArray(store.actions)
+      ? store.actions.filter(action => action.user_id === userId).slice(-120)
+      : [],
+    projects: Array.isArray(store.projects)
+      ? store.projects.filter(project => project.user_id === userId)
+      : [],
+    userStates: Array.isArray(store.user_states)
+      ? store.user_states.filter(state => state.user_id === userId).slice(-120)
+      : [],
+    focusSessions: Array.isArray(store.focus_sessions)
+      ? store.focus_sessions.filter(session => session.user_id === userId).slice(-120)
+      : [],
+    proactiveEvents: Array.isArray(store.proactive_events)
+      ? store.proactive_events.filter(event => event.user_id === userId).slice(-80)
+      : [],
+    timelineEvents: Array.isArray(store.cognitive_timeline_events)
+      ? store.cognitive_timeline_events.filter(event => event.user_id === userId).slice(-80)
+      : [],
+  };
+}
+
+function buildMemoryGraphPayload(store, userId) {
+  const sourceData = getMemoryGraphSourceData(store, userId);
+
+  const graph = buildCognitiveMemoryGraph({
+    userId,
+    ...sourceData,
+  });
+
+  const insights = buildMemoryGraphInsights(graph);
+
+  return {
+    ...graph,
+    insights,
+    insight_count: insights.length,
+    source_snapshot: {
+      item_count: sourceData.items.length,
+      action_count: sourceData.actions.length,
+      project_count: sourceData.projects.length,
+      user_state_count: sourceData.userStates.length,
+      focus_session_count: sourceData.focusSessions.length,
+      proactive_event_count: sourceData.proactiveEvents.length,
+      timeline_event_count: sourceData.timelineEvents.length,
+    },
+  };
+}
+
+function saveMemoryGraphPayload(store, payload) {
+  store.cognitive_memory_graphs = Array.isArray(store.cognitive_memory_graphs)
+    ? store.cognitive_memory_graphs
+    : [];
+
+  const existingIndex = store.cognitive_memory_graphs.findIndex(graph => {
+    return graph.user_id === payload.user_id;
+  });
+
+  if (existingIndex >= 0) {
+    store.cognitive_memory_graphs[existingIndex] = {
+      ...payload,
+      created_at: store.cognitive_memory_graphs[existingIndex].created_at || payload.generated_at,
+      updated_at: nowIso(),
+    };
+
+    return store.cognitive_memory_graphs[existingIndex];
+  }
+
+  store.cognitive_memory_graphs.push({
+    ...payload,
+    created_at: nowIso(),
+    updated_at: nowIso(),
+  });
+
+  store.cognitive_memory_graphs = store.cognitive_memory_graphs.slice(-200);
+
+  return payload;
+}
+
+function getLatestMemoryGraph(store, userId) {
+  return (Array.isArray(store.cognitive_memory_graphs) ? store.cognitive_memory_graphs : [])
+    .filter(graph => graph.user_id === userId)
+    .sort((a, b) => {
+      return new Date(b.updated_at || b.generated_at || 0).getTime() -
+        new Date(a.updated_at || a.generated_at || 0).getTime();
+    })[0] || null;
+}
+
+
+app.get('/memory-graph', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const refresh = normalizeText(req.query?.refresh || '') === 'true';
+  const store = readStore();
+
+  let graph = refresh ? null : getLatestMemoryGraph(store, userId);
+
+  if (!graph) {
+    graph = buildMemoryGraphPayload(store, userId);
+    saveMemoryGraphPayload(store, graph);
+    writeStore(store);
+  }
+
+  return res.json({
+    ok: true,
+    userId,
+    graph,
+  });
+});
+
+app.post('/memory-graph/recompute', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const graph = buildMemoryGraphPayload(store, userId);
+  saveMemoryGraphPayload(store, graph);
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    graph,
+    message: 'Graph mémoire cognitif recalculé.',
+  });
+});
+
+app.get('/memory-graph/insights', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  let graph = getLatestMemoryGraph(store, userId);
+
+  if (!graph) {
+    graph = buildMemoryGraphPayload(store, userId);
+    saveMemoryGraphPayload(store, graph);
+    writeStore(store);
+  }
+
+  return res.json({
+    ok: true,
+    userId,
+    insights: graph.insights || [],
+    stats: graph.stats || {},
+    source_snapshot: graph.source_snapshot || {},
+  });
+});
 
 app.get('/timeline/insights', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
