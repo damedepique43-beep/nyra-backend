@@ -12,6 +12,7 @@ const { buildAdaptiveProfile } = require('./engines/adaptiveCognitiveEngine');
 const { buildProactiveSignals } = require('./engines/proactiveAssistantEngine');
 const { buildTimelineInsights } = require('./engines/cognitiveTimelineEngine');
 const { buildCognitiveMemoryGraph, buildMemoryGraphInsights } = require('./engines/cognitiveMemoryGraphEngine');
+const { analyzePriorities } = require('./engines/cognitivePriorityEngine');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -73,6 +74,7 @@ function createEmptyStore() {
     proactive_events: [],
     cognitive_timeline_events: [],
     cognitive_memory_graphs: [],
+    cognitive_priority_snapshots: [],
     updated_at: null,
   };
 }
@@ -120,6 +122,9 @@ function readStore() {
       cognitive_memory_graphs: Array.isArray(parsed.cognitive_memory_graphs)
         ? parsed.cognitive_memory_graphs
         : [],
+      cognitive_priority_snapshots: Array.isArray(parsed.cognitive_priority_snapshots)
+        ? parsed.cognitive_priority_snapshots
+        : [],
       updated_at: parsed.updated_at || null,
     };
   } catch (error) {
@@ -142,6 +147,7 @@ function writeStore(store) {
       proactive_events: Array.isArray(store.proactive_events) ? store.proactive_events : [],
       cognitive_timeline_events: Array.isArray(store.cognitive_timeline_events) ? store.cognitive_timeline_events : [],
       cognitive_memory_graphs: Array.isArray(store.cognitive_memory_graphs) ? store.cognitive_memory_graphs : [],
+      cognitive_priority_snapshots: Array.isArray(store.cognitive_priority_snapshots) ? store.cognitive_priority_snapshots : [],
       version: STORE_VERSION,
       updated_at: nowIso(),
     };
@@ -2133,6 +2139,7 @@ function getStoreSummary(userId) {
     proactive_event_count: (Array.isArray(store.proactive_events) ? store.proactive_events : []).filter(event => event.user_id === userId).length,
     cognitive_timeline_event_count: (Array.isArray(store.cognitive_timeline_events) ? store.cognitive_timeline_events : []).filter(event => event.user_id === userId).length,
     cognitive_memory_graph_count: (Array.isArray(store.cognitive_memory_graphs) ? store.cognitive_memory_graphs : []).filter(graph => graph.user_id === userId).length,
+    cognitive_priority_snapshot_count: (Array.isArray(store.cognitive_priority_snapshots) ? store.cognitive_priority_snapshots : []).filter(snapshot => snapshot.user_id === userId).length,
     local_only: userActions.filter(action => action.sync_status === 'local_only').length,
     pending_sync: userActions.filter(action => action.sync_status === 'pending_sync').length,
     synced: userActions.filter(action => action.sync_status === 'synced').length,
@@ -2983,6 +2990,7 @@ app.get('/', (req, res) => {
       proactive: true,
       timeline: true,
       memory_graph: true,
+      priority: true,
     },
   });
 });
@@ -3913,6 +3921,151 @@ function getLatestMemoryGraph(store, userId) {
     })[0] || null;
 }
 
+
+
+function getPrioritySourceItems(store, userId) {
+  const memoryItems = Array.isArray(store.items)
+    ? store.items
+        .filter(item => {
+          return (
+            item.user_id === userId &&
+            ['tasks', 'today', 'plans', 'reminders', 'inbox', 'projects'].includes(item.bucket || '')
+          );
+        })
+        .slice(-80)
+    : [];
+
+  const actionItems = Array.isArray(store.actions)
+    ? store.actions
+        .filter(action => {
+          return (
+            action.user_id === userId &&
+            ['suggested', 'draft', 'executing', 'failed'].includes(
+              normalizeActionStatus(action.status || 'suggested')
+            )
+          );
+        })
+        .slice(-80)
+    : [];
+
+  const mappedActions = actionItems.map(action => ({
+    id: action.id,
+    user_id: action.user_id,
+    type: action.action_type || action.type || 'action',
+    bucket: actionToBucket(action.action_type || action.type || 'actions'),
+    title: action.title || action.label || 'Action Nyra',
+    content: action.target || action.source_message || action.title || '',
+    priority: action.priority || 'normal',
+    urgency: action.priority === 'high' ? 'high' : 'normal',
+    status: action.status || 'suggested',
+    project_id: action.project_id || null,
+    project_name: action.project_name || null,
+    source: 'action',
+    created_at: action.created_at || null,
+    updated_at: action.updated_at || null,
+  }));
+
+  return [...memoryItems, ...mappedActions];
+}
+
+function buildPriorityPayload(store, userId) {
+  const latestUserState = getLatestUserState(store, userId) || saveUserStateSnapshot(store, userId);
+  const items = getPrioritySourceItems(store, userId);
+
+  const analysis = analyzePriorities({
+    items,
+    cognitiveState: latestUserState,
+  });
+
+  return {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    ...analysis,
+    cognitive_state: latestUserState,
+    source_snapshot: {
+      item_count: items.length,
+      overwhelm_score: latestUserState?.overwhelm_score ?? null,
+      cognitive_load: latestUserState?.cognitive_load || null,
+      energy_level: latestUserState?.energy_level || null,
+      focus_state: latestUserState?.focus_state || null,
+    },
+    generated_at: nowIso(),
+  };
+}
+
+function savePriorityPayload(store, payload) {
+  store.cognitive_priority_snapshots = Array.isArray(store.cognitive_priority_snapshots)
+    ? store.cognitive_priority_snapshots
+    : [];
+
+  store.cognitive_priority_snapshots.push(payload);
+  store.cognitive_priority_snapshots = store.cognitive_priority_snapshots.slice(-500);
+
+  return payload;
+}
+
+function getRecentPrioritySnapshots(store, userId, limit = 20) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 100));
+
+  return (Array.isArray(store.cognitive_priority_snapshots) ? store.cognitive_priority_snapshots : [])
+    .filter(snapshot => snapshot.user_id === userId)
+    .sort((a, b) => {
+      return new Date(b.generated_at || 0).getTime() -
+        new Date(a.generated_at || 0).getTime();
+    })
+    .slice(0, safeLimit);
+}
+
+
+app.get('/priority/analyze', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const persist = normalizeText(req.query?.persist || 'true') !== 'false';
+  const store = readStore();
+
+  const payload = buildPriorityPayload(store, userId);
+
+  if (persist) {
+    savePriorityPayload(store, payload);
+    writeStore(store);
+  }
+
+  return res.json({
+    ok: true,
+    userId,
+    ...payload,
+  });
+});
+
+app.post('/priority/recompute', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const payload = buildPriorityPayload(store, userId);
+  savePriorityPayload(store, payload);
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    ...payload,
+    message: 'Priorités cognitives recalculées.',
+  });
+});
+
+app.get('/priority/history', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const limit = Math.max(1, Math.min(Number(req.query?.limit || 20), 100));
+  const store = readStore();
+
+  const snapshots = getRecentPrioritySnapshots(store, userId, limit);
+
+  return res.json({
+    ok: true,
+    userId,
+    count: snapshots.length,
+    snapshots,
+  });
+});
 
 app.get('/memory-graph', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
