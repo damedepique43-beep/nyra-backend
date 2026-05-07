@@ -10,6 +10,7 @@ const OpenAI = require('openai');
 const { google } = require('googleapis');
 const { buildAdaptiveProfile } = require('./engines/adaptiveCognitiveEngine');
 const { buildProactiveSignals } = require('./engines/proactiveAssistantEngine');
+const { buildTimelineInsights } = require('./engines/cognitiveTimelineEngine');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -69,6 +70,7 @@ function createEmptyStore() {
     focus_sessions: [],
     adaptive_profiles: [],
     proactive_events: [],
+    cognitive_timeline_events: [],
     updated_at: null,
   };
 }
@@ -110,6 +112,9 @@ function readStore() {
       proactive_events: Array.isArray(parsed.proactive_events)
         ? parsed.proactive_events
         : [],
+      cognitive_timeline_events: Array.isArray(parsed.cognitive_timeline_events)
+        ? parsed.cognitive_timeline_events
+        : [],
       updated_at: parsed.updated_at || null,
     };
   } catch (error) {
@@ -130,6 +135,7 @@ function writeStore(store) {
       focus_sessions: Array.isArray(store.focus_sessions) ? store.focus_sessions : [],
       adaptive_profiles: Array.isArray(store.adaptive_profiles) ? store.adaptive_profiles : [],
       proactive_events: Array.isArray(store.proactive_events) ? store.proactive_events : [],
+      cognitive_timeline_events: Array.isArray(store.cognitive_timeline_events) ? store.cognitive_timeline_events : [],
       version: STORE_VERSION,
       updated_at: nowIso(),
     };
@@ -2119,6 +2125,7 @@ function getStoreSummary(userId) {
     user_state_count: (Array.isArray(store.user_states) ? store.user_states : []).filter(state => state.user_id === userId).length,
     adaptive_profile_count: (Array.isArray(store.adaptive_profiles) ? store.adaptive_profiles : []).filter(profile => profile.user_id === userId).length,
     proactive_event_count: (Array.isArray(store.proactive_events) ? store.proactive_events : []).filter(event => event.user_id === userId).length,
+    cognitive_timeline_event_count: (Array.isArray(store.cognitive_timeline_events) ? store.cognitive_timeline_events : []).filter(event => event.user_id === userId).length,
     local_only: userActions.filter(action => action.sync_status === 'local_only').length,
     pending_sync: userActions.filter(action => action.sync_status === 'pending_sync').length,
     synced: userActions.filter(action => action.sync_status === 'synced').length,
@@ -2967,6 +2974,7 @@ app.get('/', (req, res) => {
       focus: true,
       adaptive: true,
       proactive: true,
+      timeline: true,
     },
   });
 });
@@ -3725,6 +3733,134 @@ function getRecentProactiveEvents(store, userId, limit = 20) {
     .slice(0, safeLimit);
 }
 
+
+
+function getTimelineSourceData(store, userId) {
+  const userStates = Array.isArray(store.user_states)
+    ? store.user_states.filter(state => state.user_id === userId)
+    : [];
+
+  const focusSessions = Array.isArray(store.focus_sessions)
+    ? store.focus_sessions.filter(session => session.user_id === userId)
+    : [];
+
+  const proactiveEvents = Array.isArray(store.proactive_events)
+    ? store.proactive_events.filter(event => event.user_id === userId)
+    : [];
+
+  const actions = Array.isArray(store.actions)
+    ? store.actions.filter(action => action.user_id === userId)
+    : [];
+
+  return {
+    userStates,
+    focusSessions,
+    proactiveEvents,
+    actions,
+  };
+}
+
+function buildCognitiveTimelinePayload(store, userId) {
+  const sourceData = getTimelineSourceData(store, userId);
+
+  const insights = buildTimelineInsights({
+    userStates: sourceData.userStates,
+    focusSessions: sourceData.focusSessions,
+    proactiveEvents: sourceData.proactiveEvents,
+  });
+
+  const latestInsight = insights[0] || null;
+
+  return {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    insights,
+    latest_insight: latestInsight,
+    insight_count: insights.length,
+    generated_at: nowIso(),
+    source_snapshot: {
+      user_state_count: sourceData.userStates.length,
+      focus_session_count: sourceData.focusSessions.length,
+      proactive_event_count: sourceData.proactiveEvents.length,
+      action_count: sourceData.actions.length,
+      latest_overwhelm_score:
+        sourceData.userStates[sourceData.userStates.length - 1]?.overwhelm_score ?? null,
+    },
+  };
+}
+
+function saveCognitiveTimelinePayload(store, payload) {
+  store.cognitive_timeline_events = Array.isArray(store.cognitive_timeline_events)
+    ? store.cognitive_timeline_events
+    : [];
+
+  store.cognitive_timeline_events.push(payload);
+  store.cognitive_timeline_events = store.cognitive_timeline_events.slice(-500);
+
+  return payload;
+}
+
+function getRecentCognitiveTimelineEvents(store, userId, limit = 20) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 100));
+
+  return (Array.isArray(store.cognitive_timeline_events) ? store.cognitive_timeline_events : [])
+    .filter(event => event.user_id === userId)
+    .sort((a, b) => {
+      return new Date(b.generated_at || 0).getTime() -
+        new Date(a.generated_at || 0).getTime();
+    })
+    .slice(0, safeLimit);
+}
+
+
+app.get('/timeline/insights', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const persist = normalizeText(req.query?.persist || 'true') !== 'false';
+  const store = readStore();
+
+  const payload = buildCognitiveTimelinePayload(store, userId);
+
+  if (persist) {
+    saveCognitiveTimelinePayload(store, payload);
+    writeStore(store);
+  }
+
+  return res.json({
+    ok: true,
+    userId,
+    ...payload,
+  });
+});
+
+app.post('/timeline/analyze', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const payload = buildCognitiveTimelinePayload(store, userId);
+  saveCognitiveTimelinePayload(store, payload);
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    ...payload,
+  });
+});
+
+app.get('/timeline/history', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const limit = Math.max(1, Math.min(Number(req.query?.limit || 20), 100));
+  const store = readStore();
+
+  const events = getRecentCognitiveTimelineEvents(store, userId, limit);
+
+  return res.json({
+    ok: true,
+    userId,
+    count: events.length,
+    events,
+  });
+});
 
 app.get('/proactive/signals', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
