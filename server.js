@@ -64,6 +64,7 @@ function createEmptyStore() {
     contexts: [],
     connected_accounts: [],
     user_states: [],
+    focus_sessions: [],
     updated_at: null,
   };
 }
@@ -96,6 +97,9 @@ function readStore() {
       user_states: Array.isArray(parsed.user_states)
         ? parsed.user_states
         : [],
+      focus_sessions: Array.isArray(parsed.focus_sessions)
+        ? parsed.focus_sessions
+        : [],
       updated_at: parsed.updated_at || null,
     };
   } catch (error) {
@@ -113,6 +117,7 @@ function writeStore(store) {
       users: Array.isArray(store.users) ? store.users : [],
       action_events: Array.isArray(store.action_events) ? store.action_events : [],
       user_states: Array.isArray(store.user_states) ? store.user_states : [],
+      focus_sessions: Array.isArray(store.focus_sessions) ? store.focus_sessions : [],
       version: STORE_VERSION,
       updated_at: nowIso(),
     };
@@ -3184,6 +3189,205 @@ app.get('/auth/me', (req, res) => {
 });
 
 
+
+// ------------------------------
+// Focus Engine V1
+// ------------------------------
+
+const FOCUS_SESSION_STATUS_VALUES = [
+  'suggested',
+  'active',
+  'break',
+  'paused',
+  'completed',
+  'cancelled',
+];
+
+function normalizeFocusSessionStatus(status, fallback = 'suggested') {
+  const normalized = normalizeKey(status || fallback).replace(/-/g, '_');
+
+  if (FOCUS_SESSION_STATUS_VALUES.includes(normalized)) return normalized;
+  if (normalized === 'running') return 'active';
+  if (normalized === 'done' || normalized === 'finished') return 'completed';
+  if (normalized === 'canceled') return 'cancelled';
+
+  return fallback;
+}
+
+function getFocusModeLabel(mode) {
+  if (mode === 'gentle_focus') return 'Focus doux';
+  if (mode === 'standard_focus') return 'Focus standard';
+  if (mode === 'deep_focus') return 'Focus profond';
+  if (mode === 'recovery_focus') return 'Focus récupération';
+  return 'Focus Nyra';
+}
+
+function recommendFocusProfile(userState) {
+  const overwhelmScore = Number(userState?.overwhelm_score || 0);
+  const cognitiveLoad = normalizeText(userState?.cognitive_load || '');
+  const energyLevel = normalizeText(userState?.energy_level || '');
+  const focusState = normalizeText(userState?.focus_state || '');
+  const dominantMode = normalizeText(userState?.dominant_mode || '');
+
+  if (
+    overwhelmScore >= 80 ||
+    cognitiveLoad === 'very_high' ||
+    energyLevel === 'low' ||
+    dominantMode === 'reduce_load'
+  ) {
+    return {
+      mode: 'gentle_focus',
+      focus_duration_min: 15,
+      break_duration_min: 5,
+      cycles_recommended: 1,
+      tone: 'gentle',
+      reason: 'Nyra détecte une surcharge élevée. Une session courte évite d’ajouter de la pression.',
+      opening_message: 'On fait juste 15 minutes. Pas besoin de tout finir.',
+      break_message: 'Pause de 5 minutes. Bois un peu, respire, puis on reprend doucement.',
+    };
+  }
+
+  if (focusState === 'focused' && energyLevel !== 'low' && overwhelmScore <= 45) {
+    return {
+      mode: 'deep_focus',
+      focus_duration_min: 45,
+      break_duration_min: 10,
+      cycles_recommended: 1,
+      tone: 'direct',
+      reason: 'Nyra détecte une meilleure disponibilité cognitive. Une session plus profonde est possible.',
+      opening_message: 'Tu sembles disponible pour avancer. On lance une vraie session focus.',
+      break_message: 'Pause de récupération. Laisse ton cerveau redescendre avant la suite.',
+    };
+  }
+
+  if (energyLevel === 'low' || dominantMode === 'recover') {
+    return {
+      mode: 'recovery_focus',
+      focus_duration_min: 10,
+      break_duration_min: 7,
+      cycles_recommended: 1,
+      tone: 'soft',
+      reason: 'Nyra détecte une énergie basse. Le but est de relancer sans forcer.',
+      opening_message: 'On fait une mini-session. Juste une petite étape.',
+      break_message: 'Pause plus longue. Récupération avant performance.',
+    };
+  }
+
+  return {
+    mode: 'standard_focus',
+    focus_duration_min: 25,
+    break_duration_min: 5,
+    cycles_recommended: 1,
+    tone: 'balanced',
+    reason: 'Nyra propose une session standard 25/5 adaptée à une charge normale.',
+    opening_message: 'On lance 25 minutes de focus sur une seule chose.',
+    break_message: 'Pause de 5 minutes. Reviens ensuite pour décider si on relance un cycle.',
+  };
+}
+
+function buildFocusSession({ userId, taskId, projectId, title, source, userState }) {
+  const profile = recommendFocusProfile(userState);
+
+  return {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    task_id: taskId || null,
+    project_id: projectId || null,
+    title: cleanActionTitle(title || 'Session focus Nyra'),
+    mode: profile.mode,
+    mode_label: getFocusModeLabel(profile.mode),
+    focus_duration_min: profile.focus_duration_min,
+    break_duration_min: profile.break_duration_min,
+    cycles_recommended: profile.cycles_recommended,
+    completed_cycles: 0,
+    status: 'suggested',
+    tone: profile.tone,
+    reason: profile.reason,
+    opening_message: profile.opening_message,
+    break_message: profile.break_message,
+    interruptions: [],
+    user_feedback: null,
+    cognitive_state_before: userState || null,
+    cognitive_state_after: null,
+    source: source || 'manual',
+    started_at: null,
+    break_started_at: null,
+    resumed_at: null,
+    ended_at: null,
+    created_at: nowIso(),
+    updated_at: nowIso(),
+  };
+}
+
+function getUserFocusSessions(store, userId) {
+  return (Array.isArray(store.focus_sessions) ? store.focus_sessions : [])
+    .filter(session => session.user_id === userId)
+    .sort((a, b) => {
+      return new Date(b.updated_at || b.created_at || 0).getTime() -
+        new Date(a.updated_at || a.created_at || 0).getTime();
+    });
+}
+
+function findFocusSession(store, userId, sessionId) {
+  const sessions = Array.isArray(store.focus_sessions) ? store.focus_sessions : [];
+  const index = sessions.findIndex(session => {
+    return session.id === sessionId && session.user_id === userId;
+  });
+
+  if (index === -1) return null;
+
+  return {
+    index,
+    session: sessions[index],
+  };
+}
+
+function updateFocusSessionStatus(session, status, metadata = {}) {
+  const nextStatus = normalizeFocusSessionStatus(status, session.status || 'suggested');
+  session.status = nextStatus;
+  session.updated_at = nowIso();
+
+  if (nextStatus === 'active' && !session.started_at) {
+    session.started_at = nowIso();
+  }
+
+  if (nextStatus === 'break') {
+    session.break_started_at = nowIso();
+    session.completed_cycles = Number(session.completed_cycles || 0) + 1;
+  }
+
+  if (nextStatus === 'active' && metadata.from_break) {
+    session.resumed_at = nowIso();
+  }
+
+  if (nextStatus === 'completed' || nextStatus === 'cancelled') {
+    session.ended_at = nowIso();
+  }
+
+  if (metadata.user_feedback) {
+    session.user_feedback = metadata.user_feedback;
+  }
+
+  if (metadata.cognitive_state_after) {
+    session.cognitive_state_after = metadata.cognitive_state_after;
+  }
+
+  return session;
+}
+
+function buildFocusRecommendation(store, userId) {
+  const latestUserState = getLatestUserState(store, userId) || saveUserStateSnapshot(store, userId);
+  const profile = recommendFocusProfile(latestUserState);
+
+  return {
+    ok: true,
+    userId,
+    recommended_profile: profile,
+    mode_label: getFocusModeLabel(profile.mode),
+    user_state: latestUserState,
+  };
+}
+
 app.get('/state/user', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const forceRefresh = normalizeText(req.query?.refresh || '') === 'true';
@@ -3223,6 +3427,129 @@ app.get('/state/history', (req, res) => {
     userId,
     limit,
     ...history,
+  });
+});
+
+
+app.get('/focus/recommendation', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const recommendation = buildFocusRecommendation(store, userId);
+  writeStore(store);
+
+  return res.json(recommendation);
+});
+
+app.get('/focus/sessions', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const limit = Math.max(1, Math.min(Number(req.query?.limit || 20), 100));
+  const store = readStore();
+
+  const sessions = getUserFocusSessions(store, userId).slice(0, limit);
+
+  return res.json({
+    ok: true,
+    userId,
+    count: sessions.length,
+    sessions,
+  });
+});
+
+app.post('/focus/sessions', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const taskId = normalizeText(req.body?.taskId || '');
+  const projectId = normalizeText(req.body?.projectId || '');
+  const title = normalizeText(req.body?.title || req.body?.taskTitle || 'Session focus Nyra');
+  const source = normalizeText(req.body?.source || 'mobile_ui');
+
+  const store = readStore();
+  const latestUserState = getLatestUserState(store, userId) || saveUserStateSnapshot(store, userId);
+
+  const session = buildFocusSession({
+    userId,
+    taskId,
+    projectId,
+    title,
+    source,
+    userState: latestUserState,
+  });
+
+  store.focus_sessions = Array.isArray(store.focus_sessions) ? store.focus_sessions : [];
+  store.focus_sessions.push(session);
+
+  const userSessions = store.focus_sessions.filter(existingSession => existingSession.user_id === userId);
+  const otherSessions = store.focus_sessions.filter(existingSession => existingSession.user_id !== userId);
+
+  store.focus_sessions = [
+    ...otherSessions,
+    ...userSessions.slice(-100),
+  ].slice(-500);
+
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    session,
+    recommendation: {
+      mode: session.mode,
+      mode_label: session.mode_label,
+      focus_duration_min: session.focus_duration_min,
+      break_duration_min: session.break_duration_min,
+      reason: session.reason,
+    },
+  });
+});
+
+app.patch('/focus/sessions/:sessionId/status', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const sessionId = normalizeText(req.params.sessionId);
+  const status = normalizeText(req.body?.status || '');
+  const metadata = req.body?.metadata && typeof req.body.metadata === 'object'
+    ? req.body.metadata
+    : {};
+
+  if (!status) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Statut focus manquant',
+      allowed_statuses: FOCUS_SESSION_STATUS_VALUES,
+    });
+  }
+
+  const normalizedStatus = normalizeFocusSessionStatus(status, '');
+
+  if (!FOCUS_SESSION_STATUS_VALUES.includes(normalizedStatus)) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Statut focus invalide',
+      allowed_statuses: FOCUS_SESSION_STATUS_VALUES,
+    });
+  }
+
+  const store = readStore();
+  const found = findFocusSession(store, userId, sessionId);
+
+  if (!found) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Session focus introuvable',
+    });
+  }
+
+  const updatedSession = updateFocusSessionStatus(found.session, normalizedStatus, metadata);
+
+  if (normalizedStatus === 'completed' || normalizedStatus === 'cancelled') {
+    updatedSession.cognitive_state_after = getLatestUserState(store, userId) || null;
+  }
+
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    session: updatedSession,
   });
 });
 
