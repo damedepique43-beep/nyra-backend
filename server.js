@@ -39,7 +39,7 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
-const STORE_VERSION = 'context-engine-v1';
+const STORE_VERSION = 'context-engine-history-v1';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -1951,6 +1951,125 @@ function getUserStateTrend(store, userId, limit = 12) {
 }
 
 
+function getOrderedUserStates(store, userId, limit = 30) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 30, 100));
+  const states = Array.isArray(store.user_states)
+    ? store.user_states.filter(state => state.user_id === userId)
+    : [];
+
+  return states
+    .sort((a, b) => {
+      return new Date(a.updated_at || a.created_at || 0).getTime() -
+        new Date(b.updated_at || b.created_at || 0).getTime();
+    })
+    .slice(-safeLimit);
+}
+
+function averageNumber(values) {
+  const numbers = values.filter(value => typeof value === 'number' && !Number.isNaN(value));
+
+  if (!numbers.length) return null;
+
+  return Math.round(numbers.reduce((total, value) => total + value, 0) / numbers.length);
+}
+
+function buildStateVariation(states) {
+  if (!Array.isArray(states) || states.length < 2) {
+    return {
+      direction: 'stable',
+      label: 'Pas encore assez d’historique',
+      delta_score: 0,
+      previous_score: states?.[0]?.overwhelm_score ?? null,
+      latest_score: states?.[0]?.overwhelm_score ?? null,
+    };
+  }
+
+  const latest = states[states.length - 1];
+  const previous = states[states.length - 2];
+  const latestScore = Number(latest?.overwhelm_score || 0);
+  const previousScore = Number(previous?.overwhelm_score || 0);
+  const delta = latestScore - previousScore;
+
+  if (delta >= 8) {
+    return {
+      direction: 'worsening',
+      label: 'Surcharge en hausse',
+      delta_score: delta,
+      previous_score: previousScore,
+      latest_score: latestScore,
+    };
+  }
+
+  if (delta <= -8) {
+    return {
+      direction: 'improving',
+      label: 'Surcharge en baisse',
+      delta_score: delta,
+      previous_score: previousScore,
+      latest_score: latestScore,
+    };
+  }
+
+  return {
+    direction: 'stable',
+    label: 'État relativement stable',
+    delta_score: delta,
+    previous_score: previousScore,
+    latest_score: latestScore,
+  };
+}
+
+function buildStateHistorySummary(states) {
+  const latest = states[states.length - 1] || null;
+  const previous = states[states.length - 2] || null;
+  const scores = states.map(state => Number(state.overwhelm_score)).filter(score => !Number.isNaN(score));
+  const averageScore = averageNumber(scores);
+  const maxScore = scores.length ? Math.max(...scores) : null;
+  const minScore = scores.length ? Math.min(...scores) : null;
+  const variation = buildStateVariation(states);
+
+  return {
+    count: states.length,
+    latest_state_id: latest?.id || null,
+    previous_state_id: previous?.id || null,
+    average_overwhelm_score: averageScore,
+    max_overwhelm_score: maxScore,
+    min_overwhelm_score: minScore,
+    trend_direction: variation.direction,
+    trend_label: variation.label,
+    delta_score: variation.delta_score,
+    generated_at: nowIso(),
+  };
+}
+
+function compactUserStateForHistory(state) {
+  return {
+    id: state.id,
+    user_id: state.user_id,
+    cognitive_load: state.cognitive_load,
+    emotional_state: state.emotional_state,
+    energy_level: state.energy_level,
+    focus_state: state.focus_state,
+    dominant_mode: state.dominant_mode,
+    overwhelm_score: state.overwhelm_score,
+    detected_patterns: Array.isArray(state.detected_patterns) ? state.detected_patterns : [],
+    recommendations: Array.isArray(state.recommendations) ? state.recommendations : [],
+    created_at: state.created_at,
+    updated_at: state.updated_at,
+  };
+}
+
+function buildUserStateHistoryPayload(store, userId, limit = 30) {
+  const states = getOrderedUserStates(store, userId, limit);
+
+  return {
+    summary: buildStateHistorySummary(states),
+    trend: buildStateVariation(states),
+    states: states.map(compactUserStateForHistory),
+  };
+}
+
+
 function getStoreSummary(userId) {
   const store = readStore();
 
@@ -3083,6 +3202,27 @@ app.get('/state/user', (req, res) => {
     user_state: userState,
     trend: getUserStateTrend(store, userId),
     summary: getStoreSummary(userId),
+  });
+});
+
+app.get('/state/history', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const limit = Math.max(1, Math.min(Number(req.query?.limit || 30), 100));
+  const refresh = normalizeText(req.query?.refresh || '') === 'true';
+  const store = readStore();
+
+  if (refresh || !getLatestUserState(store, userId)) {
+    saveUserStateSnapshot(store, userId);
+    writeStore(store);
+  }
+
+  const history = buildUserStateHistoryPayload(store, userId, limit);
+
+  return res.json({
+    ok: true,
+    userId,
+    limit,
+    ...history,
   });
 });
 
