@@ -9,6 +9,7 @@ const { Readable } = require('stream');
 const OpenAI = require('openai');
 const { google } = require('googleapis');
 const { buildAdaptiveProfile } = require('./engines/adaptiveCognitiveEngine');
+const { buildProactiveSignals } = require('./engines/proactiveAssistantEngine');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -67,6 +68,7 @@ function createEmptyStore() {
     user_states: [],
     focus_sessions: [],
     adaptive_profiles: [],
+    proactive_events: [],
     updated_at: null,
   };
 }
@@ -105,6 +107,9 @@ function readStore() {
       adaptive_profiles: Array.isArray(parsed.adaptive_profiles)
         ? parsed.adaptive_profiles
         : [],
+      proactive_events: Array.isArray(parsed.proactive_events)
+        ? parsed.proactive_events
+        : [],
       updated_at: parsed.updated_at || null,
     };
   } catch (error) {
@@ -124,6 +129,7 @@ function writeStore(store) {
       user_states: Array.isArray(store.user_states) ? store.user_states : [],
       focus_sessions: Array.isArray(store.focus_sessions) ? store.focus_sessions : [],
       adaptive_profiles: Array.isArray(store.adaptive_profiles) ? store.adaptive_profiles : [],
+      proactive_events: Array.isArray(store.proactive_events) ? store.proactive_events : [],
       version: STORE_VERSION,
       updated_at: nowIso(),
     };
@@ -2111,6 +2117,8 @@ function getStoreSummary(userId) {
     relation_count: userRelations.length,
     context_count: userContexts.length,
     user_state_count: (Array.isArray(store.user_states) ? store.user_states : []).filter(state => state.user_id === userId).length,
+    adaptive_profile_count: (Array.isArray(store.adaptive_profiles) ? store.adaptive_profiles : []).filter(profile => profile.user_id === userId).length,
+    proactive_event_count: (Array.isArray(store.proactive_events) ? store.proactive_events : []).filter(event => event.user_id === userId).length,
     local_only: userActions.filter(action => action.sync_status === 'local_only').length,
     pending_sync: userActions.filter(action => action.sync_status === 'pending_sync').length,
     synced: userActions.filter(action => action.sync_status === 'synced').length,
@@ -2954,6 +2962,12 @@ app.get('/', (req, res) => {
     app: 'Nyra backend',
     version: STORE_VERSION,
     google_configured: Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET),
+    engines: {
+      context: true,
+      focus: true,
+      adaptive: true,
+      proactive: true,
+    },
   });
 });
 
@@ -3629,6 +3643,137 @@ function getOrCreateAdaptiveProfile(store, userId) {
   return recomputeAdaptiveProfile(store, userId);
 }
 
+
+
+function getProactiveSourceData(store, userId) {
+  const adaptiveProfile = getOrCreateAdaptiveProfile(store, userId);
+  const latestUserState = getLatestUserState(store, userId) || saveUserStateSnapshot(store, userId);
+
+  const focusSessions = Array.isArray(store.focus_sessions)
+    ? store.focus_sessions
+        .filter(session => session.user_id === userId)
+        .slice(-30)
+    : [];
+
+  const actions = Array.isArray(store.actions)
+    ? store.actions
+        .filter(action => action.user_id === userId)
+        .slice(-80)
+    : [];
+
+  return {
+    adaptiveProfile,
+    latestUserState,
+    focusSessions,
+    actions,
+  };
+}
+
+function buildProactivePayload(store, userId) {
+  const sourceData = getProactiveSourceData(store, userId);
+
+  const signals = buildProactiveSignals({
+    adaptiveProfile: sourceData.adaptiveProfile,
+    latestUserState: sourceData.latestUserState,
+    focusSessions: sourceData.focusSessions,
+    actions: sourceData.actions,
+  });
+
+  const primarySignal = signals[0] || null;
+
+  const payload = {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    signals,
+    primary_signal: primarySignal,
+    signal_count: signals.length,
+    generated_at: nowIso(),
+    source_snapshot: {
+      adaptive_profile_id: sourceData.adaptiveProfile?.id || null,
+      user_state_id: sourceData.latestUserState?.id || null,
+      focus_session_count: sourceData.focusSessions.length,
+      action_count: sourceData.actions.length,
+      overwhelm_score: sourceData.latestUserState?.overwhelm_score ?? null,
+      preferred_focus_duration: sourceData.adaptiveProfile?.preferred_focus_duration ?? null,
+      average_completion_rate: sourceData.adaptiveProfile?.average_completion_rate ?? null,
+    },
+  };
+
+  return payload;
+}
+
+function saveProactivePayload(store, payload) {
+  store.proactive_events = Array.isArray(store.proactive_events)
+    ? store.proactive_events
+    : [];
+
+  store.proactive_events.push(payload);
+  store.proactive_events = store.proactive_events.slice(-500);
+
+  return payload;
+}
+
+function getRecentProactiveEvents(store, userId, limit = 20) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 100));
+
+  return (Array.isArray(store.proactive_events) ? store.proactive_events : [])
+    .filter(event => event.user_id === userId)
+    .sort((a, b) => {
+      return new Date(b.generated_at || b.created_at || 0).getTime() -
+        new Date(a.generated_at || a.created_at || 0).getTime();
+    })
+    .slice(0, safeLimit);
+}
+
+
+app.get('/proactive/signals', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const persist = normalizeText(req.query?.persist || 'true') !== 'false';
+  const store = readStore();
+
+  const payload = buildProactivePayload(store, userId);
+
+  if (persist) {
+    saveProactivePayload(store, payload);
+    writeStore(store);
+  }
+
+  return res.json({
+    ok: true,
+    userId,
+    ...payload,
+  });
+});
+
+app.post('/proactive/check', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const payload = buildProactivePayload(store, userId);
+  saveProactivePayload(store, payload);
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    ...payload,
+  });
+});
+
+app.get('/proactive/history', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const limit = Math.max(1, Math.min(Number(req.query?.limit || 20), 100));
+  const store = readStore();
+
+  const events = getRecentProactiveEvents(store, userId, limit);
+
+  return res.json({
+    ok: true,
+    userId,
+    count: events.length,
+    events,
+  });
+});
 
 app.get('/adaptive/profile', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
