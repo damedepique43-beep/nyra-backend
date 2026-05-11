@@ -4824,6 +4824,15 @@ app.post('/focus/sessions', (req, res) => {
             mode: session.mode,
             focus_duration_min: session.focus_duration_min,
             break_duration_min: session.break_duration_min,
+            regulation: session.regulation,
+            risk: session.risk,
+            break_strategy: session.break_strategy,
+            guidance_style: session.guidance_style,
+            friction_level: session.friction_level,
+            recovery_needed: session.recovery_needed,
+            micro_break_every_min: session.micro_break_every_min,
+            pressure_level: session.pressure_level,
+            intervention_intensity: session.intervention_intensity,
           },
           latestUserState
         );
@@ -4835,6 +4844,15 @@ app.post('/focus/sessions', (req, res) => {
         mode: session.mode,
         focus_duration_min: session.focus_duration_min,
         break_duration_min: session.break_duration_min,
+        regulation: session.regulation,
+        risk: session.risk,
+        break_strategy: session.break_strategy,
+        guidance_style: session.guidance_style,
+        friction_level: session.friction_level,
+        recovery_needed: session.recovery_needed,
+        micro_break_every_min: session.micro_break_every_min,
+        pressure_level: session.pressure_level,
+        intervention_intensity: session.intervention_intensity,
       },
       latestUserState
     );
