@@ -1723,90 +1723,158 @@ function detectUserStateSignals({ items, actions, conversations }) {
 }
 
 function scoreUserOverwhelm(signals) {
-  let score = 8;
+  let score = 12;
 
-  // Charge réelle de travail
-  score += signals.open_actions * 3;
-  score += signals.failed_actions * 6;
-
-  // Urgence : plus légère car urgence ≠ surcharge
-  score += signals.urgent_items * 2;
-
-  // Émotions / surcharge verbale
+  // Charge de travail réelle : ce que Nyra doit considérer comme "poids mental".
+  score += signals.open_actions * 4;
+  score += signals.failed_actions * 5;
+  score += Math.min(22, signals.urgent_items * 1.5);
   score += signals.emotion_items * 2;
-  score += signals.fatigue_mentions * 8;
-  score += signals.overwhelm_mentions * 12;
-  score += signals.avoidance_mentions * 7;
 
-  // Multiplication des projets
-  if (signals.project_count > 3) {
-    score += (signals.project_count - 3) * 4;
+  // Plusieurs projets actifs augmentent la charge, mais seulement au-delà d’un seuil.
+  if (signals.project_count > 2) {
+    score += (signals.project_count - 2) * 5;
   }
 
-  // Compensation forte quand la personne agit réellement
+  // Focus + exploration = cerveau très sollicité, même si ce n’est pas forcément négatif.
+  score += Math.min(22, signals.focus_mentions * 0.8);
+  score += Math.min(12, signals.exploration_mentions * 2);
+
+  // Les signaux de souffrance ajoutent à la charge globale.
+  score += signals.fatigue_mentions * 5;
+  score += signals.overwhelm_mentions * 7;
+  score += signals.avoidance_mentions * 4;
+
+  // Les actions terminées compensent la charge : la personne ne subit pas seulement, elle avance.
   if (signals.done_actions > 0) {
-    score -= Math.min(30, signals.done_actions * 4);
+    score -= Math.min(24, signals.done_actions * 1.6);
   }
 
-  // Momentum productif détecté
-  if (signals.focus_mentions >= 3) {
-    score -= 10;
-  }
-
-  // Si beaucoup de focus MAIS peu de surcharge explicite,
-  // Nyra considère que la personne est surtout en exécution.
+  // Beaucoup de focus productif sans fatigue ni surcharge explicite = activation, pas effondrement.
   if (
-    signals.focus_mentions > signals.overwhelm_mentions &&
+    signals.focus_mentions >= 5 &&
+    signals.done_actions >= signals.open_actions &&
     !signals.has_recent_fatigue_language &&
     !signals.has_recent_overwhelm_language
   ) {
-    score -= 12;
+    score -= 6;
   }
 
-  // Si énormément d’actions ouvertes ET fatigue explicite,
-  // là on augmente fortement.
-  if (
-    signals.open_actions >= 8 &&
-    (
-      signals.has_recent_fatigue_language ||
-      signals.has_recent_overwhelm_language
-    )
-  ) {
-    score += 15;
-  }
-
-  return clampNumber(score, 0, 100);
+  return clampNumber(Math.round(score), 0, 100);
 }
 
-function deriveCognitiveLoad(overwhelmScore) {
-  if (overwhelmScore >= 75) return 'very_high';
-  if (overwhelmScore >= 55) return 'high';
-  if (overwhelmScore >= 30) return 'moderate';
+function scoreUserActivation(signals) {
+  let score = 10;
+
+  // Activation cognitive = intensité mentale, vitesse, action, focus, idées.
+  score += Math.min(40, signals.focus_mentions * 2);
+  score += Math.min(25, signals.urgent_items * 1.5);
+  score += Math.min(20, signals.done_actions * 2);
+  score += Math.min(15, signals.exploration_mentions * 3);
+  score += Math.min(10, signals.open_actions * 2);
+
+  if (signals.has_recent_focus_language) score += 8;
+  if (signals.has_recent_exploration_language) score += 5;
+
+  // Fatigue ou évitement réduit l’activation utile, même si la charge reste présente.
+  if (signals.has_recent_fatigue_language) score -= 18;
+  if (signals.has_recent_avoidance_language) score -= 10;
+
+  return clampNumber(Math.round(score), 0, 100);
+}
+
+function scoreUserDistress(signals) {
+  let score = 5;
+
+  // Détresse cognitive = souffrance, saturation, blocage, fatigue, confusion.
+  score += signals.fatigue_mentions * 14;
+  score += signals.overwhelm_mentions * 18;
+  score += signals.avoidance_mentions * 10;
+  score += signals.failed_actions * 8;
+  score += signals.emotion_items * 4;
+
+  // L’urgence seule ne doit jamais faire exploser la détresse.
+  score += Math.min(12, signals.urgent_items * 0.5);
+
+  if (signals.open_actions >= 6) score += 8;
+  if (signals.open_actions >= 10) score += 10;
+
+  if (signals.has_recent_fatigue_language) score += 12;
+  if (signals.has_recent_overwhelm_language) score += 15;
+  if (signals.has_recent_avoidance_language) score += 10;
+
+  // Le momentum et les actions terminées protègent contre l’interprétation catastrophiste.
+  if (signals.done_actions > 0) {
+    score -= Math.min(30, signals.done_actions * 2);
+  }
+
+  if (
+    signals.focus_mentions > signals.overwhelm_mentions &&
+    signals.done_actions >= signals.open_actions &&
+    !signals.has_recent_fatigue_language &&
+    !signals.has_recent_overwhelm_language
+  ) {
+    score -= 15;
+  }
+
+  return clampNumber(Math.round(score), 0, 100);
+}
+
+function deriveScoreLevel(score) {
+  if (score >= 75) return 'very_high';
+  if (score >= 55) return 'high';
+  if (score >= 30) return 'moderate';
   return 'low';
 }
 
-function deriveEnergyLevel(signals, overwhelmScore) {
+function deriveCognitiveLoad(overwhelmScore, activationScore = 0, distressScore = 0) {
+  if (distressScore >= 75) return 'very_high';
+  if (overwhelmScore >= 75) return 'very_high';
+  if (overwhelmScore >= 55 || distressScore >= 55) return 'high';
+
+  // Cas typique TDAH : forte activation productive sans détresse.
+  if (activationScore >= 75 && distressScore < 30) return 'moderate';
+
+  if (overwhelmScore >= 30 || activationScore >= 55) return 'moderate';
+
+  return 'low';
+}
+
+function deriveCognitiveActivation(activationScore) {
+  return deriveScoreLevel(activationScore);
+}
+
+function deriveCognitiveDistress(distressScore) {
+  return deriveScoreLevel(distressScore);
+}
+
+function deriveEnergyLevel(signals, overwhelmScore, activationScore = 0, distressScore = 0) {
   if (signals.has_recent_fatigue_language || signals.fatigue_mentions >= 2) return 'low';
-  if (overwhelmScore >= 75) return 'low';
-  if (signals.focus_mentions >= 3 && overwhelmScore < 45) return 'high';
-  if (signals.done_actions > signals.open_actions && overwhelmScore < 50) return 'good';
+  if (distressScore >= 75) return 'low';
+  if (distressScore >= 55 && activationScore < 55) return 'low';
+  if (activationScore >= 75 && distressScore < 35) return 'high';
+  if (signals.focus_mentions >= 3 && overwhelmScore < 55 && distressScore < 45) return 'good';
+  if (signals.done_actions > signals.open_actions && distressScore < 50) return 'good';
   return 'medium';
 }
 
-function deriveFocusState(signals, overwhelmScore) {
-  if (signals.has_recent_overwhelm_language || overwhelmScore >= 70) return 'scattered';
+function deriveFocusState(signals, overwhelmScore, activationScore = 0, distressScore = 0) {
+  if (distressScore >= 75 || signals.has_recent_overwhelm_language) return 'scattered';
   if (signals.project_count >= 4 && signals.open_actions >= 4) return 'fragmented';
+  if (activationScore >= 75 && distressScore < 35 && signals.has_recent_focus_language) return 'focused';
   if (signals.has_recent_focus_language && signals.focus_mentions >= signals.exploration_mentions) return 'focused';
   if (signals.has_recent_exploration_language) return 'exploratory';
+  if (overwhelmScore >= 65 && activationScore < 45) return 'fragmented';
   return 'stable';
 }
 
-function deriveEmotionalState(signals, overwhelmScore) {
-  if (signals.has_recent_overwhelm_language || overwhelmScore >= 75) return 'overwhelmed';
+function deriveEmotionalState(signals, overwhelmScore, distressScore = 0) {
+  if (distressScore >= 75 || signals.has_recent_overwhelm_language) return 'overwhelmed';
   if (signals.has_recent_fatigue_language) return 'tired';
   if (signals.has_recent_avoidance_language) return 'blocked';
+  if (distressScore >= 55) return 'strained';
   if (signals.emotion_items >= 3) return 'emotionally_active';
-  if (signals.focus_mentions >= 3) return 'engaged';
+  if (signals.focus_mentions >= 3 && distressScore < 35) return 'engaged';
   return 'neutral';
 }
 
@@ -1872,12 +1940,24 @@ function buildDetectedPatterns(signals, overwhelmScore) {
   return patterns;
 }
 
-function buildUserStateRecommendations({ cognitiveLoad, energyLevel, focusState, emotionalState, signals }) {
+function buildUserStateRecommendations({ cognitiveLoad, cognitiveActivation, cognitiveDistress, energyLevel, focusState, emotionalState, signals }) {
   const recommendations = [];
+
+  if (cognitiveDistress === 'very_high' || cognitiveDistress === 'high') {
+    recommendations.push('Ralentir avant d’ajouter une nouvelle action.');
+    recommendations.push('Faire redescendre la pression cognitive avant de continuer.');
+  }
 
   if (cognitiveLoad === 'very_high' || cognitiveLoad === 'high') {
     recommendations.push('Réduire l’écran à une seule priorité visible.');
     recommendations.push('Éviter d’ajouter de nouvelles grosses tâches maintenant.');
+  }
+
+  if (
+    cognitiveActivation === 'very_high' &&
+    (cognitiveDistress === 'low' || cognitiveDistress === 'moderate')
+  ) {
+    recommendations.push('Garder le momentum, mais prévoir une vraie pause courte.');
   }
 
   if (energyLevel === 'low') {
@@ -1921,13 +2001,20 @@ function analyzeUserState({ store, userId }) {
   });
 
   const overwhelmScore = scoreUserOverwhelm(signals);
-  const cognitiveLoad = deriveCognitiveLoad(overwhelmScore);
-  const energyLevel = deriveEnergyLevel(signals, overwhelmScore);
-  const focusState = deriveFocusState(signals, overwhelmScore);
-  const emotionalState = deriveEmotionalState(signals, overwhelmScore);
+  const activationScore = scoreUserActivation(signals);
+  const distressScore = scoreUserDistress(signals);
+
+  const cognitiveLoad = deriveCognitiveLoad(overwhelmScore, activationScore, distressScore);
+  const cognitiveActivation = deriveCognitiveActivation(activationScore);
+  const cognitiveDistress = deriveCognitiveDistress(distressScore);
+  const energyLevel = deriveEnergyLevel(signals, overwhelmScore, activationScore, distressScore);
+  const focusState = deriveFocusState(signals, overwhelmScore, activationScore, distressScore);
+  const emotionalState = deriveEmotionalState(signals, overwhelmScore, distressScore);
   const detectedPatterns = buildDetectedPatterns(signals, overwhelmScore);
   const recommendations = buildUserStateRecommendations({
     cognitiveLoad,
+    cognitiveActivation,
+    cognitiveDistress,
     energyLevel,
     focusState,
     emotionalState,
@@ -1935,25 +2022,31 @@ function analyzeUserState({ store, userId }) {
   });
 
   const dominantMode =
-    cognitiveLoad === 'very_high' || cognitiveLoad === 'high'
+    distressScore >= 65 || cognitiveDistress === 'very_high'
       ? 'reduce_load'
       : energyLevel === 'low'
         ? 'recovery'
-        : focusState === 'focused'
+        : activationScore >= 75 && distressScore < 35
           ? 'execution'
-          : focusState === 'exploratory'
-            ? 'exploration'
-            : 'steady';
+          : focusState === 'focused'
+            ? 'execution'
+            : focusState === 'exploratory'
+              ? 'exploration'
+              : 'steady';
 
   return {
     id: crypto.randomUUID(),
     user_id: userId,
     cognitive_load: cognitiveLoad,
+    cognitive_activation: cognitiveActivation,
+    cognitive_distress: cognitiveDistress,
     emotional_state: emotionalState,
     energy_level: energyLevel,
     focus_state: focusState,
     dominant_mode: dominantMode,
     overwhelm_score: overwhelmScore,
+    activation_score: activationScore,
+    distress_score: distressScore,
     detected_patterns: detectedPatterns,
     active_signals: signals,
     recommendations,
@@ -2011,11 +2104,15 @@ function getUserStateTrend(store, userId, limit = 12) {
     .map(state => ({
       id: state.id,
       cognitive_load: state.cognitive_load,
+      cognitive_activation: state.cognitive_activation || null,
+      cognitive_distress: state.cognitive_distress || null,
       emotional_state: state.emotional_state,
       energy_level: state.energy_level,
       focus_state: state.focus_state,
       dominant_mode: state.dominant_mode,
       overwhelm_score: state.overwhelm_score,
+      activation_score: state.activation_score ?? null,
+      distress_score: state.distress_score ?? null,
       created_at: state.created_at,
       updated_at: state.updated_at,
     }));
@@ -2118,11 +2215,15 @@ function compactUserStateForHistory(state) {
     id: state.id,
     user_id: state.user_id,
     cognitive_load: state.cognitive_load,
+    cognitive_activation: state.cognitive_activation || null,
+    cognitive_distress: state.cognitive_distress || null,
     emotional_state: state.emotional_state,
     energy_level: state.energy_level,
     focus_state: state.focus_state,
     dominant_mode: state.dominant_mode,
     overwhelm_score: state.overwhelm_score,
+    activation_score: state.activation_score ?? null,
+    distress_score: state.distress_score ?? null,
     detected_patterns: Array.isArray(state.detected_patterns) ? state.detected_patterns : [],
     recommendations: Array.isArray(state.recommendations) ? state.recommendations : [],
     created_at: state.created_at,
@@ -4029,7 +4130,11 @@ function buildPriorityPayload(store, userId) {
       removed_duplicate_count: analysis.deduplication?.removed_duplicate_count ?? null,
       ignored_completed_count: analysis.deduplication?.ignored_completed_count ?? null,
       overwhelm_score: latestUserState?.overwhelm_score ?? null,
+      activation_score: latestUserState?.activation_score ?? null,
+      distress_score: latestUserState?.distress_score ?? null,
       cognitive_load: latestUserState?.cognitive_load || null,
+      cognitive_activation: latestUserState?.cognitive_activation || null,
+      cognitive_distress: latestUserState?.cognitive_distress || null,
       energy_level: latestUserState?.energy_level || null,
       focus_state: latestUserState?.focus_state || null,
     },
