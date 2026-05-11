@@ -1723,23 +1723,56 @@ function detectUserStateSignals({ items, actions, conversations }) {
 }
 
 function scoreUserOverwhelm(signals) {
-  let score = 0;
+  let score = 8;
 
-  score += signals.open_actions * 5;
-  score += signals.failed_actions * 7;
-  score += signals.urgent_items * 6;
-  score += signals.emotion_items * 4;
-  score += signals.project_count > 2 ? (signals.project_count - 2) * 6 : 0;
-  score += signals.fatigue_mentions * 6;
-  score += signals.overwhelm_mentions * 8;
-  score += signals.avoidance_mentions * 5;
+  // Charge réelle de travail
+  score += signals.open_actions * 3;
+  score += signals.failed_actions * 6;
 
-  if (signals.done_actions > 0) {
-    score -= Math.min(18, signals.done_actions * 3);
+  // Urgence : plus légère car urgence ≠ surcharge
+  score += signals.urgent_items * 2;
+
+  // Émotions / surcharge verbale
+  score += signals.emotion_items * 2;
+  score += signals.fatigue_mentions * 8;
+  score += signals.overwhelm_mentions * 12;
+  score += signals.avoidance_mentions * 7;
+
+  // Multiplication des projets
+  if (signals.project_count > 3) {
+    score += (signals.project_count - 3) * 4;
   }
 
-  if (signals.focus_mentions > signals.overwhelm_mentions) {
-    score -= 8;
+  // Compensation forte quand la personne agit réellement
+  if (signals.done_actions > 0) {
+    score -= Math.min(30, signals.done_actions * 4);
+  }
+
+  // Momentum productif détecté
+  if (signals.focus_mentions >= 3) {
+    score -= 10;
+  }
+
+  // Si beaucoup de focus MAIS peu de surcharge explicite,
+  // Nyra considère que la personne est surtout en exécution.
+  if (
+    signals.focus_mentions > signals.overwhelm_mentions &&
+    !signals.has_recent_fatigue_language &&
+    !signals.has_recent_overwhelm_language
+  ) {
+    score -= 12;
+  }
+
+  // Si énormément d’actions ouvertes ET fatigue explicite,
+  // là on augmente fortement.
+  if (
+    signals.open_actions >= 8 &&
+    (
+      signals.has_recent_fatigue_language ||
+      signals.has_recent_overwhelm_language
+    )
+  ) {
+    score += 15;
   }
 
   return clampNumber(score, 0, 100);
