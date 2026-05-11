@@ -15,6 +15,7 @@ const { buildCognitiveMemoryGraph, buildMemoryGraphInsights } = require('./engin
 const { analyzePriorities } = require('./engines/cognitivePriorityEngine');
 const { compressTask } = require('./engines/actionCompressionEngine');
 const { analyzeMomentumRecovery } = require('./engines/momentumRecoveryEngine');
+const { buildNyraCognitiveOrchestration } = require('./engines/nyraCognitiveOrchestrator');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -4230,6 +4231,65 @@ app.get('/proactive/history', (req, res) => {
     count: events.length,
     events,
   });
+});
+
+
+app.get('/cognitive/orchestration', (req, res) => {
+  try {
+    const userId = normalizeText(req.query?.userId || 'local-user');
+    const persist = normalizeText(req.query?.persist || 'true') !== 'false';
+    const store = readStore();
+
+    const latestUserState = getLatestUserState(store, userId) || saveUserStateSnapshot(store, userId);
+    const adaptiveProfile = getOrCreateAdaptiveProfile(store, userId);
+    const proactivePayload = buildProactivePayload(store, userId);
+
+    if (persist) {
+      saveProactivePayload(store, proactivePayload);
+    }
+
+    const focusSessions = Array.isArray(store.focus_sessions)
+      ? store.focus_sessions
+          .filter(session => session.user_id === userId)
+          .slice(-50)
+      : [];
+
+    const actions = Array.isArray(store.actions)
+      ? store.actions
+          .filter(action => action.user_id === userId)
+          .slice(-100)
+      : [];
+
+    const orchestration = buildNyraCognitiveOrchestration({
+      userId,
+      latestUserState,
+      adaptiveProfile,
+      proactiveSignals: proactivePayload.signals || [],
+      focusSessions,
+      actions,
+      source: 'backend_endpoint',
+    });
+
+    if (persist) {
+      writeStore(store);
+    }
+
+    return res.json({
+      ok: true,
+      userId,
+      orchestration,
+      proactive_payload: proactivePayload,
+      persisted: persist,
+    });
+  } catch (error) {
+    console.error('❌ /cognitive/orchestration error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: 'Erreur orchestration cognitive Nyra',
+      details: error.message,
+    });
+  }
 });
 
 app.get('/adaptive/profile', (req, res) => {
