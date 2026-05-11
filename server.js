@@ -3547,7 +3547,7 @@ function recommendFocusProfile(userState) {
       cycles_recommended: 1,
       tone: 'structured',
       reason: 'Nyra détecte une hyperactivation productive : tu peux avancer en profondeur, mais avec garde-fou anti-hyperfocus.',
-      opening_message: 'Tu as du momentum. On canalise sur une seule priorité, avec pause non négociable.',
+      opening_message: 'Tu sembles bien lancé. On garde une seule priorité pour éviter la dispersion, avec une vraie pause prévue.',
       break_message: 'Micro-pause obligatoire. Bois, respire, bouge un peu : on protège ton énergie.',
       regulation: buildFocusRegulationProfile({
         mode: 'deep_focus',
@@ -4824,15 +4824,6 @@ app.post('/focus/sessions', (req, res) => {
             mode: session.mode,
             focus_duration_min: session.focus_duration_min,
             break_duration_min: session.break_duration_min,
-            regulation: session.regulation,
-            risk: session.risk,
-            break_strategy: session.break_strategy,
-            guidance_style: session.guidance_style,
-            friction_level: session.friction_level,
-            recovery_needed: session.recovery_needed,
-            micro_break_every_min: session.micro_break_every_min,
-            pressure_level: session.pressure_level,
-            intervention_intensity: session.intervention_intensity,
           },
           latestUserState
         );
@@ -4844,15 +4835,6 @@ app.post('/focus/sessions', (req, res) => {
         mode: session.mode,
         focus_duration_min: session.focus_duration_min,
         break_duration_min: session.break_duration_min,
-        regulation: session.regulation,
-        risk: session.risk,
-        break_strategy: session.break_strategy,
-        guidance_style: session.guidance_style,
-        friction_level: session.friction_level,
-        recovery_needed: session.recovery_needed,
-        micro_break_every_min: session.micro_break_every_min,
-        pressure_level: session.pressure_level,
-        intervention_intensity: session.intervention_intensity,
       },
       latestUserState
     );
