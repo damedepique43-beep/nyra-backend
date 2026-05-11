@@ -3404,54 +3404,185 @@ function getFocusModeLabel(mode) {
   return 'Focus Nyra';
 }
 
+function buildFocusRegulationProfile({
+  mode,
+  risk,
+  guidanceStyle,
+  breakStrategy,
+  frictionLevel,
+  recoveryNeeded,
+  microBreakEveryMin,
+  pressureLevel,
+  interventionIntensity,
+}) {
+  return {
+    risk: risk || 'normal',
+    guidance_style: guidanceStyle || 'balanced_guidance',
+    break_strategy: breakStrategy || 'standard_break',
+    friction_level: frictionLevel || 'medium',
+    recovery_needed: Boolean(recoveryNeeded),
+    micro_break_every_min: microBreakEveryMin || null,
+    pressure_level: pressureLevel || 'medium',
+    intervention_intensity: interventionIntensity || 'normal',
+    mode_family: mode || 'standard_focus',
+  };
+}
+
 function recommendFocusProfile(userState) {
   const overwhelmScore = Number(userState?.overwhelm_score || 0);
+  const activationScore = Number(userState?.activation_score || 0);
+  const distressScore = Number(userState?.distress_score || 0);
   const cognitiveLoad = normalizeText(userState?.cognitive_load || '');
+  const cognitiveActivation = normalizeText(userState?.cognitive_activation || '');
+  const cognitiveDistress = normalizeText(userState?.cognitive_distress || '');
   const energyLevel = normalizeText(userState?.energy_level || '');
   const focusState = normalizeText(userState?.focus_state || '');
   const dominantMode = normalizeText(userState?.dominant_mode || '');
 
-  if (
-    overwhelmScore >= 80 ||
-    cognitiveLoad === 'very_high' ||
+  const isVeryHighDistress =
+    distressScore >= 75 ||
+    cognitiveDistress === 'very_high';
+
+  const isHighDistress =
+    distressScore >= 55 ||
+    cognitiveDistress === 'high' ||
+    cognitiveDistress === 'very_high' ||
+    dominantMode === 'reduce_load';
+
+  const isLowEnergy =
     energyLevel === 'low' ||
-    dominantMode === 'reduce_load'
-  ) {
+    dominantMode === 'recovery';
+
+  const isLowActivation =
+    activationScore < 30 ||
+    cognitiveActivation === 'low';
+
+  const isProductiveHyperactivation =
+    (
+      activationScore >= 75 ||
+      cognitiveActivation === 'very_high'
+    ) &&
+    distressScore < 35 &&
+    (
+      cognitiveDistress === 'low' ||
+      cognitiveDistress === 'moderate' ||
+      !cognitiveDistress
+    ) &&
+    energyLevel !== 'low';
+
+  if (isVeryHighDistress) {
     return {
       mode: 'gentle_focus',
-      focus_duration_min: 15,
-      break_duration_min: 5,
+      focus_duration_min: 10,
+      break_duration_min: 7,
       cycles_recommended: 1,
-      tone: 'gentle',
-      reason: 'Nyra détecte une surcharge élevée. Une session courte évite d’ajouter de la pression.',
-      opening_message: 'On fait juste 15 minutes. Pas besoin de tout finir.',
-      break_message: 'Pause de 5 minutes. Bois un peu, respire, puis on reprend doucement.',
+      tone: 'protective',
+      reason: 'Nyra détecte une détresse cognitive élevée. La priorité est de réduire la pression avant de performer.',
+      opening_message: 'On baisse la charge. Une seule micro-action suffit.',
+      break_message: 'Pause de régulation. Respire, bois un peu, relâche les épaules.',
+      regulation: buildFocusRegulationProfile({
+        mode: 'gentle_focus',
+        risk: 'cognitive_distress',
+        guidanceStyle: 'regulation_first',
+        breakStrategy: 'recovery_break',
+        frictionLevel: 'very_low',
+        recoveryNeeded: true,
+        pressureLevel: 'very_low',
+        interventionIntensity: 'high',
+      }),
     };
   }
 
-  if (focusState === 'focused' && energyLevel !== 'low' && overwhelmScore <= 45) {
+  if (isHighDistress || overwhelmScore >= 70 || cognitiveLoad === 'very_high') {
+    return {
+      mode: 'gentle_focus',
+      focus_duration_min: 15,
+      break_duration_min: 7,
+      cycles_recommended: 1,
+      tone: 'gentle',
+      reason: 'Nyra détecte une charge ou une détresse cognitive élevée. La session doit rester courte et contenante.',
+      opening_message: 'On fait court, simple, sans se mettre en échec.',
+      break_message: 'Pause obligatoire. Ton système doit redescendre avant la suite.',
+      regulation: buildFocusRegulationProfile({
+        mode: 'gentle_focus',
+        risk: 'overload',
+        guidanceStyle: 'low_pressure_guidance',
+        breakStrategy: 'mandatory_recovery_break',
+        frictionLevel: 'low',
+        recoveryNeeded: true,
+        pressureLevel: 'low',
+        interventionIntensity: 'medium',
+      }),
+    };
+  }
+
+  if (isLowEnergy && isLowActivation) {
+    return {
+      mode: 'recovery_focus',
+      focus_duration_min: 8,
+      break_duration_min: 7,
+      cycles_recommended: 1,
+      tone: 'soft',
+      reason: 'Nyra détecte une activation basse. Le but n’est pas de forcer, mais de relancer doucement.',
+      opening_message: 'On cherche juste un point d’entrée minuscule.',
+      break_message: 'Pause longue. Récupération avant performance.',
+      regulation: buildFocusRegulationProfile({
+        mode: 'recovery_focus',
+        risk: 'low_activation',
+        guidanceStyle: 'micro_start',
+        breakStrategy: 'long_recovery_break',
+        frictionLevel: 'very_low',
+        recoveryNeeded: true,
+        pressureLevel: 'very_low',
+        interventionIntensity: 'gentle',
+      }),
+    };
+  }
+
+  if (isProductiveHyperactivation) {
     return {
       mode: 'deep_focus',
       focus_duration_min: 45,
       break_duration_min: 10,
       cycles_recommended: 1,
-      tone: 'direct',
-      reason: 'Nyra détecte une meilleure disponibilité cognitive. Une session plus profonde est possible.',
-      opening_message: 'Tu sembles disponible pour avancer. On lance une vraie session focus.',
-      break_message: 'Pause de récupération. Laisse ton cerveau redescendre avant la suite.',
+      tone: 'structured',
+      reason: 'Nyra détecte une hyperactivation productive : tu peux avancer en profondeur, mais avec garde-fou anti-hyperfocus.',
+      opening_message: 'Tu as du momentum. On canalise sur une seule priorité, avec pause non négociable.',
+      break_message: 'Micro-pause obligatoire. Bois, respire, bouge un peu : on protège ton énergie.',
+      regulation: buildFocusRegulationProfile({
+        mode: 'deep_focus',
+        risk: 'hyperfocus',
+        guidanceStyle: 'structured_execution',
+        breakStrategy: 'mandatory_micro_breaks',
+        frictionLevel: 'medium',
+        recoveryNeeded: false,
+        microBreakEveryMin: 15,
+        pressureLevel: 'medium',
+        interventionIntensity: 'normal',
+      }),
     };
   }
 
-  if (energyLevel === 'low' || dominantMode === 'recover') {
+  if (focusState === 'focused' && energyLevel !== 'low' && overwhelmScore <= 55 && distressScore < 45) {
     return {
-      mode: 'recovery_focus',
-      focus_duration_min: 10,
-      break_duration_min: 7,
+      mode: 'deep_focus',
+      focus_duration_min: 40,
+      break_duration_min: 10,
       cycles_recommended: 1,
-      tone: 'soft',
-      reason: 'Nyra détecte une énergie basse. Le but est de relancer sans forcer.',
-      opening_message: 'On fait une mini-session. Juste une petite étape.',
-      break_message: 'Pause plus longue. Récupération avant performance.',
+      tone: 'direct',
+      reason: 'Nyra détecte un état de focus disponible. Une session profonde est possible sans surcharge immédiate.',
+      opening_message: 'On lance une vraie session focus, mais sur une seule chose.',
+      break_message: 'Pause de récupération. Laisse ton cerveau redescendre avant la suite.',
+      regulation: buildFocusRegulationProfile({
+        mode: 'deep_focus',
+        risk: 'normal',
+        guidanceStyle: 'structured_execution',
+        breakStrategy: 'standard_deep_break',
+        frictionLevel: 'medium',
+        recoveryNeeded: false,
+        pressureLevel: 'medium',
+        interventionIntensity: 'normal',
+      }),
     };
   }
 
@@ -3461,9 +3592,19 @@ function recommendFocusProfile(userState) {
     break_duration_min: 5,
     cycles_recommended: 1,
     tone: 'balanced',
-    reason: 'Nyra propose une session standard 25/5 adaptée à une charge normale.',
+    reason: 'Nyra propose une session standard adaptée à une charge stable.',
     opening_message: 'On lance 25 minutes de focus sur une seule chose.',
     break_message: 'Pause de 5 minutes. Reviens ensuite pour décider si on relance un cycle.',
+    regulation: buildFocusRegulationProfile({
+      mode: 'standard_focus',
+      risk: 'normal',
+      guidanceStyle: 'balanced_guidance',
+      breakStrategy: 'standard_break',
+      frictionLevel: 'medium',
+      recoveryNeeded: false,
+      pressureLevel: 'medium',
+      interventionIntensity: 'normal',
+    }),
   };
 }
 
@@ -3487,6 +3628,15 @@ function buildFocusSession({ userId, taskId, projectId, title, source, userState
     reason: profile.reason,
     opening_message: profile.opening_message,
     break_message: profile.break_message,
+    regulation: profile.regulation || buildFocusRegulationProfile({ mode: profile.mode }),
+    risk: profile.regulation?.risk || 'normal',
+    break_strategy: profile.regulation?.break_strategy || 'standard_break',
+    guidance_style: profile.regulation?.guidance_style || 'balanced_guidance',
+    friction_level: profile.regulation?.friction_level || 'medium',
+    recovery_needed: Boolean(profile.regulation?.recovery_needed),
+    micro_break_every_min: profile.regulation?.micro_break_every_min || null,
+    pressure_level: profile.regulation?.pressure_level || 'medium',
+    intervention_intensity: profile.regulation?.intervention_intensity || 'normal',
     interruptions: [],
     user_feedback: null,
     cognitive_state_before: userState || null,
@@ -3576,6 +3726,17 @@ function buildFocusRecommendation(store, userId) {
     structure: buildFocusStructure(profile, latestUserState, adaptiveProfile),
     cycles_recommended: profile.cycles_recommended,
     mode_label: getFocusModeLabel(profile.mode),
+    focus_mode: profile.mode,
+    recommended_duration: profile.focus_duration_min,
+    break_strategy: profile.regulation?.break_strategy || 'standard_break',
+    risk: profile.regulation?.risk || 'normal',
+    guidance_style: profile.regulation?.guidance_style || 'balanced_guidance',
+    friction_level: profile.regulation?.friction_level || 'medium',
+    recovery_needed: Boolean(profile.regulation?.recovery_needed),
+    micro_break_every_min: profile.regulation?.micro_break_every_min || null,
+    pressure_level: profile.regulation?.pressure_level || 'medium',
+    intervention_intensity: profile.regulation?.intervention_intensity || 'normal',
+    regulation: profile.regulation || buildFocusRegulationProfile({ mode: profile.mode }),
     adaptive_profile_applied: true,
     adaptive_profile_summary: {
       preferred_focus_duration: adaptiveProfile?.preferred_focus_duration || null,
@@ -3607,6 +3768,7 @@ function applyAdaptiveProfileToFocusRecommendation(profile, adaptiveProfile, use
 
   const nextProfile = {
     ...profile,
+    regulation: profile.regulation || buildFocusRegulationProfile({ mode: profile.mode }),
   };
 
   const preferredDuration = Number(adaptiveProfile.preferred_focus_duration || 0);
@@ -3625,6 +3787,16 @@ function applyAdaptiveProfileToFocusRecommendation(profile, adaptiveProfile, use
     nextProfile.tone = 'gentle';
     nextProfile.reason = 'Nyra adapte la session à ton profil : surcharge au-dessus de ton seuil habituel.';
     nextProfile.opening_message = 'On réduit volontairement. Une seule micro-action suffit.';
+    nextProfile.regulation = buildFocusRegulationProfile({
+      mode: 'gentle_focus',
+      risk: 'overload',
+      guidanceStyle: 'low_pressure_guidance',
+      breakStrategy: 'mandatory_recovery_break',
+      frictionLevel: 'low',
+      recoveryNeeded: true,
+      pressureLevel: 'low',
+      interventionIntensity: 'medium',
+    });
   }
 
   if (completionRate > 0 && completionRate < 0.45) {
@@ -3632,6 +3804,16 @@ function applyAdaptiveProfileToFocusRecommendation(profile, adaptiveProfile, use
     nextProfile.focus_duration_min = Math.min(Number(nextProfile.focus_duration_min || 25), 15);
     nextProfile.reason = 'Nyra adapte la session : les cycles courts semblent plus réalistes pour toi en ce moment.';
     nextProfile.opening_message = 'Objectif réduit : juste commencer, sans te mettre en échec.';
+    nextProfile.regulation = buildFocusRegulationProfile({
+      mode: 'gentle_focus',
+      risk: 'execution_friction',
+      guidanceStyle: 'micro_start',
+      breakStrategy: 'short_cycle_break',
+      frictionLevel: 'very_low',
+      recoveryNeeded: false,
+      pressureLevel: 'low',
+      interventionIntensity: 'gentle',
+    });
   }
 
   if (preferredDuration >= 40 && currentOverwhelm < 50 && completionRate >= 0.65) {
@@ -3640,6 +3822,17 @@ function applyAdaptiveProfileToFocusRecommendation(profile, adaptiveProfile, use
     nextProfile.break_duration_min = Math.max(Number(nextProfile.break_duration_min || 5), 10);
     nextProfile.reason = 'Nyra adapte la session : ton profil semble tolérer les sessions profondes.';
     nextProfile.opening_message = 'Tu peux viser une session plus profonde, mais sans multiplier les objectifs.';
+    nextProfile.regulation = buildFocusRegulationProfile({
+      mode: 'deep_focus',
+      risk: 'hyperfocus',
+      guidanceStyle: 'structured_execution',
+      breakStrategy: 'mandatory_micro_breaks',
+      frictionLevel: 'medium',
+      recoveryNeeded: false,
+      microBreakEveryMin: 15,
+      pressureLevel: 'medium',
+      interventionIntensity: 'normal',
+    });
   }
 
   nextProfile.mode_label = getFocusModeLabel(nextProfile.mode);
@@ -3649,15 +3842,26 @@ function applyAdaptiveProfileToFocusRecommendation(profile, adaptiveProfile, use
 
 function buildFocusStructure(profile, userState, adaptiveProfile = null) {
   const structure = [];
+  const regulation = profile.regulation || buildFocusRegulationProfile({ mode: profile.mode });
+  const cognitiveLoad = normalizeText(userState?.cognitive_load || '');
+  const cognitiveActivation = normalizeText(userState?.cognitive_activation || '');
+  const cognitiveDistress = normalizeText(userState?.cognitive_distress || '');
+  const activationScore = Number(userState?.activation_score || 0);
+  const distressScore = Number(userState?.distress_score || 0);
 
-  if (profile.mode === 'gentle_focus') {
-    structure.push('Choisir une seule action simple.');
-    structure.push('Faire 15 minutes sans chercher la perfection.');
+  if (regulation.recovery_needed || cognitiveDistress === 'high' || cognitiveDistress === 'very_high' || distressScore >= 55) {
+    structure.push('Réduire la session à une seule micro-action.');
+    structure.push('Respirer et relâcher la pression avant de commencer.');
     structure.push('S’arrêter dès que le timer indique la pause.');
   } else if (profile.mode === 'recovery_focus') {
-    structure.push('Commencer par une micro-action.');
+    structure.push('Commencer par une micro-action visible.');
     structure.push('Avancer doucement, sans pression de performance.');
-    structure.push('Faire une pause plus longue pour récupérer.');
+    structure.push('Faire une pause longue pour récupérer.');
+  } else if (profile.mode === 'deep_focus' && regulation.risk === 'hyperfocus') {
+    structure.push('Choisir une seule priorité profonde.');
+    structure.push('Couper les distractions visibles.');
+    structure.push('Faire une micro-pause obligatoire toutes les 15 minutes.');
+    structure.push('Arrêter au timer même si le cerveau veut continuer.');
   } else if (profile.mode === 'deep_focus') {
     structure.push('Bloquer une tâche importante.');
     structure.push('Éliminer les distractions visibles.');
@@ -3668,10 +3872,12 @@ function buildFocusStructure(profile, userState, adaptiveProfile = null) {
     structure.push('Prendre 5 minutes de pause réelle.');
   }
 
-  const cognitiveLoad = normalizeText(userState?.cognitive_load || '');
-
   if (cognitiveLoad === 'very_high' || cognitiveLoad === 'high') {
     structure.unshift('Réduire la session à l’essentiel.');
+  }
+
+  if (cognitiveActivation === 'very_high' || activationScore >= 75) {
+    structure.push('Canaliser l’intensité sans ajouter de nouvelle tâche.');
   }
 
   if (adaptiveProfile?.learned_patterns?.length) {
@@ -3682,7 +3888,7 @@ function buildFocusStructure(profile, userState, adaptiveProfile = null) {
     }
   }
 
-  return uniqueArray(structure).slice(0, 4);
+  return uniqueArray(structure).slice(0, 5);
 }
 
 function decorateFocusSessionForMobile(session) {
@@ -4600,6 +4806,17 @@ app.post('/focus/sessions', (req, res) => {
     session.tone = normalizeText(incomingRecommendation.tone || session.tone) || session.tone;
     session.reason = normalizeText(incomingRecommendation.reason || session.reason) || session.reason;
     session.opening_message = normalizeText(incomingRecommendation.message || incomingRecommendation.opening_message || session.opening_message) || session.opening_message;
+    session.regulation = incomingRecommendation.regulation && typeof incomingRecommendation.regulation === 'object'
+      ? incomingRecommendation.regulation
+      : session.regulation || buildFocusRegulationProfile({ mode: session.mode });
+    session.risk = normalizeText(incomingRecommendation.risk || session.regulation?.risk || session.risk || 'normal');
+    session.break_strategy = normalizeText(incomingRecommendation.break_strategy || session.regulation?.break_strategy || session.break_strategy || 'standard_break');
+    session.guidance_style = normalizeText(incomingRecommendation.guidance_style || session.regulation?.guidance_style || session.guidance_style || 'balanced_guidance');
+    session.friction_level = normalizeText(incomingRecommendation.friction_level || session.regulation?.friction_level || session.friction_level || 'medium');
+    session.recovery_needed = Boolean(incomingRecommendation.recovery_needed ?? session.regulation?.recovery_needed ?? session.recovery_needed);
+    session.micro_break_every_min = incomingRecommendation.micro_break_every_min || session.regulation?.micro_break_every_min || session.micro_break_every_min || null;
+    session.pressure_level = normalizeText(incomingRecommendation.pressure_level || session.regulation?.pressure_level || session.pressure_level || 'medium');
+    session.intervention_intensity = normalizeText(incomingRecommendation.intervention_intensity || session.regulation?.intervention_intensity || session.intervention_intensity || 'normal');
     session.structure = Array.isArray(incomingRecommendation.structure)
       ? incomingRecommendation.structure
       : buildFocusStructure(
@@ -4651,6 +4868,17 @@ app.post('/focus/sessions', (req, res) => {
       reason: session.reason,
       message: session.opening_message,
       structure: session.structure || [],
+      focus_mode: session.mode,
+      recommended_duration: session.focus_duration_min,
+      break_strategy: session.break_strategy || session.regulation?.break_strategy || 'standard_break',
+      risk: session.risk || session.regulation?.risk || 'normal',
+      guidance_style: session.guidance_style || session.regulation?.guidance_style || 'balanced_guidance',
+      friction_level: session.friction_level || session.regulation?.friction_level || 'medium',
+      recovery_needed: Boolean(session.recovery_needed ?? session.regulation?.recovery_needed),
+      micro_break_every_min: session.micro_break_every_min || session.regulation?.micro_break_every_min || null,
+      pressure_level: session.pressure_level || session.regulation?.pressure_level || 'medium',
+      intervention_intensity: session.intervention_intensity || session.regulation?.intervention_intensity || 'normal',
+      regulation: session.regulation || buildFocusRegulationProfile({ mode: session.mode }),
     },
   });
 });
