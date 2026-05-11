@@ -14,6 +14,7 @@ const { buildTimelineInsights } = require('./engines/cognitiveTimelineEngine');
 const { buildCognitiveMemoryGraph, buildMemoryGraphInsights } = require('./engines/cognitiveMemoryGraphEngine');
 const { analyzePriorities } = require('./engines/cognitivePriorityEngine');
 const { compressTask } = require('./engines/actionCompressionEngine');
+const { analyzeMomentumRecovery } = require('./engines/momentumRecoveryEngine');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -2992,6 +2993,7 @@ app.get('/', (req, res) => {
       timeline: true,
       memory_graph: true,
       priority: true,
+      momentum_recovery: true,
     },
   });
 });
@@ -5250,6 +5252,38 @@ app.post('/compression/from-priority', (req, res) => {
     });
   }
 });
+
+
+app.post('/momentum/recovery/analyze', (req, res) => {
+  try {
+    const session = req.body?.session || {};
+    const task = req.body?.task || {};
+    const cognitiveState =
+      req.body?.cognitiveState ||
+      req.body?.cognitive_state ||
+      {};
+
+    const recovery = analyzeMomentumRecovery({
+      session,
+      task,
+      cognitive_state: cognitiveState,
+    });
+
+    return res.json({
+      ok: true,
+      recovery,
+    });
+  } catch (error) {
+    console.error('❌ /momentum/recovery/analyze error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: 'Erreur analyse momentum recovery',
+      details: error.message,
+    });
+  }
+});
+
 
 
 app.listen(PORT, '0.0.0.0', () => {
