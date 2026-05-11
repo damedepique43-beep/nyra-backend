@@ -14,7 +14,6 @@ const { buildTimelineInsights } = require('./engines/cognitiveTimelineEngine');
 const { buildCognitiveMemoryGraph, buildMemoryGraphInsights } = require('./engines/cognitiveMemoryGraphEngine');
 const { analyzePriorities } = require('./engines/cognitivePriorityEngine');
 const { compressTask } = require('./engines/actionCompressionEngine');
-const { analyzeMomentumRecovery } = require('./engines/momentumRecoveryEngine');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -2993,7 +2992,6 @@ app.get('/', (req, res) => {
       timeline: true,
       memory_graph: true,
       priority: true,
-      momentum_recovery: true,
     },
   });
 });
@@ -5252,110 +5250,6 @@ app.post('/compression/from-priority', (req, res) => {
     });
   }
 });
-
-
-app.post('/momentum/recovery/analyze', (req, res) => {
-  try {
-    const session = req.body?.session || {};
-    const task = req.body?.task || {};
-    const cognitiveState =
-      req.body?.cognitiveState ||
-      req.body?.cognitive_state ||
-      {};
-
-    const recovery = analyzeMomentumRecovery({
-      session,
-      task,
-      cognitive_state: cognitiveState,
-    });
-
-    return res.json({
-      ok: true,
-      recovery,
-    });
-  } catch (error) {
-    console.error('❌ /momentum/recovery/analyze error:', error.message);
-
-    return res.status(500).json({
-      ok: false,
-      error: 'Erreur analyse momentum recovery',
-      details: error.message,
-    });
-  }
-});
-
-app.post('/momentum/recovery/from-session', (req, res) => {
-  try {
-    const userId = normalizeText(
-      req.body?.userId || req.query?.userId || 'local-user'
-    );
-
-    const sessionId = normalizeText(
-      req.body?.sessionId || ''
-    );
-
-    if (!sessionId) {
-      return res.status(400).json({
-        ok: false,
-        error: 'sessionId manquant',
-      });
-    }
-
-    const store = readStore();
-
-    const foundSession = findFocusSession(
-      store,
-      userId,
-      sessionId
-    );
-
-    if (!foundSession?.session) {
-      return res.status(404).json({
-        ok: false,
-        error: 'Session focus introuvable',
-      });
-    }
-
-    const latestUserState =
-      getLatestUserState(store, userId) ||
-      saveUserStateSnapshot(store, userId);
-
-    const session = foundSession.session;
-
-    let linkedTask = null;
-
-    if (session.task_id) {
-      linkedTask =
-        store.items.find(item => item.id === session.task_id) ||
-        store.actions.find(action => action.id === session.task_id) ||
-        null;
-    }
-
-    const recovery = analyzeMomentumRecovery({
-      session,
-      task: linkedTask || {},
-      cognitive_state: latestUserState,
-    });
-
-    return res.json({
-      ok: true,
-      userId,
-      session,
-      linked_task: linkedTask,
-      cognitive_state: latestUserState,
-      recovery,
-    });
-  } catch (error) {
-    console.error('❌ /momentum/recovery/from-session error:', error.message);
-
-    return res.status(500).json({
-      ok: false,
-      error: 'Erreur momentum recovery depuis session',
-      details: error.message,
-    });
-  }
-});
-
 
 
 app.listen(PORT, '0.0.0.0', () => {
