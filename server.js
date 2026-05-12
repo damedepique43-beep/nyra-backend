@@ -4490,14 +4490,208 @@ function updateFocusSessionStatus(session, status, metadata = {}) {
   return session;
 }
 
-function buildFocusRecommendation(store, userId) {
+function buildFocusDecisionContextForRecommendation(store, userId) {
   const latestUserState = getLatestUserState(store, userId) || saveUserStateSnapshot(store, userId);
   const adaptiveProfile = getOrCreateAdaptiveProfile(store, userId);
-  const profile = applyAdaptiveProfileToFocusRecommendation(
+  const cognitiveHistory = buildCognitiveHistoryV2Analysis(store, userId, 60);
+  const cognitiveHistoryUserFacing = buildCognitiveHistoryUserFacingSummary(cognitiveHistory);
+  const predictiveRisk = buildPredictiveRiskFromCognitiveHistory(cognitiveHistory);
+  const adaptiveFocusStrategy = buildAdaptiveFocusStrategyFromCognitiveHistory(cognitiveHistory);
+  const proactivePayload = buildProactivePayload(store, userId);
+  const proactiveAssistantV2 = buildProactiveAssistantV2Payload({
+    userId,
+    latestUserState,
+    adaptiveProfile,
+    proactivePayload,
+    cognitiveHistory,
+    cognitiveHistoryUserFacing,
+    predictiveRisk,
+    adaptiveFocusStrategy,
+  });
+
+  return {
+    latestUserState,
+    adaptiveProfile,
+    cognitiveHistory,
+    cognitiveHistoryUserFacing,
+    predictiveRisk,
+    adaptiveFocusStrategy,
+    proactivePayload,
+    proactiveAssistantV2,
+  };
+}
+
+function cloneFocusProfile(profile) {
+  return {
+    ...profile,
+    regulation: profile?.regulation && typeof profile.regulation === 'object'
+      ? { ...profile.regulation }
+      : buildFocusRegulationProfile({ mode: profile?.mode || 'standard_focus' }),
+  };
+}
+
+function applyProactiveAssistantToFocusRecommendation(profile, decisionContext) {
+  const nextProfile = cloneFocusProfile(profile);
+  const predictiveRisk = decisionContext?.predictiveRisk || {};
+  const adaptiveFocusStrategy = decisionContext?.adaptiveFocusStrategy || {};
+  const proactiveAssistantV2 = decisionContext?.proactiveAssistantV2 || {};
+  const primaryIntervention = proactiveAssistantV2.primary_intervention || null;
+  const adaptiveProfile = decisionContext?.adaptiveProfile || null;
+
+  const riskLevel = normalizeText(predictiveRisk.level || 'low');
+  const primaryAction = normalizeText(primaryIntervention?.action || '');
+  const shouldReduceLoad = Boolean(
+    adaptiveFocusStrategy.should_reduce_load ||
+    predictiveRisk.should_reduce_load ||
+    riskLevel === 'critical' ||
+    riskLevel === 'high' ||
+    primaryAction === 'reduce_load_now'
+  );
+  const shouldForceBreak = Boolean(
+    adaptiveFocusStrategy.should_force_break ||
+    primaryAction === 'force_break_after_focus'
+  );
+  const shouldProtectFromHyperfocus = Boolean(
+    adaptiveFocusStrategy.should_protect_from_hyperfocus ||
+    primaryIntervention?.type === 'hyperfocus_protection'
+  );
+  const shouldSuggestRecovery = Boolean(
+    predictiveRisk.should_suggest_recovery ||
+    primaryAction === 'suggest_recovery_or_micro_action'
+  );
+  const durationBias = normalizeText(adaptiveFocusStrategy.suggested_duration_bias || 'normal');
+  const completionRate = Number(adaptiveProfile?.average_completion_rate ?? 1);
+
+  let applied = false;
+  const appliedRules = [];
+
+  if (shouldReduceLoad) {
+    nextProfile.mode = 'gentle_focus';
+    nextProfile.mode_label = getFocusModeLabel(nextProfile.mode);
+    nextProfile.focus_duration_min = riskLevel === 'critical' ? 8 : 12;
+    nextProfile.break_duration_min = riskLevel === 'critical' ? 10 : 7;
+    nextProfile.cycles_recommended = 1;
+    nextProfile.tone = riskLevel === 'critical' ? 'protective' : 'gentle';
+    nextProfile.reason = 'Nyra réduit la session car l’historique cognitif indique une charge à protéger.';
+    nextProfile.opening_message = 'On réduit volontairement : une seule micro-action, sans pression.';
+    nextProfile.break_message = 'Pause obligatoire. Bois, respire, relâche les épaules avant la suite.';
+    nextProfile.regulation = buildFocusRegulationProfile({
+      mode: 'gentle_focus',
+      risk: riskLevel === 'critical' ? 'critical_overload' : 'overload',
+      guidanceStyle: 'regulation_first',
+      breakStrategy: 'mandatory_recovery_break',
+      frictionLevel: 'very_low',
+      recoveryNeeded: true,
+      pressureLevel: 'very_low',
+      interventionIntensity: 'high',
+    });
+    applied = true;
+    appliedRules.push('reduce_load_from_predictive_risk');
+  } else if (shouldProtectFromHyperfocus) {
+    nextProfile.mode = completionRate < 0.5 ? 'gentle_focus' : 'standard_focus';
+    nextProfile.mode_label = getFocusModeLabel(nextProfile.mode);
+    nextProfile.focus_duration_min = Math.min(Number(nextProfile.focus_duration_min || 25), completionRate < 0.5 ? 15 : 25);
+    nextProfile.break_duration_min = Math.max(Number(nextProfile.break_duration_min || 5), 8);
+    nextProfile.cycles_recommended = 1;
+    nextProfile.tone = 'structured';
+    nextProfile.reason = 'Nyra détecte une forte activation utile : focus possible, mais cadré pour éviter l’hyperfocus.';
+    nextProfile.opening_message = 'Tu peux avancer, mais sur une seule priorité et avec une pause obligatoire.';
+    nextProfile.break_message = 'Pause obligatoire. Même si tu veux continuer, Nyra protège ton énergie.';
+    nextProfile.regulation = buildFocusRegulationProfile({
+      mode: nextProfile.mode,
+      risk: 'hyperfocus',
+      guidanceStyle: 'structured_execution',
+      breakStrategy: 'mandatory_micro_breaks',
+      frictionLevel: completionRate < 0.5 ? 'low' : 'medium',
+      recoveryNeeded: shouldSuggestRecovery,
+      microBreakEveryMin: 15,
+      pressureLevel: 'medium',
+      interventionIntensity: 'normal',
+    });
+    applied = true;
+    appliedRules.push('hyperfocus_guardrail_from_proactive_v2');
+  } else if (shouldSuggestRecovery || adaptiveFocusStrategy.mode === 'recovery_focus') {
+    nextProfile.mode = 'recovery_focus';
+    nextProfile.mode_label = getFocusModeLabel(nextProfile.mode);
+    nextProfile.focus_duration_min = Math.min(Number(nextProfile.focus_duration_min || 25), 12);
+    nextProfile.break_duration_min = Math.max(Number(nextProfile.break_duration_min || 5), 7);
+    nextProfile.cycles_recommended = 1;
+    nextProfile.tone = 'soft';
+    nextProfile.reason = 'Nyra propose une reprise douce pour garder l’élan sans tirer sur le système.';
+    nextProfile.opening_message = 'On garde l’élan, mais sans forcer : une micro-action suffit.';
+    nextProfile.break_message = 'Pause douce. On récupère avant de relancer.';
+    nextProfile.regulation = buildFocusRegulationProfile({
+      mode: 'recovery_focus',
+      risk: 'recovery_needed',
+      guidanceStyle: 'micro_start',
+      breakStrategy: 'long_recovery_break',
+      frictionLevel: 'very_low',
+      recoveryNeeded: true,
+      pressureLevel: 'very_low',
+      interventionIntensity: 'gentle',
+    });
+    applied = true;
+    appliedRules.push('recovery_from_predictive_risk');
+  }
+
+  if (!shouldReduceLoad && durationBias === 'shorter') {
+    nextProfile.focus_duration_min = Math.min(Number(nextProfile.focus_duration_min || 25), 15);
+    nextProfile.break_duration_min = Math.max(Number(nextProfile.break_duration_min || 5), 7);
+    applied = true;
+    appliedRules.push('shorter_cycles_from_history');
+  }
+
+  if (!shouldReduceLoad && durationBias === 'capped') {
+    nextProfile.focus_duration_min = Math.min(Number(nextProfile.focus_duration_min || 25), 25);
+    applied = true;
+    appliedRules.push('duration_capped_from_history');
+  }
+
+  if (shouldForceBreak) {
+    nextProfile.break_duration_min = Math.max(Number(nextProfile.break_duration_min || 5), 7);
+    nextProfile.regulation = {
+      ...(nextProfile.regulation || buildFocusRegulationProfile({ mode: nextProfile.mode })),
+      break_strategy: 'mandatory_micro_breaks',
+      micro_break_every_min: nextProfile.regulation?.micro_break_every_min || 15,
+    };
+    applied = true;
+    appliedRules.push('mandatory_break_from_proactive_v2');
+  }
+
+  nextProfile.focus_duration_min = clampNumber(nextProfile.focus_duration_min, 5, 45);
+  nextProfile.break_duration_min = clampNumber(nextProfile.break_duration_min, 3, 15);
+  nextProfile.mode_label = getFocusModeLabel(nextProfile.mode);
+
+  return {
+    profile: nextProfile,
+    applied,
+    applied_rules: uniqueArray(appliedRules),
+    primary_intervention: primaryIntervention,
+  };
+}
+
+function buildFocusRecommendation(store, userId) {
+  const decisionContext = buildFocusDecisionContextForRecommendation(store, userId);
+  const latestUserState = decisionContext.latestUserState;
+  const adaptiveProfile = decisionContext.adaptiveProfile;
+
+  const adaptiveProfileProfile = applyAdaptiveProfileToFocusRecommendation(
     recommendFocusProfile(latestUserState),
     adaptiveProfile,
     latestUserState
   );
+
+  const proactiveFocus = applyProactiveAssistantToFocusRecommendation(
+    adaptiveProfileProfile,
+    decisionContext
+  );
+
+  const profile = proactiveFocus.profile;
+  const structure = buildFocusStructure(profile, latestUserState, adaptiveProfile);
+
+  if (proactiveFocus.primary_intervention?.user_facing?.next_step) {
+    structure.unshift(proactiveFocus.primary_intervention.user_facing.next_step);
+  }
 
   const recommendation = {
     mode: profile.mode,
@@ -4506,7 +4700,7 @@ function buildFocusRecommendation(store, userId) {
     tone: profile.tone,
     reason: profile.reason,
     message: profile.opening_message,
-    structure: buildFocusStructure(profile, latestUserState, adaptiveProfile),
+    structure: uniqueArray(structure).slice(0, 6),
     cycles_recommended: profile.cycles_recommended,
     mode_label: getFocusModeLabel(profile.mode),
     focus_mode: profile.mode,
@@ -4521,6 +4715,16 @@ function buildFocusRecommendation(store, userId) {
     intervention_intensity: profile.regulation?.intervention_intensity || 'normal',
     regulation: profile.regulation || buildFocusRegulationProfile({ mode: profile.mode }),
     adaptive_profile_applied: true,
+    proactive_assistant_v2_applied: proactiveFocus.applied,
+    proactive_applied_rules: proactiveFocus.applied_rules,
+    proactive_primary_intervention: proactiveFocus.primary_intervention,
+    proactive_user_facing: decisionContext.proactiveAssistantV2?.user_facing || null,
+    cognitive_history_user_facing: decisionContext.cognitiveHistoryUserFacing,
+    predictive_risk: decisionContext.predictiveRisk,
+    adaptive_focus_strategy: decisionContext.adaptiveFocusStrategy,
+    should_force_break: Boolean(decisionContext.adaptiveFocusStrategy?.should_force_break),
+    should_reduce_load: Boolean(decisionContext.adaptiveFocusStrategy?.should_reduce_load || decisionContext.predictiveRisk?.should_reduce_load),
+    should_protect_from_hyperfocus: Boolean(decisionContext.adaptiveFocusStrategy?.should_protect_from_hyperfocus),
     adaptive_profile_summary: {
       preferred_focus_duration: adaptiveProfile?.preferred_focus_duration || null,
       overload_threshold: adaptiveProfile?.overload_threshold || null,
@@ -4543,8 +4747,15 @@ function buildFocusRecommendation(store, userId) {
     adaptive_profile: adaptiveProfile,
     mode_label: getFocusModeLabel(profile.mode),
     user_state: latestUserState,
+    cognitive_history_user_facing: decisionContext.cognitiveHistoryUserFacing,
+    proactive_assistant_v2: decisionContext.proactiveAssistantV2,
+    proactive_assistant_user_facing: decisionContext.proactiveAssistantV2?.user_facing || null,
+    predictive_risk: decisionContext.predictiveRisk,
+    adaptive_focus_strategy: decisionContext.adaptiveFocusStrategy,
+    wording_note: 'Côté utilisateur, utiliser “points d’état”, “historique cognitif” ou “évolution”, jamais “snapshots”.',
   };
 }
+
 
 function applyAdaptiveProfileToFocusRecommendation(profile, adaptiveProfile, userState) {
   if (!adaptiveProfile) return profile;
