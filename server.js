@@ -74,7 +74,7 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
-const STORE_VERSION = 'context-engine-history-v1';
+const STORE_VERSION = 'cognitive-history-v2';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -105,6 +105,7 @@ function createEmptyStore() {
     cognitive_timeline_events: [],
     cognitive_memory_graphs: [],
     cognitive_priority_snapshots: [],
+    cognitive_history_analyses: [],
     updated_at: null,
   };
 }
@@ -155,6 +156,9 @@ function readStore() {
       cognitive_priority_snapshots: Array.isArray(parsed.cognitive_priority_snapshots)
         ? parsed.cognitive_priority_snapshots
         : [],
+      cognitive_history_analyses: Array.isArray(parsed.cognitive_history_analyses)
+        ? parsed.cognitive_history_analyses
+        : [],
       updated_at: parsed.updated_at || null,
     };
   } catch (error) {
@@ -178,6 +182,7 @@ function writeStore(store) {
       cognitive_timeline_events: Array.isArray(store.cognitive_timeline_events) ? store.cognitive_timeline_events : [],
       cognitive_memory_graphs: Array.isArray(store.cognitive_memory_graphs) ? store.cognitive_memory_graphs : [],
       cognitive_priority_snapshots: Array.isArray(store.cognitive_priority_snapshots) ? store.cognitive_priority_snapshots : [],
+      cognitive_history_analyses: Array.isArray(store.cognitive_history_analyses) ? store.cognitive_history_analyses : [],
       version: STORE_VERSION,
       updated_at: nowIso(),
     };
@@ -2269,6 +2274,445 @@ function buildUserStateHistoryPayload(store, userId, limit = 30) {
 }
 
 
+// ------------------------------
+// Cognitive History Engine V2
+// ------------------------------
+
+function getScoreSeries(states, key) {
+  return (Array.isArray(states) ? states : [])
+    .map(state => Number(state?.[key]))
+    .filter(value => !Number.isNaN(value));
+}
+
+function getLatestScore(states, key) {
+  const scores = getScoreSeries(states, key);
+  return scores.length ? scores[scores.length - 1] : null;
+}
+
+function getFirstScore(states, key) {
+  const scores = getScoreSeries(states, key);
+  return scores.length ? scores[0] : null;
+}
+
+function countRecentStates(states, predicate, limit = 8) {
+  return (Array.isArray(states) ? states : [])
+    .slice(-limit)
+    .reduce((total, state) => predicate(state) ? total + 1 : total, 0);
+}
+
+function countDirectionChanges(values) {
+  const numbers = values.filter(value => typeof value === 'number' && !Number.isNaN(value));
+
+  if (numbers.length < 3) return 0;
+
+  let previousDirection = 0;
+  let changes = 0;
+
+  for (let index = 1; index < numbers.length; index += 1) {
+    const delta = numbers[index] - numbers[index - 1];
+    const direction = delta > 5 ? 1 : delta < -5 ? -1 : 0;
+
+    if (direction !== 0 && previousDirection !== 0 && direction !== previousDirection) {
+      changes += 1;
+    }
+
+    if (direction !== 0) {
+      previousDirection = direction;
+    }
+  }
+
+  return changes;
+}
+
+function buildCognitiveHistorySignals(states) {
+  const safeStates = Array.isArray(states) ? states : [];
+  const recentStates = safeStates.slice(-8);
+  const overwhelmScores = getScoreSeries(safeStates, 'overwhelm_score');
+  const activationScores = getScoreSeries(safeStates, 'activation_score');
+  const distressScores = getScoreSeries(safeStates, 'distress_score');
+
+  const latestOverwhelm = getLatestScore(safeStates, 'overwhelm_score');
+  const latestActivation = getLatestScore(safeStates, 'activation_score');
+  const latestDistress = getLatestScore(safeStates, 'distress_score');
+  const firstOverwhelm = getFirstScore(safeStates, 'overwhelm_score');
+  const firstActivation = getFirstScore(safeStates, 'activation_score');
+  const firstDistress = getFirstScore(safeStates, 'distress_score');
+
+  const averageOverwhelm = averageNumber(overwhelmScores);
+  const averageActivation = averageNumber(activationScores);
+  const averageDistress = averageNumber(distressScores);
+
+  return {
+    state_count: safeStates.length,
+    recent_state_count: recentStates.length,
+    latest_overwhelm: latestOverwhelm,
+    latest_activation: latestActivation,
+    latest_distress: latestDistress,
+    first_overwhelm: firstOverwhelm,
+    first_activation: firstActivation,
+    first_distress: firstDistress,
+    average_overwhelm: averageOverwhelm,
+    average_activation: averageActivation,
+    average_distress: averageDistress,
+    overwhelm_delta_from_start:
+      latestOverwhelm !== null && firstOverwhelm !== null ? latestOverwhelm - firstOverwhelm : 0,
+    activation_delta_from_start:
+      latestActivation !== null && firstActivation !== null ? latestActivation - firstActivation : 0,
+    distress_delta_from_start:
+      latestDistress !== null && firstDistress !== null ? latestDistress - firstDistress : 0,
+    high_overwhelm_recent_count: countRecentStates(recentStates, state => Number(state?.overwhelm_score || 0) >= 65, 8),
+    high_distress_recent_count: countRecentStates(recentStates, state => Number(state?.distress_score || 0) >= 55, 8),
+    high_activation_recent_count: countRecentStates(recentStates, state => Number(state?.activation_score || 0) >= 70, 8),
+    low_energy_recent_count: countRecentStates(recentStates, state => state?.energy_level === 'low', 8),
+    scattered_recent_count: countRecentStates(recentStates, state => ['scattered', 'fragmented'].includes(state?.focus_state), 8),
+    focused_recent_count: countRecentStates(recentStates, state => state?.focus_state === 'focused', 8),
+    recovery_mode_recent_count: countRecentStates(recentStates, state => state?.dominant_mode === 'recovery', 8),
+    reduce_load_recent_count: countRecentStates(recentStates, state => state?.dominant_mode === 'reduce_load', 8),
+    overwhelm_direction_changes: countDirectionChanges(overwhelmScores.slice(-12)),
+    activation_direction_changes: countDirectionChanges(activationScores.slice(-12)),
+    distress_direction_changes: countDirectionChanges(distressScores.slice(-12)),
+  };
+}
+
+function addInsight(insights, insight) {
+  if (!insight || !insight.id) return;
+
+  if (!insights.some(existingInsight => existingInsight.id === insight.id)) {
+    insights.push({
+      ...insight,
+      created_at: nowIso(),
+    });
+  }
+}
+
+function detectCognitiveCycles(states, signals) {
+  const insights = [];
+
+  if (signals.state_count < 3) {
+    addInsight(insights, {
+      id: 'insufficient_history',
+      type: 'history_depth',
+      severity: 'low',
+      label: 'Historique encore trop court',
+      description: 'Nyra a besoin de plus de snapshots pour reconnaître des cycles fiables.',
+      confidence: 0.35,
+      recommendation: 'Continuer à générer des états cognitifs via les captures, focus et actions.',
+    });
+
+    return insights;
+  }
+
+  if (signals.high_overwhelm_recent_count >= 4 || signals.reduce_load_recent_count >= 3) {
+    addInsight(insights, {
+      id: 'chronic_overload_cycle',
+      type: 'cycle',
+      severity: 'high',
+      label: 'Cycle de surcharge persistante',
+      description: 'Plusieurs états récents restent en surcharge ou en mode réduction de charge.',
+      confidence: 0.82,
+      recommendation: 'Nyra doit réduire les priorités visibles, proposer récupération et éviter les sessions longues.',
+    });
+  }
+
+  if (signals.high_activation_recent_count >= 3 && signals.low_energy_recent_count >= 2) {
+    addInsight(insights, {
+      id: 'activation_recovery_gap',
+      type: 'cycle',
+      severity: 'medium',
+      label: 'Activation forte avec récupération insuffisante',
+      description: 'L’historique suggère une alternance entre forte activation et énergie basse.',
+      confidence: 0.76,
+      recommendation: 'Prévoir des pauses obligatoires et limiter l’empilement de nouvelles actions.',
+    });
+  }
+
+  if (signals.overwhelm_direction_changes >= 3 || signals.distress_direction_changes >= 3) {
+    addInsight(insights, {
+      id: 'unstable_cognitive_oscillation',
+      type: 'cycle',
+      severity: 'medium',
+      label: 'Oscillation cognitive instable',
+      description: 'Les scores montent et redescendent souvent sur les derniers états.',
+      confidence: 0.72,
+      recommendation: 'Nyra doit privilégier des cycles courts et éviter les changements de plan trop fréquents.',
+    });
+  }
+
+  if (signals.focused_recent_count >= 3 && signals.latest_distress !== null && signals.latest_distress < 45) {
+    addInsight(insights, {
+      id: 'productive_focus_cycle',
+      type: 'cycle',
+      severity: 'positive',
+      label: 'Cycle de focus productif',
+      description: 'Les derniers états montrent une capacité de focus sans détresse élevée.',
+      confidence: 0.78,
+      recommendation: 'Nyra peut proposer une session structurée, tout en gardant un garde-fou anti-hyperfocus.',
+    });
+  }
+
+  return insights;
+}
+
+function detectRecoveryPatterns(states, signals) {
+  const insights = [];
+  const recentStates = Array.isArray(states) ? states.slice(-8) : [];
+
+  if (signals.overwhelm_delta_from_start <= -12 && signals.distress_delta_from_start <= -8) {
+    addInsight(insights, {
+      id: 'recovery_trend_detected',
+      type: 'recovery',
+      severity: 'positive',
+      label: 'Récupération progressive détectée',
+      description: 'La surcharge et/ou la détresse diminuent sur la période analysée.',
+      confidence: 0.8,
+      recommendation: 'Conserver ce qui fonctionne et éviter de réaugmenter brutalement la charge.',
+    });
+  }
+
+  if (signals.low_energy_recent_count >= 3 && signals.latest_overwhelm !== null && signals.latest_overwhelm >= 55) {
+    addInsight(insights, {
+      id: 'incomplete_recovery',
+      type: 'recovery',
+      severity: 'high',
+      label: 'Récupération incomplète',
+      description: 'L’énergie reste basse alors que la charge demeure significative.',
+      confidence: 0.79,
+      recommendation: 'Nyra doit proposer un mode récupération, hydratation, repas, pause corporelle ou micro-action.',
+    });
+  }
+
+  const hasRecentRecoveryMode = recentStates.some(state => state?.dominant_mode === 'recovery');
+  const hasLaterExecution = recentStates.some(state => state?.dominant_mode === 'execution');
+
+  if (hasRecentRecoveryMode && hasLaterExecution && signals.latest_distress !== null && signals.latest_distress < 55) {
+    addInsight(insights, {
+      id: 'recovery_to_execution_bridge',
+      type: 'recovery',
+      severity: 'positive',
+      label: 'Pont récupération → exécution',
+      description: 'Nyra observe un passage possible de récupération vers exécution.',
+      confidence: 0.68,
+      recommendation: 'Proposer une reprise progressive plutôt qu’une grosse session immédiate.',
+    });
+  }
+
+  return insights;
+}
+
+function detectBurnRisk(states, signals) {
+  const risks = [];
+  let score = 0;
+
+  score += signals.high_overwhelm_recent_count * 12;
+  score += signals.high_distress_recent_count * 14;
+  score += signals.low_energy_recent_count * 10;
+  score += signals.scattered_recent_count * 6;
+  score += signals.reduce_load_recent_count * 8;
+
+  if (signals.latest_overwhelm >= 75) score += 15;
+  if (signals.latest_distress >= 70) score += 20;
+  if (signals.latest_activation >= 75 && signals.latest_distress >= 55) score += 10;
+  if (signals.overwhelm_delta_from_start >= 15) score += 10;
+  if (signals.distress_delta_from_start >= 12) score += 12;
+
+  const riskScore = clampNumber(Math.round(score), 0, 100);
+  const level = riskScore >= 75 ? 'critical' : riskScore >= 55 ? 'high' : riskScore >= 30 ? 'moderate' : 'low';
+
+  if (level === 'critical' || level === 'high') {
+    addInsight(risks, {
+      id: 'burnout_or_crash_risk',
+      type: 'risk',
+      severity: level === 'critical' ? 'critical' : 'high',
+      label: level === 'critical' ? 'Risque de crash cognitif élevé' : 'Risque de surcharge à surveiller',
+      description: 'Les derniers états combinent charge, détresse, énergie basse ou dispersion.',
+      confidence: level === 'critical' ? 0.86 : 0.74,
+      recommendation: 'Nyra doit réduire la pression, imposer une pause et proposer seulement une micro-action utile.',
+    });
+  }
+
+  return {
+    level,
+    score: riskScore,
+    insights: risks,
+  };
+}
+
+function detectActivationInstability(states, signals) {
+  const insights = [];
+
+  if (signals.high_activation_recent_count >= 3 && signals.activation_direction_changes >= 2) {
+    addInsight(insights, {
+      id: 'activation_instability',
+      type: 'activation',
+      severity: 'medium',
+      label: 'Activation cognitive instable',
+      description: 'L’activation semble forte mais irrégulière sur les derniers états.',
+      confidence: 0.7,
+      recommendation: 'Nyra doit canaliser l’énergie sur une seule priorité et éviter la dispersion.',
+    });
+  }
+
+  if (signals.latest_activation >= 75 && signals.latest_distress < 40 && signals.latest_overwhelm < 60) {
+    addInsight(insights, {
+      id: 'high_activation_available',
+      type: 'activation',
+      severity: 'positive',
+      label: 'Activation disponible sans détresse forte',
+      description: 'Le système semble mobilisé sans signe majeur de détresse immédiate.',
+      confidence: 0.75,
+      recommendation: 'Nyra peut proposer du deep focus cadré, avec pause obligatoire.',
+    });
+  }
+
+  return insights;
+}
+
+function buildPredictiveInsights({ states, signals, burnRisk }) {
+  const predictions = [];
+
+  if (burnRisk.level === 'critical' || burnRisk.level === 'high') {
+    addInsight(predictions, {
+      id: 'predict_reduce_load_next',
+      type: 'prediction',
+      severity: burnRisk.level === 'critical' ? 'critical' : 'high',
+      label: 'Nyra doit probablement passer en mode réduction de charge',
+      description: 'Les signaux récents indiquent qu’ajouter de la pression risque d’aggraver l’état.',
+      confidence: burnRisk.level === 'critical' ? 0.84 : 0.72,
+      recommendation: 'Limiter l’écran à une priorité, proposer pause corporelle et micro-action de moins de 5 minutes.',
+    });
+  }
+
+  if (signals.high_activation_recent_count >= 3 && signals.low_energy_recent_count >= 2) {
+    addInsight(predictions, {
+      id: 'predict_post_hyperfocus_crash',
+      type: 'prediction',
+      severity: 'high',
+      label: 'Risque de crash après hyperfocus',
+      description: 'L’historique combine activation élevée et énergie basse récente.',
+      confidence: 0.77,
+      recommendation: 'Couper les sessions longues en blocs courts avec pauses obligatoires.',
+    });
+  }
+
+  if (signals.overwhelm_delta_from_start <= -12 && burnRisk.score < 45) {
+    addInsight(predictions, {
+      id: 'predict_safe_progressive_execution',
+      type: 'prediction',
+      severity: 'positive',
+      label: 'Reprise progressive possible',
+      description: 'Les tendances indiquent une baisse de surcharge compatible avec une reprise douce.',
+      confidence: 0.7,
+      recommendation: 'Proposer une action simple et mesurable plutôt qu’un gros bloc de travail.',
+    });
+  }
+
+  return predictions;
+}
+
+function buildCognitiveHistoryV2Analysis(store, userId, limit = 60) {
+  const states = getOrderedUserStates(store, userId, limit);
+  const compactStates = states.map(compactUserStateForHistory);
+  const signals = buildCognitiveHistorySignals(states);
+  const cycleInsights = detectCognitiveCycles(states, signals);
+  const recoveryInsights = detectRecoveryPatterns(states, signals);
+  const burnRisk = detectBurnRisk(states, signals);
+  const activationInsights = detectActivationInstability(states, signals);
+  const predictiveInsights = buildPredictiveInsights({ states, signals, burnRisk });
+
+  const insights = uniqueArray([
+    ...cycleInsights,
+    ...recoveryInsights,
+    ...burnRisk.insights,
+    ...activationInsights,
+    ...predictiveInsights,
+  ].map(insight => insight.id))
+    .map(id => {
+      return [
+        ...cycleInsights,
+        ...recoveryInsights,
+        ...burnRisk.insights,
+        ...activationInsights,
+        ...predictiveInsights,
+      ].find(insight => insight.id === id);
+    })
+    .filter(Boolean);
+
+  const primaryInsight = insights.find(insight => ['critical', 'high'].includes(insight.severity)) || insights[0] || null;
+
+  const recommendedMode =
+    burnRisk.level === 'critical' || burnRisk.level === 'high'
+      ? 'reduce_load'
+      : insights.some(insight => insight.id === 'high_activation_available')
+        ? 'structured_execution'
+        : insights.some(insight => insight.id === 'recovery_trend_detected')
+          ? 'progressive_recovery'
+          : signals.state_count < 3
+            ? 'observe'
+            : 'steady_support';
+
+  return {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    engine_version: 'cognitive-history-v2',
+    generated_at: nowIso(),
+    limit,
+    summary: {
+      state_count: states.length,
+      recommended_mode: recommendedMode,
+      burn_risk_level: burnRisk.level,
+      burn_risk_score: burnRisk.score,
+      primary_insight: primaryInsight,
+      average_overwhelm_score: signals.average_overwhelm,
+      average_activation_score: signals.average_activation,
+      average_distress_score: signals.average_distress,
+      latest_overwhelm_score: signals.latest_overwhelm,
+      latest_activation_score: signals.latest_activation,
+      latest_distress_score: signals.latest_distress,
+    },
+    signals,
+    cycles: cycleInsights,
+    recovery_patterns: recoveryInsights,
+    activation_patterns: activationInsights,
+    predictions: predictiveInsights,
+    insights,
+    states: compactStates,
+  };
+}
+
+function saveCognitiveHistoryAnalysis(store, analysis) {
+  store.cognitive_history_analyses = Array.isArray(store.cognitive_history_analyses)
+    ? store.cognitive_history_analyses
+    : [];
+
+  store.cognitive_history_analyses.push(analysis);
+  store.cognitive_history_analyses = store.cognitive_history_analyses.slice(-500);
+
+  return analysis;
+}
+
+function getRecentCognitiveHistoryAnalyses(store, userId, limit = 20) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 100));
+
+  return (Array.isArray(store.cognitive_history_analyses) ? store.cognitive_history_analyses : [])
+    .filter(analysis => analysis.user_id === userId)
+    .sort((a, b) => {
+      return new Date(b.generated_at || 0).getTime() -
+        new Date(a.generated_at || 0).getTime();
+    })
+    .slice(0, safeLimit);
+}
+
+function buildUserStateHistoryV2Payload(store, userId, limit = 60) {
+  const history = buildUserStateHistoryPayload(store, userId, limit);
+  const cognitive_history_v2 = buildCognitiveHistoryV2Analysis(store, userId, limit);
+
+  return {
+    ...history,
+    cognitive_history_v2,
+  };
+}
+
+
 function getStoreSummary(userId) {
   const store = readStore();
 
@@ -2304,6 +2748,7 @@ function getStoreSummary(userId) {
     cognitive_timeline_event_count: (Array.isArray(store.cognitive_timeline_events) ? store.cognitive_timeline_events : []).filter(event => event.user_id === userId).length,
     cognitive_memory_graph_count: (Array.isArray(store.cognitive_memory_graphs) ? store.cognitive_memory_graphs : []).filter(graph => graph.user_id === userId).length,
     cognitive_priority_snapshot_count: (Array.isArray(store.cognitive_priority_snapshots) ? store.cognitive_priority_snapshots : []).filter(snapshot => snapshot.user_id === userId).length,
+    cognitive_history_analysis_count: (Array.isArray(store.cognitive_history_analyses) ? store.cognitive_history_analyses : []).filter(analysis => analysis.user_id === userId).length,
     local_only: userActions.filter(action => action.sync_status === 'local_only').length,
     pending_sync: userActions.filter(action => action.sync_status === 'pending_sync').length,
     synced: userActions.filter(action => action.sync_status === 'synced').length,
@@ -4923,6 +5368,96 @@ app.get('/state/history', (req, res) => {
   });
 });
 
+
+
+app.get('/state/history-v2', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const limit = Math.max(1, Math.min(Number(req.query?.limit || 60), 120));
+  const refresh = normalizeText(req.query?.refresh || '') === 'true';
+  const persist = normalizeText(req.query?.persist || 'true') !== 'false';
+  const store = readStore();
+
+  if (refresh || !getLatestUserState(store, userId)) {
+    saveUserStateSnapshot(store, userId);
+  }
+
+  const payload = buildUserStateHistoryV2Payload(store, userId, limit);
+
+  if (persist) {
+    saveCognitiveHistoryAnalysis(store, payload.cognitive_history_v2);
+    writeStore(store);
+  } else if (refresh) {
+    writeStore(store);
+  }
+
+  return res.json({
+    ok: true,
+    userId,
+    limit,
+    ...payload,
+    persisted: persist,
+  });
+});
+
+app.get('/history/cognitive-analysis', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const limit = Math.max(1, Math.min(Number(req.query?.limit || 60), 120));
+  const persist = normalizeText(req.query?.persist || 'true') !== 'false';
+  const store = readStore();
+
+  if (!getLatestUserState(store, userId)) {
+    saveUserStateSnapshot(store, userId);
+  }
+
+  const analysis = buildCognitiveHistoryV2Analysis(store, userId, limit);
+
+  if (persist) {
+    saveCognitiveHistoryAnalysis(store, analysis);
+    writeStore(store);
+  }
+
+  return res.json({
+    ok: true,
+    userId,
+    analysis,
+    persisted: persist,
+  });
+});
+
+app.post('/history/cognitive-analysis/recompute', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const limit = Math.max(1, Math.min(Number(req.body?.limit || req.query?.limit || 60), 120));
+  const store = readStore();
+
+  if (!getLatestUserState(store, userId)) {
+    saveUserStateSnapshot(store, userId);
+  }
+
+  const analysis = buildCognitiveHistoryV2Analysis(store, userId, limit);
+  saveCognitiveHistoryAnalysis(store, analysis);
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    analysis,
+    message: 'Historique cognitif V2 recalculé.',
+  });
+});
+
+app.get('/history/cognitive-analysis/history', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const limit = Math.max(1, Math.min(Number(req.query?.limit || 20), 100));
+  const store = readStore();
+  const analyses = getRecentCognitiveHistoryAnalyses(store, userId, limit);
+
+  return res.json({
+    ok: true,
+    userId,
+    count: analyses.length,
+    analyses,
+  });
+});
 
 app.get('/focus/recommendation', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
