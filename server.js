@@ -74,7 +74,7 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
-const STORE_VERSION = 'cognitive-history-v2';
+const STORE_VERSION = 'cognitive-orchestration-history-v2';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -2713,6 +2713,156 @@ function buildUserStateHistoryV2Payload(store, userId, limit = 60) {
 }
 
 
+function getFrenchRiskLabel(level) {
+  if (level === 'critical') return 'Risque critique';
+  if (level === 'high') return 'Risque élevé';
+  if (level === 'moderate') return 'Risque modéré';
+  return 'Risque bas';
+}
+
+function getFrenchRecommendedModeLabel(mode) {
+  if (mode === 'reduce_load') return 'Réduction de charge';
+  if (mode === 'structured_execution') return 'Exécution cadrée';
+  if (mode === 'progressive_recovery') return 'Récupération progressive';
+  if (mode === 'observe') return 'Observation';
+  if (mode === 'steady_support') return 'Soutien stable';
+  return 'Adaptation douce';
+}
+
+function buildCognitiveHistoryUserFacingSummary(analysis) {
+  const summary = analysis?.summary || {};
+  const primaryInsight = summary.primary_insight || null;
+  const riskLevel = summary.burn_risk_level || 'low';
+  const recommendedMode = summary.recommended_mode || 'steady_support';
+  const stateCount = Number(summary.state_count || 0);
+
+  let headline = 'Nyra observe ton évolution cognitive.';
+
+  if (riskLevel === 'critical' || riskLevel === 'high') {
+    headline = 'Nyra détecte une charge qui mérite d’être réduite.';
+  } else if (recommendedMode === 'structured_execution') {
+    headline = 'Nyra détecte une bonne disponibilité pour avancer, avec cadre.';
+  } else if (recommendedMode === 'progressive_recovery') {
+    headline = 'Nyra détecte une récupération progressive.';
+  } else if (stateCount < 3) {
+    headline = 'Nyra commence à construire ton historique cognitif.';
+  }
+
+  return {
+    title: 'Évolution cognitive',
+    headline,
+    state_points_label: 'points d’état récents',
+    state_points_count: stateCount,
+    recommended_mode_label: getFrenchRecommendedModeLabel(recommendedMode),
+    burn_risk_label: getFrenchRiskLabel(riskLevel),
+    burn_risk_score: summary.burn_risk_score ?? null,
+    main_pattern_label: primaryInsight?.label || 'Aucune tendance forte détectée',
+    main_pattern_description: primaryInsight?.description || 'Nyra continue d’observer ton fonctionnement pour mieux adapter ses recommandations.',
+    next_best_action: primaryInsight?.recommendation || 'Continuer à avancer avec une priorité claire et une pause prévue.',
+    wording: {
+      internal_snapshot: 'point d’état',
+      public_history: 'historique cognitif',
+      public_trend: 'évolution',
+      public_prediction: 'anticipation',
+    },
+  };
+}
+
+function buildPredictiveRiskFromCognitiveHistory(analysis) {
+  const summary = analysis?.summary || {};
+  const signals = analysis?.signals || {};
+  const riskLevel = summary.burn_risk_level || 'low';
+  const riskScore = Number(summary.burn_risk_score || 0);
+  const insights = Array.isArray(analysis?.insights) ? analysis.insights : [];
+  const riskInsights = insights.filter(insight => {
+    return ['critical', 'high', 'warning'].includes(insight.severity) || String(insight.id || '').includes('risk');
+  });
+
+  return {
+    level: riskLevel,
+    score: riskScore,
+    label: getFrenchRiskLabel(riskLevel),
+    should_interrupt: riskLevel === 'critical',
+    should_reduce_load: riskLevel === 'critical' || riskLevel === 'high',
+    should_suggest_recovery: ['critical', 'high', 'moderate'].includes(riskLevel),
+    recent_evolution: {
+      overwhelm_delta_from_start: signals.overwhelm_delta_from_start ?? null,
+      activation_delta_from_start: signals.activation_delta_from_start ?? null,
+      distress_delta_from_start: signals.distress_delta_from_start ?? null,
+    },
+    reasons: riskInsights.slice(0, 3),
+  };
+}
+
+function buildAdaptiveFocusStrategyFromCognitiveHistory(analysis) {
+  const summary = analysis?.summary || {};
+  const signals = analysis?.signals || {};
+  const recommendedMode = summary.recommended_mode || 'steady_support';
+  const riskLevel = summary.burn_risk_level || 'low';
+  const latestActivation = Number(summary.latest_activation_score || 0);
+  const latestDistress = Number(summary.latest_distress_score || 0);
+  const highActivationCount = Number(signals.high_activation_recent_count || 0);
+
+  const shouldReduceLoad = riskLevel === 'critical' || riskLevel === 'high' || recommendedMode === 'reduce_load';
+  const shouldProtectFromHyperfocus = latestActivation >= 75 && latestDistress < 35 && highActivationCount >= 2;
+
+  if (shouldReduceLoad) {
+    return {
+      mode: 'gentle_focus',
+      regulation_level: riskLevel === 'critical' ? 'protective' : 'high',
+      suggested_duration_bias: 'shorter',
+      should_force_break: true,
+      should_reduce_load: true,
+      should_protect_from_hyperfocus: false,
+      rationale: 'L’historique cognitif indique une charge trop élevée pour pousser l’exécution.',
+    };
+  }
+
+  if (shouldProtectFromHyperfocus || recommendedMode === 'structured_execution') {
+    return {
+      mode: 'structured_execution',
+      regulation_level: 'medium',
+      suggested_duration_bias: shouldProtectFromHyperfocus ? 'capped' : 'normal',
+      should_force_break: true,
+      should_reduce_load: false,
+      should_protect_from_hyperfocus: shouldProtectFromHyperfocus,
+      rationale: 'L’historique indique une forte activation utile, à cadrer avec des pauses obligatoires.',
+    };
+  }
+
+  if (recommendedMode === 'progressive_recovery') {
+    return {
+      mode: 'recovery_focus',
+      regulation_level: 'gentle',
+      suggested_duration_bias: 'shorter',
+      should_force_break: true,
+      should_reduce_load: false,
+      should_protect_from_hyperfocus: false,
+      rationale: 'L’historique montre une récupération en cours : reprise progressive recommandée.',
+    };
+  }
+
+  return {
+    mode: 'steady_support',
+    regulation_level: 'normal',
+    suggested_duration_bias: 'normal',
+    should_force_break: false,
+    should_reduce_load: false,
+    should_protect_from_hyperfocus: false,
+    rationale: 'Aucun signal fort ne demande d’adaptation stricte pour le moment.',
+  };
+}
+
+function deriveRecommendedRegulationLevel({ predictiveRisk, adaptiveFocusStrategy }) {
+  if (predictiveRisk?.level === 'critical') return 'protective';
+  if (predictiveRisk?.level === 'high') return 'high';
+  if (adaptiveFocusStrategy?.should_protect_from_hyperfocus) return 'medium';
+  if (predictiveRisk?.level === 'moderate') return 'medium';
+  if (adaptiveFocusStrategy?.mode === 'recovery_focus') return 'gentle';
+  return 'normal';
+}
+
+
 function getStoreSummary(userId) {
   const store = readStore();
 
@@ -3610,7 +3760,7 @@ app.get('/', (req, res) => {
 
 function normalizeSpeechText(value) {
   return normalizeText(value)
-    .replace(/[ -]/g, ' ')
+    .replace(/[-]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 1200);
@@ -5209,14 +5359,24 @@ app.get('/cognitive/orchestration', (req, res) => {
   try {
     const userId = normalizeText(req.query?.userId || 'local-user');
     const persist = normalizeText(req.query?.persist || 'true') !== 'false';
+    const historyLimit = Math.max(1, Math.min(Number(req.query?.historyLimit || 60), 120));
     const store = readStore();
 
     const latestUserState = getLatestUserState(store, userId) || saveUserStateSnapshot(store, userId);
     const adaptiveProfile = getOrCreateAdaptiveProfile(store, userId);
     const proactivePayload = buildProactivePayload(store, userId);
+    const cognitiveHistoryV2 = buildCognitiveHistoryV2Analysis(store, userId, historyLimit);
+    const cognitiveHistoryUserFacing = buildCognitiveHistoryUserFacingSummary(cognitiveHistoryV2);
+    const predictiveRisk = buildPredictiveRiskFromCognitiveHistory(cognitiveHistoryV2);
+    const adaptiveFocusStrategy = buildAdaptiveFocusStrategyFromCognitiveHistory(cognitiveHistoryV2);
+    const recommendedRegulationLevel = deriveRecommendedRegulationLevel({
+      predictiveRisk,
+      adaptiveFocusStrategy,
+    });
 
     if (persist) {
       saveProactivePayload(store, proactivePayload);
+      saveCognitiveHistoryAnalysis(store, cognitiveHistoryV2);
     }
 
     const focusSessions = Array.isArray(store.focus_sessions)
@@ -5241,6 +5401,24 @@ app.get('/cognitive/orchestration', (req, res) => {
       source: 'backend_endpoint',
     });
 
+    const enrichedOrchestration = {
+      ...orchestration,
+      cognitive_history: {
+        engine_version: cognitiveHistoryV2.engine_version,
+        generated_at: cognitiveHistoryV2.generated_at,
+        summary: cognitiveHistoryV2.summary,
+        user_facing: cognitiveHistoryUserFacing,
+        insights: cognitiveHistoryV2.insights || [],
+        cycles: cognitiveHistoryV2.cycles || [],
+        recovery_patterns: cognitiveHistoryV2.recovery_patterns || [],
+        activation_patterns: cognitiveHistoryV2.activation_patterns || [],
+        predictions: cognitiveHistoryV2.predictions || [],
+      },
+      predictive_risk: predictiveRisk,
+      adaptive_focus_strategy: adaptiveFocusStrategy,
+      recommended_regulation_level: recommendedRegulationLevel,
+    };
+
     if (persist) {
       writeStore(store);
     }
@@ -5248,8 +5426,14 @@ app.get('/cognitive/orchestration', (req, res) => {
     return res.json({
       ok: true,
       userId,
-      orchestration,
+      orchestration: enrichedOrchestration,
       proactive_payload: proactivePayload,
+      cognitive_history_v2: cognitiveHistoryV2,
+      cognitive_history_user_facing: cognitiveHistoryUserFacing,
+      predictive_risk: predictiveRisk,
+      adaptive_focus_strategy: adaptiveFocusStrategy,
+      recommended_regulation_level: recommendedRegulationLevel,
+      wording_note: 'Côté utilisateur, utiliser “points d’état”, “historique cognitif” ou “évolution”, jamais “snapshots”.',
       persisted: persist,
     });
   } catch (error) {
@@ -5395,6 +5579,7 @@ app.get('/state/history-v2', (req, res) => {
     userId,
     limit,
     ...payload,
+    cognitive_history_user_facing: buildCognitiveHistoryUserFacingSummary(payload.cognitive_history_v2),
     persisted: persist,
   });
 });
@@ -5420,6 +5605,7 @@ app.get('/history/cognitive-analysis', (req, res) => {
     ok: true,
     userId,
     analysis,
+    cognitive_history_user_facing: buildCognitiveHistoryUserFacingSummary(analysis),
     persisted: persist,
   });
 });
@@ -5441,6 +5627,7 @@ app.post('/history/cognitive-analysis/recompute', (req, res) => {
     ok: true,
     userId,
     analysis,
+    cognitive_history_user_facing: buildCognitiveHistoryUserFacingSummary(analysis),
     message: 'Historique cognitif V2 recalculé.',
   });
 });
