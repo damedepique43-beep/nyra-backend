@@ -74,7 +74,7 @@ const openai = new OpenAI({
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
-const STORE_VERSION = 'cognitive-orchestration-history-v2';
+const STORE_VERSION = 'proactive-assistant-v2';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -106,6 +106,7 @@ function createEmptyStore() {
     cognitive_memory_graphs: [],
     cognitive_priority_snapshots: [],
     cognitive_history_analyses: [],
+    proactive_assistant_v2_events: [],
     updated_at: null,
   };
 }
@@ -159,6 +160,9 @@ function readStore() {
       cognitive_history_analyses: Array.isArray(parsed.cognitive_history_analyses)
         ? parsed.cognitive_history_analyses
         : [],
+      proactive_assistant_v2_events: Array.isArray(parsed.proactive_assistant_v2_events)
+        ? parsed.proactive_assistant_v2_events
+        : [],
       updated_at: parsed.updated_at || null,
     };
   } catch (error) {
@@ -183,6 +187,7 @@ function writeStore(store) {
       cognitive_memory_graphs: Array.isArray(store.cognitive_memory_graphs) ? store.cognitive_memory_graphs : [],
       cognitive_priority_snapshots: Array.isArray(store.cognitive_priority_snapshots) ? store.cognitive_priority_snapshots : [],
       cognitive_history_analyses: Array.isArray(store.cognitive_history_analyses) ? store.cognitive_history_analyses : [],
+      proactive_assistant_v2_events: Array.isArray(store.proactive_assistant_v2_events) ? store.proactive_assistant_v2_events : [],
       version: STORE_VERSION,
       updated_at: nowIso(),
     };
@@ -2899,6 +2904,7 @@ function getStoreSummary(userId) {
     cognitive_memory_graph_count: (Array.isArray(store.cognitive_memory_graphs) ? store.cognitive_memory_graphs : []).filter(graph => graph.user_id === userId).length,
     cognitive_priority_snapshot_count: (Array.isArray(store.cognitive_priority_snapshots) ? store.cognitive_priority_snapshots : []).filter(snapshot => snapshot.user_id === userId).length,
     cognitive_history_analysis_count: (Array.isArray(store.cognitive_history_analyses) ? store.cognitive_history_analyses : []).filter(analysis => analysis.user_id === userId).length,
+    proactive_assistant_v2_event_count: (Array.isArray(store.proactive_assistant_v2_events) ? store.proactive_assistant_v2_events : []).filter(event => event.user_id === userId).length,
     local_only: userActions.filter(action => action.sync_status === 'local_only').length,
     pending_sync: userActions.filter(action => action.sync_status === 'pending_sync').length,
     synced: userActions.filter(action => action.sync_status === 'synced').length,
@@ -4870,6 +4876,337 @@ function getRecentProactiveEvents(store, userId, limit = 20) {
     .slice(0, safeLimit);
 }
 
+// ------------------------------
+// Proactive Assistant V2
+// ------------------------------
+
+function buildProactiveV2Intervention({ id, priority, type, title, message, recommendation, trigger, action, tone, userFacing }) {
+  return {
+    id,
+    priority: priority || 'medium',
+    type: type || 'guidance',
+    title,
+    message,
+    recommendation,
+    trigger: trigger || null,
+    action: action || null,
+    tone: tone || 'supportive',
+    user_facing: userFacing || {
+      title,
+      message,
+      next_step: recommendation,
+    },
+    created_at: nowIso(),
+  };
+}
+
+function getHighestProactivePriority(interventions) {
+  const priorityOrder = ['critical', 'high', 'medium', 'low', 'positive'];
+  const found = priorityOrder.find(priority => interventions.some(item => item.priority === priority));
+  return found || 'low';
+}
+
+function deriveProactiveV2Mode({ predictiveRisk, adaptiveFocusStrategy, latestUserState }) {
+  const riskLevel = normalizeText(predictiveRisk?.level || 'low');
+  const strategyMode = normalizeText(adaptiveFocusStrategy?.mode || 'steady_support');
+  const dominantMode = normalizeText(latestUserState?.dominant_mode || '');
+  const energyLevel = normalizeText(latestUserState?.energy_level || '');
+  const distressScore = Number(latestUserState?.distress_score || 0);
+
+  if (riskLevel === 'critical' || predictiveRisk?.should_interrupt) return 'protective_intervention';
+  if (riskLevel === 'high' || predictiveRisk?.should_reduce_load) return 'reduce_load';
+  if (energyLevel === 'low' || dominantMode === 'recovery' || distressScore >= 55) return 'recovery_support';
+  if (strategyMode === 'structured_execution') return 'structured_execution';
+  if (strategyMode === 'progressive_recovery') return 'progressive_recovery';
+  return 'steady_guidance';
+}
+
+function getFrenchProactiveModeLabel(mode) {
+  if (mode === 'protective_intervention') return 'Intervention protectrice';
+  if (mode === 'reduce_load') return 'Réduction de charge';
+  if (mode === 'recovery_support') return 'Soutien récupération';
+  if (mode === 'structured_execution') return 'Exécution cadrée';
+  if (mode === 'progressive_recovery') return 'Reprise progressive';
+  return 'Guidage stable';
+}
+
+function buildProactiveV2Interventions({ latestUserState, adaptiveProfile, proactivePayload, cognitiveHistory, predictiveRisk, adaptiveFocusStrategy }) {
+  const interventions = [];
+  const latest = latestUserState || {};
+  const historySummary = cognitiveHistory?.summary || {};
+  const currentSignals = latest.active_signals || {};
+  const activationScore = Number(latest.activation_score || historySummary.latest_activation_score || 0);
+  const distressScore = Number(latest.distress_score || historySummary.latest_distress_score || 0);
+  const overwhelmScore = Number(latest.overwhelm_score || historySummary.latest_overwhelm_score || 0);
+  const completionRate = Number(adaptiveProfile?.average_completion_rate || 0);
+  const proactiveSignals = Array.isArray(proactivePayload?.signals) ? proactivePayload.signals : [];
+
+  if (predictiveRisk?.should_interrupt || predictiveRisk?.level === 'critical') {
+    interventions.push(buildProactiveV2Intervention({
+      id: 'protective_pause_now',
+      priority: 'critical',
+      type: 'regulation',
+      title: 'Pause protectrice recommandée',
+      message: 'Nyra détecte un risque élevé de surcharge. Il vaut mieux réduire la pression maintenant.',
+      recommendation: 'Faire une pause corporelle courte avant toute nouvelle action.',
+      trigger: 'predictive_risk_critical',
+      action: 'start_regulation_pause',
+      tone: 'protective',
+      userFacing: {
+        title: 'Pause protectrice',
+        message: 'Ton système semble proche de la surcharge. On baisse la pression.',
+        next_step: 'Bois un peu, respire, puis reviens à une seule micro-action.',
+      },
+    }));
+  }
+
+  if (predictiveRisk?.should_reduce_load || predictiveRisk?.level === 'high') {
+    interventions.push(buildProactiveV2Intervention({
+      id: 'reduce_visible_load',
+      priority: 'high',
+      type: 'load_reduction',
+      title: 'Réduire la charge visible',
+      message: 'L’historique cognitif indique qu’ajouter des objectifs peut augmenter la surcharge.',
+      recommendation: 'Limiter l’écran à une priorité et masquer le reste temporairement.',
+      trigger: 'history_risk_high',
+      action: 'reduce_visible_actions',
+      tone: 'calm',
+      userFacing: {
+        title: 'On réduit la charge',
+        message: 'Nyra te propose de ne garder qu’une priorité visible.',
+        next_step: 'Choisir une seule action pour les prochaines minutes.',
+      },
+    }));
+  }
+
+  if (adaptiveFocusStrategy?.should_protect_from_hyperfocus || (activationScore >= 85 && distressScore < 35)) {
+    interventions.push(buildProactiveV2Intervention({
+      id: 'hyperfocus_guardrail',
+      priority: 'medium',
+      type: 'hyperfocus_protection',
+      title: 'Garde-fou anti-hyperfocus',
+      message: 'Ton activation est forte et utile, mais Nyra doit protéger ton énergie.',
+      recommendation: 'Avancer avec un timer cadré et une pause obligatoire.',
+      trigger: 'high_activation_low_distress',
+      action: 'force_break_after_focus',
+      tone: 'structured',
+      userFacing: {
+        title: 'Focus oui, mais cadré',
+        message: 'Tu peux avancer, mais Nyra garde une pause obligatoire pour éviter l’hyperfocus destructeur.',
+        next_step: 'Lancer une session cadrée sans ouvrir de nouveau sujet.',
+      },
+    }));
+  }
+
+  if (predictiveRisk?.should_suggest_recovery || latest.energy_level === 'low' || latest.dominant_mode === 'recovery') {
+    interventions.push(buildProactiveV2Intervention({
+      id: 'recovery_micro_action',
+      priority: predictiveRisk?.level === 'moderate' ? 'medium' : 'low',
+      type: 'recovery',
+      title: 'Récupération active douce',
+      message: 'Nyra détecte qu’une récupération courte peut aider à garder l’élan sans forcer.',
+      recommendation: 'Proposer une micro-action ou une pause de régulation.',
+      trigger: 'recovery_needed_or_moderate_risk',
+      action: 'suggest_recovery_or_micro_action',
+      tone: 'gentle',
+      userFacing: {
+        title: 'Récupération douce',
+        message: 'On garde l’élan sans tirer sur le système.',
+        next_step: 'Faire une micro-action simple ou une courte pause physique.',
+      },
+    }));
+  }
+
+  if (completionRate > 0 && completionRate < 0.5) {
+    interventions.push(buildProactiveV2Intervention({
+      id: 'shorter_cycles_due_to_completion_rate',
+      priority: 'medium',
+      type: 'execution_adaptation',
+      title: 'Cycles plus courts conseillés',
+      message: 'Les sessions longues semblent moins fiables récemment.',
+      recommendation: 'Réduire temporairement la durée des sessions et clarifier la première étape.',
+      trigger: 'adaptive_profile_completion_rate_low',
+      action: 'shorten_focus_cycle',
+      tone: 'practical',
+      userFacing: {
+        title: 'Cycles plus courts',
+        message: 'Nyra adapte le rythme : mieux vaut finir petit que bloquer grand.',
+        next_step: 'Commencer par un bloc court et très clair.',
+      },
+    }));
+  }
+
+  const repeatedFocusFailures = proactiveSignals.find(signal => signal.id === 'repeated_focus_failures');
+
+  if (repeatedFocusFailures) {
+    interventions.push(buildProactiveV2Intervention({
+      id: 'focus_failure_recovery_plan',
+      priority: 'medium',
+      type: 'focus_recovery',
+      title: 'Plan de relance focus',
+      message: 'Nyra détecte plusieurs interruptions ou échecs de focus récents.',
+      recommendation: 'Réduire l’objectif, clarifier le début, puis relancer doucement.',
+      trigger: 'repeated_focus_failures',
+      action: 'offer_focus_recovery_plan',
+      tone: 'non_judgmental',
+      userFacing: {
+        title: 'Relance douce',
+        message: 'Ce n’est pas un échec : Nyra réduit la marche pour relancer le mouvement.',
+        next_step: 'Choisir une tâche minuscule et relancer un cycle court.',
+      },
+    }));
+  }
+
+  if (overwhelmScore < 45 && activationScore >= 70 && currentSignals.open_actions <= 2) {
+    interventions.push(buildProactiveV2Intervention({
+      id: 'single_priority_momentum',
+      priority: 'positive',
+      type: 'momentum',
+      title: 'Momentum disponible',
+      message: 'Nyra détecte une bonne fenêtre d’exécution si la priorité reste unique.',
+      recommendation: 'Utiliser l’élan actuel sans ajouter de nouveau sujet.',
+      trigger: 'low_overwhelm_high_activation',
+      action: 'continue_single_priority',
+      tone: 'encouraging',
+      userFacing: {
+        title: 'Bon moment pour avancer',
+        message: 'Tu as de l’élan. Le piège serait d’ouvrir trop de sujets.',
+        next_step: 'Garder une seule priorité et avancer dessus maintenant.',
+      },
+    }));
+  }
+
+  const uniqueIds = [];
+  return interventions.filter(intervention => {
+    if (uniqueIds.includes(intervention.id)) return false;
+    uniqueIds.push(intervention.id);
+    return true;
+  });
+}
+
+function buildProactiveV2UserFacing({ mode, priorityLevel, interventions, cognitiveHistoryUserFacing }) {
+  const primary = interventions[0] || null;
+  const historyHeadline = cognitiveHistoryUserFacing?.headline || '';
+
+  return {
+    title: 'Assistant proactif',
+    mode_label: getFrenchProactiveModeLabel(mode),
+    priority_label:
+      priorityLevel === 'critical'
+        ? 'Priorité critique'
+        : priorityLevel === 'high'
+          ? 'Priorité élevée'
+          : priorityLevel === 'medium'
+            ? 'Priorité moyenne'
+            : priorityLevel === 'positive'
+              ? 'Signal positif'
+              : 'Priorité basse',
+    headline: primary?.user_facing?.message || historyHeadline || 'Nyra adapte son accompagnement à ton état actuel.',
+    primary_title: primary?.user_facing?.title || 'Guidage Nyra',
+    next_best_action: primary?.user_facing?.next_step || 'Continuer avec une seule priorité claire.',
+    intervention_count: interventions.length,
+    public_terms: {
+      history: 'historique cognitif',
+      state_point: 'point d’état',
+      trend: 'évolution',
+      prediction: 'anticipation',
+    },
+  };
+}
+
+function buildProactiveAssistantV2Payload({ userId, latestUserState, adaptiveProfile, proactivePayload, cognitiveHistory, cognitiveHistoryUserFacing, predictiveRisk, adaptiveFocusStrategy }) {
+  const mode = deriveProactiveV2Mode({
+    predictiveRisk,
+    adaptiveFocusStrategy,
+    latestUserState,
+  });
+
+  const interventions = buildProactiveV2Interventions({
+    latestUserState,
+    adaptiveProfile,
+    proactivePayload,
+    cognitiveHistory,
+    predictiveRisk,
+    adaptiveFocusStrategy,
+  });
+
+  const priorityLevel = getHighestProactivePriority(interventions);
+  const primaryIntervention = interventions[0] || null;
+
+  return {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    engine_version: 'proactive-assistant-v2',
+    generated_at: nowIso(),
+    mode,
+    mode_label: getFrenchProactiveModeLabel(mode),
+    priority_level: priorityLevel,
+    primary_intervention: primaryIntervention,
+    interventions,
+    intervention_count: interventions.length,
+    user_facing: buildProactiveV2UserFacing({
+      mode,
+      priorityLevel,
+      interventions,
+      cognitiveHistoryUserFacing,
+    }),
+    recommended_actions: interventions.map(intervention => ({
+      id: intervention.id,
+      action: intervention.action,
+      priority: intervention.priority,
+      label: intervention.user_facing?.title || intervention.title,
+      next_step: intervention.user_facing?.next_step || intervention.recommendation,
+    })),
+    decision_context: {
+      cognitive_load: latestUserState?.cognitive_load || null,
+      cognitive_activation: latestUserState?.cognitive_activation || null,
+      cognitive_distress: latestUserState?.cognitive_distress || null,
+      energy_level: latestUserState?.energy_level || null,
+      focus_state: latestUserState?.focus_state || null,
+      dominant_mode: latestUserState?.dominant_mode || null,
+      overwhelm_score: latestUserState?.overwhelm_score ?? null,
+      activation_score: latestUserState?.activation_score ?? null,
+      distress_score: latestUserState?.distress_score ?? null,
+      burn_risk_level: predictiveRisk?.level || null,
+      burn_risk_score: predictiveRisk?.score ?? null,
+      adaptive_focus_mode: adaptiveFocusStrategy?.mode || null,
+      should_force_break: Boolean(adaptiveFocusStrategy?.should_force_break),
+      should_reduce_load: Boolean(adaptiveFocusStrategy?.should_reduce_load || predictiveRisk?.should_reduce_load),
+      should_suggest_recovery: Boolean(predictiveRisk?.should_suggest_recovery),
+    },
+    safety_rules: {
+      never_add_pressure_when_high_risk: true,
+      prefer_micro_action_when_overloaded: true,
+      force_break_when_hyperfocus_risk: Boolean(adaptiveFocusStrategy?.should_protect_from_hyperfocus),
+      do_not_use_word_snapshot_for_user: true,
+    },
+  };
+}
+
+function saveProactiveAssistantV2Payload(store, payload) {
+  store.proactive_assistant_v2_events = Array.isArray(store.proactive_assistant_v2_events)
+    ? store.proactive_assistant_v2_events
+    : [];
+
+  store.proactive_assistant_v2_events.push(payload);
+  store.proactive_assistant_v2_events = store.proactive_assistant_v2_events.slice(-500);
+
+  return payload;
+}
+
+function getRecentProactiveAssistantV2Events(store, userId, limit = 20) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 100));
+
+  return (Array.isArray(store.proactive_assistant_v2_events) ? store.proactive_assistant_v2_events : [])
+    .filter(event => event.user_id === userId)
+    .sort((a, b) => {
+      return new Date(b.generated_at || 0).getTime() -
+        new Date(a.generated_at || 0).getTime();
+    })
+    .slice(0, safeLimit);
+}
+
+
 
 
 function getTimelineSourceData(store, userId) {
@@ -5355,6 +5692,127 @@ app.get('/proactive/history', (req, res) => {
 });
 
 
+
+app.get('/proactive/v2', (req, res) => {
+  try {
+    const userId = normalizeText(req.query?.userId || 'local-user');
+    const persist = normalizeText(req.query?.persist || 'true') !== 'false';
+    const historyLimit = Math.max(1, Math.min(Number(req.query?.historyLimit || 60), 120));
+    const store = readStore();
+
+    const latestUserState = getLatestUserState(store, userId) || saveUserStateSnapshot(store, userId);
+    const adaptiveProfile = getOrCreateAdaptiveProfile(store, userId);
+    const proactivePayload = buildProactivePayload(store, userId);
+    const cognitiveHistoryV2 = buildCognitiveHistoryV2Analysis(store, userId, historyLimit);
+    const cognitiveHistoryUserFacing = buildCognitiveHistoryUserFacingSummary(cognitiveHistoryV2);
+    const predictiveRisk = buildPredictiveRiskFromCognitiveHistory(cognitiveHistoryV2);
+    const adaptiveFocusStrategy = buildAdaptiveFocusStrategyFromCognitiveHistory(cognitiveHistoryV2);
+
+    const proactiveAssistantV2 = buildProactiveAssistantV2Payload({
+      userId,
+      latestUserState,
+      adaptiveProfile,
+      proactivePayload,
+      cognitiveHistory: cognitiveHistoryV2,
+      cognitiveHistoryUserFacing,
+      predictiveRisk,
+      adaptiveFocusStrategy,
+    });
+
+    if (persist) {
+      saveProactivePayload(store, proactivePayload);
+      saveCognitiveHistoryAnalysis(store, cognitiveHistoryV2);
+      saveProactiveAssistantV2Payload(store, proactiveAssistantV2);
+      writeStore(store);
+    }
+
+    return res.json({
+      ok: true,
+      userId,
+      proactive_assistant_v2: proactiveAssistantV2,
+      user_facing: proactiveAssistantV2.user_facing,
+      interventions: proactiveAssistantV2.interventions,
+      recommended_actions: proactiveAssistantV2.recommended_actions,
+      predictive_risk: predictiveRisk,
+      adaptive_focus_strategy: adaptiveFocusStrategy,
+      cognitive_history_user_facing: cognitiveHistoryUserFacing,
+      persisted: persist,
+    });
+  } catch (error) {
+    console.error('❌ /proactive/v2 error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: 'Erreur assistant proactif V2 Nyra',
+      details: error.message,
+    });
+  }
+});
+
+app.post('/proactive/v2/check', (req, res) => {
+  try {
+    const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+    const historyLimit = Math.max(1, Math.min(Number(req.body?.historyLimit || req.query?.historyLimit || 60), 120));
+    const store = readStore();
+
+    const latestUserState = getLatestUserState(store, userId) || saveUserStateSnapshot(store, userId);
+    const adaptiveProfile = getOrCreateAdaptiveProfile(store, userId);
+    const proactivePayload = buildProactivePayload(store, userId);
+    const cognitiveHistoryV2 = buildCognitiveHistoryV2Analysis(store, userId, historyLimit);
+    const cognitiveHistoryUserFacing = buildCognitiveHistoryUserFacingSummary(cognitiveHistoryV2);
+    const predictiveRisk = buildPredictiveRiskFromCognitiveHistory(cognitiveHistoryV2);
+    const adaptiveFocusStrategy = buildAdaptiveFocusStrategyFromCognitiveHistory(cognitiveHistoryV2);
+
+    const proactiveAssistantV2 = buildProactiveAssistantV2Payload({
+      userId,
+      latestUserState,
+      adaptiveProfile,
+      proactivePayload,
+      cognitiveHistory: cognitiveHistoryV2,
+      cognitiveHistoryUserFacing,
+      predictiveRisk,
+      adaptiveFocusStrategy,
+    });
+
+    saveProactivePayload(store, proactivePayload);
+    saveCognitiveHistoryAnalysis(store, cognitiveHistoryV2);
+    saveProactiveAssistantV2Payload(store, proactiveAssistantV2);
+    writeStore(store);
+
+    return res.json({
+      ok: true,
+      userId,
+      proactive_assistant_v2: proactiveAssistantV2,
+      user_facing: proactiveAssistantV2.user_facing,
+      interventions: proactiveAssistantV2.interventions,
+      recommended_actions: proactiveAssistantV2.recommended_actions,
+      message: 'Assistant proactif V2 recalculé.',
+    });
+  } catch (error) {
+    console.error('❌ /proactive/v2/check error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: 'Erreur recalcul assistant proactif V2 Nyra',
+      details: error.message,
+    });
+  }
+});
+
+app.get('/proactive/v2/history', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const limit = Math.max(1, Math.min(Number(req.query?.limit || 20), 100));
+  const store = readStore();
+  const events = getRecentProactiveAssistantV2Events(store, userId, limit);
+
+  return res.json({
+    ok: true,
+    userId,
+    count: events.length,
+    events,
+  });
+});
+
 app.get('/cognitive/orchestration', (req, res) => {
   try {
     const userId = normalizeText(req.query?.userId || 'local-user');
@@ -5373,10 +5831,21 @@ app.get('/cognitive/orchestration', (req, res) => {
       predictiveRisk,
       adaptiveFocusStrategy,
     });
+    const proactiveAssistantV2 = buildProactiveAssistantV2Payload({
+      userId,
+      latestUserState,
+      adaptiveProfile,
+      proactivePayload,
+      cognitiveHistory: cognitiveHistoryV2,
+      cognitiveHistoryUserFacing,
+      predictiveRisk,
+      adaptiveFocusStrategy,
+    });
 
     if (persist) {
       saveProactivePayload(store, proactivePayload);
       saveCognitiveHistoryAnalysis(store, cognitiveHistoryV2);
+      saveProactiveAssistantV2Payload(store, proactiveAssistantV2);
     }
 
     const focusSessions = Array.isArray(store.focus_sessions)
@@ -5417,6 +5886,7 @@ app.get('/cognitive/orchestration', (req, res) => {
       predictive_risk: predictiveRisk,
       adaptive_focus_strategy: adaptiveFocusStrategy,
       recommended_regulation_level: recommendedRegulationLevel,
+      proactive_assistant_v2: proactiveAssistantV2,
     };
 
     if (persist) {
@@ -5433,6 +5903,8 @@ app.get('/cognitive/orchestration', (req, res) => {
       predictive_risk: predictiveRisk,
       adaptive_focus_strategy: adaptiveFocusStrategy,
       recommended_regulation_level: recommendedRegulationLevel,
+      proactive_assistant_v2: proactiveAssistantV2,
+      proactive_assistant_user_facing: proactiveAssistantV2.user_facing,
       wording_note: 'Côté utilisateur, utiliser “points d’état”, “historique cognitif” ou “évolution”, jamais “snapshots”.',
       persisted: persist,
     });
