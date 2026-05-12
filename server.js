@@ -25,6 +25,33 @@ app.use(express.json({ limit: '1mb' }));
 
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 
+const ELEVENLABS_API_KEY =
+  process.env.ELEVENLABS_API_KEY ||
+  process.env.elevenlabs_api_key ||
+  '';
+
+const ELEVENLABS_DEFAULT_VOICE_ID =
+  process.env.ELEVENLABS_VOICE_ID ||
+  process.env.elevenlabs_voice_id ||
+  'Ka6yOFdNGhzFuCVW6VyO';
+
+const ELEVENLABS_MODEL_ID =
+  process.env.ELEVENLABS_MODEL_ID ||
+  process.env.elevenlabs_model_id ||
+  'eleven_multilingual_v2';
+
+const ELEVENLABS_OUTPUT_FORMAT =
+  process.env.ELEVENLABS_OUTPUT_FORMAT ||
+  process.env.elevenlabs_output_format ||
+  'mp3_44100_128';
+
+const ELEVENLABS_VOICE_SETTINGS = {
+  stability: Number(process.env.ELEVENLABS_STABILITY || 0.42),
+  similarity_boost: Number(process.env.ELEVENLABS_SIMILARITY_BOOST || 0.82),
+  style: Number(process.env.ELEVENLABS_STYLE || 0.35),
+  use_speaker_boost: true,
+};
+
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const GOOGLE_REDIRECT_URI =
@@ -3120,6 +3147,8 @@ app.get('/', (req, res) => {
     app: 'Nyra backend',
     version: STORE_VERSION,
     google_configured: Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET),
+    elevenlabs_configured: Boolean(ELEVENLABS_API_KEY),
+    elevenlabs_voice_id: ELEVENLABS_DEFAULT_VOICE_ID || null,
     engines: {
       context: true,
       focus: true,
@@ -3131,6 +3160,159 @@ app.get('/', (req, res) => {
       momentum_recovery: true,
     },
   });
+});
+
+
+function normalizeSpeechText(value) {
+  return normalizeText(value)
+    .replace(/[ -]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 1200);
+}
+
+function resolveElevenLabsVoiceId(voice, voiceId) {
+  const explicitVoiceId = normalizeText(voiceId || '');
+
+  if (explicitVoiceId) {
+    return explicitVoiceId;
+  }
+
+  const requestedVoice = normalizeKey(voice || 'nyra');
+
+  // Voix Nyra par défaut. D'autres alias pourront être ajoutés ici plus tard.
+  if (!requestedVoice || requestedVoice === 'nyra' || requestedVoice === 'default') {
+    return ELEVENLABS_DEFAULT_VOICE_ID;
+  }
+
+  return ELEVENLABS_DEFAULT_VOICE_ID;
+}
+
+function buildElevenLabsSpeechPayload(text) {
+  return {
+    text,
+    model_id: ELEVENLABS_MODEL_ID,
+    voice_settings: ELEVENLABS_VOICE_SETTINGS,
+  };
+}
+
+async function generateElevenLabsSpeech({ text, voice, voiceId }) {
+  const cleanText = normalizeSpeechText(text);
+  const resolvedVoiceId = resolveElevenLabsVoiceId(voice, voiceId);
+
+  if (!ELEVENLABS_API_KEY) {
+    return {
+      ok: false,
+      status: 503,
+      error: 'ELEVENLABS_API_KEY_MISSING',
+      message: 'Clé ElevenLabs absente côté serveur.',
+    };
+  }
+
+  if (!cleanText) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'TEXT_MISSING',
+      message: 'Texte manquant pour la synthèse vocale.',
+    };
+  }
+
+  if (!resolvedVoiceId) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'VOICE_ID_MISSING',
+      message: 'Voice ID ElevenLabs manquant.',
+    };
+  }
+
+  const elevenLabsUrl = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(resolvedVoiceId)}?output_format=${encodeURIComponent(ELEVENLABS_OUTPUT_FORMAT)}`;
+
+  const response = await fetch(elevenLabsUrl, {
+    method: 'POST',
+    headers: {
+      'Accept': 'audio/mpeg',
+      'Content-Type': 'application/json',
+      'xi-api-key': ELEVENLABS_API_KEY,
+    },
+    body: JSON.stringify(buildElevenLabsSpeechPayload(cleanText)),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => '');
+
+    return {
+      ok: false,
+      status: response.status,
+      error: 'ELEVENLABS_REQUEST_FAILED',
+      message: errorBody || `ElevenLabs a répondu avec le statut ${response.status}.`,
+    };
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  const audioBuffer = Buffer.from(arrayBuffer);
+
+  if (!audioBuffer.length) {
+    return {
+      ok: false,
+      status: 502,
+      error: 'EMPTY_AUDIO',
+      message: 'ElevenLabs a renvoyé un audio vide.',
+    };
+  }
+
+  return {
+    ok: true,
+    audioBuffer,
+    voice_id: resolvedVoiceId,
+    text: cleanText,
+    content_type: 'audio/mpeg',
+  };
+}
+
+app.post('/speak', async (req, res) => {
+  const startedAt = Date.now();
+
+  try {
+    const speechResult = await generateElevenLabsSpeech({
+      text: req.body?.text || req.body?.message || '',
+      voice: req.body?.voice || 'nyra',
+      voiceId: req.body?.voiceId || req.body?.voice_id || '',
+    });
+
+    if (!speechResult.ok) {
+      return res.status(speechResult.status || 500).json({
+        ok: false,
+        error: speechResult.error,
+        message: speechResult.message,
+        fallback_recommended: true,
+        provider: 'elevenlabs',
+        perf: {
+          total_ms: Date.now() - startedAt,
+        },
+      });
+    }
+
+    res.setHeader('Content-Type', speechResult.content_type);
+    res.setHeader('Content-Length', speechResult.audioBuffer.length);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Nyra-Voice-Provider', 'elevenlabs');
+    res.setHeader('X-Nyra-Voice-Id', speechResult.voice_id);
+    res.setHeader('X-Nyra-Perf-Ms', String(Date.now() - startedAt));
+
+    return res.send(speechResult.audioBuffer);
+  } catch (error) {
+    console.error('❌ /speak error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: 'Erreur synthèse vocale ElevenLabs',
+      details: error.message,
+      fallback_recommended: true,
+      provider: 'elevenlabs',
+    });
+  }
 });
 
 app.get('/auth/google', (req, res) => {
