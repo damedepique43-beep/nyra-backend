@@ -7399,6 +7399,184 @@ app.patch('/focus/sessions/:sessionId/status', (req, res) => {
   });
 });
 
+
+function findUserStoreItem(store, userId, itemId) {
+  const normalizedUserId = normalizeText(userId || 'local-user');
+  const normalizedItemId = normalizeText(itemId || '');
+
+  if (!normalizedItemId) return null;
+
+  const items = Array.isArray(store.items) ? store.items : [];
+  let index = items.findIndex(item => {
+    return item.id === normalizedItemId && item.user_id === normalizedUserId;
+  });
+
+  if (index === -1) {
+    index = items.findIndex(item => item.id === normalizedItemId);
+  }
+
+  if (index === -1) return null;
+
+  return {
+    index,
+    item: items[index],
+  };
+}
+
+function syncActionFromUpdatedItem(store, item) {
+  if (!item?.action_id) return null;
+
+  const actions = Array.isArray(store.actions) ? store.actions : [];
+  const action = actions.find(existingAction => existingAction.id === item.action_id);
+
+  if (!action) return null;
+
+  action.title = item.title || action.title;
+  action.target = item.content || item.target || action.target;
+  action.status = item.status || action.status;
+  action.priority = item.priority || action.priority;
+  action.datetime_hint = item.datetime_hint ?? action.datetime_hint ?? null;
+  action.scheduled_at = item.scheduled_at ?? action.scheduled_at ?? null;
+  action.remind_at = item.remind_at ?? action.remind_at ?? null;
+  action.reminder_at = item.reminder_at ?? action.reminder_at ?? null;
+  action.checked = item.checked ?? action.checked ?? false;
+  action.updated_at = nowIso();
+
+  return action;
+}
+
+app.patch('/store/items/:itemId', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const itemId = normalizeText(req.params.itemId);
+  const store = readStore();
+  const found = findUserStoreItem(store, userId, itemId);
+
+  if (!found) {
+    return res.status(404).json({
+      ok: false,
+      error: 'ITEM_NOT_FOUND',
+      message: 'Élément introuvable.',
+    });
+  }
+
+  const item = found.item;
+  const allowedStatuses = ['captured', 'todo', 'active', 'done', 'completed', 'cancelled', 'canceled', 'draft'];
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'title')) {
+    const title = normalizeText(req.body.title).slice(0, 120);
+    if (title) item.title = title;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'content')) {
+    const content = normalizeText(req.body.content).slice(0, 1000);
+    if (content) item.content = content;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'target')) {
+    const target = normalizeText(req.body.target).slice(0, 1000);
+    if (target) item.target = target;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'checked')) {
+    item.checked = Boolean(req.body.checked);
+    item.checked_at = item.checked ? nowIso() : null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'status')) {
+    const status = normalizeText(req.body.status).toLowerCase();
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        ok: false,
+        error: 'INVALID_STATUS',
+        allowed_statuses: allowedStatuses,
+      });
+    }
+
+    item.status = status;
+    if (status === 'done' || status === 'completed') item.completed_at = nowIso();
+    if (status === 'cancelled' || status === 'canceled') item.cancelled_at = nowIso();
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'scheduled_at')) {
+    const scheduledAt = normalizeText(req.body.scheduled_at || '');
+    if (scheduledAt) {
+      const parsed = new Date(scheduledAt);
+      if (Number.isNaN(parsed.getTime())) {
+        return res.status(400).json({
+          ok: false,
+          error: 'INVALID_SCHEDULED_AT',
+          message: 'Date de rappel invalide.',
+        });
+      }
+      item.scheduled_at = scheduledAt;
+      item.remind_at = scheduledAt;
+      item.reminder_at = scheduledAt;
+      item.has_exact_date = true;
+      item.schedule_precision = item.schedule_precision || 'manual_exact';
+    } else {
+      item.scheduled_at = null;
+      item.remind_at = null;
+      item.reminder_at = null;
+      item.has_exact_date = false;
+      item.schedule_precision = 'unscheduled';
+    }
+  }
+
+  item.updated_at = nowIso();
+  const action = syncActionFromUpdatedItem(store, item);
+
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    item,
+    action,
+    message: 'Élément mis à jour.',
+  });
+});
+
+app.delete('/store/items/:itemId', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const itemId = normalizeText(req.params.itemId);
+  const store = readStore();
+  const found = findUserStoreItem(store, userId, itemId);
+
+  if (!found) {
+    return res.status(404).json({
+      ok: false,
+      error: 'ITEM_NOT_FOUND',
+      message: 'Élément introuvable.',
+    });
+  }
+
+  const [deletedItem] = store.items.splice(found.index, 1);
+
+  let deletedAction = null;
+  if (deletedItem?.action_id && Array.isArray(store.actions)) {
+    const actionIndex = store.actions.findIndex(action => action.id === deletedItem.action_id);
+    if (actionIndex >= 0) {
+      [deletedAction] = store.actions.splice(actionIndex, 1);
+    }
+  }
+
+  if (Array.isArray(store.relations)) {
+    store.relations = store.relations.filter(relation => {
+      return relation.source_id !== deletedItem.id && relation.source_id !== deletedItem.action_id;
+    });
+  }
+
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    deleted_item: deletedItem,
+    deleted_action: deletedAction,
+    message: 'Élément supprimé.',
+  });
+});
+
 app.get('/store', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
