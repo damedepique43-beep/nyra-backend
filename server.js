@@ -689,6 +689,209 @@ function detectDatetimeHint(text) {
   return null;
 }
 
+const PARIS_TIME_ZONE = 'Europe/Paris';
+
+function getParisDateParts(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat('fr-FR', {
+    timeZone: PARIS_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(date).reduce((acc, part) => {
+    acc[part.type] = part.value;
+    return acc;
+  }, {});
+
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+  };
+}
+
+function addDaysToParisDate(parts, days) {
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days, 12, 0, 0));
+  const shifted = getParisDateParts(date);
+
+  return {
+    year: shifted.year,
+    month: shifted.month,
+    day: shifted.day,
+  };
+}
+
+function getParisOffsetMinutes(date) {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: PARIS_TIME_ZONE,
+    timeZoneName: 'shortOffset',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+
+  const timeZoneName = formatter
+    .formatToParts(date)
+    .find(part => part.type === 'timeZoneName')?.value || 'GMT+0';
+
+  const match = timeZoneName.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/i);
+
+  if (!match) return 0;
+
+  const sign = match[1] === '-' ? -1 : 1;
+  const hours = Number(match[2] || 0);
+  const minutes = Number(match[3] || 0);
+
+  return sign * ((hours * 60) + minutes);
+}
+
+function parisWallTimeToIso({ year, month, day, hour, minute }) {
+  const wallTimeMs = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
+  const firstOffset = getParisOffsetMinutes(new Date(wallTimeMs));
+  let utcMs = wallTimeMs - firstOffset * 60 * 1000;
+  const secondOffset = getParisOffsetMinutes(new Date(utcMs));
+
+  if (secondOffset !== firstOffset) {
+    utcMs = wallTimeMs - secondOffset * 60 * 1000;
+  }
+
+  return new Date(utcMs).toISOString();
+}
+
+function normalizeReminderDateText(text) {
+  return normalizeText(text)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[’']/g, "'");
+}
+
+function parseReminderTime(text) {
+  const lower = normalizeReminderDateText(text);
+  const explicit = lower.match(/(?:\ba\b|\bvers\b|\bpour\b)\s*(\d{1,2})(?:\s*h\s*(\d{0,2})?|:(\d{2}))?/i);
+
+  if (explicit) {
+    const hour = Number(explicit[1]);
+    const minute = Number(explicit[2] || explicit[3] || 0);
+
+    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+      return { hour, minute, explicit: true };
+    }
+  }
+
+  const compact = lower.match(/\b(\d{1,2})\s*h\s*(\d{0,2})?\b/i);
+
+  if (compact) {
+    const hour = Number(compact[1]);
+    const minute = Number(compact[2] || 0);
+
+    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+      return { hour, minute, explicit: true };
+    }
+  }
+
+  if (lower.includes('matin')) return { hour: 9, minute: 0, explicit: false };
+  if (lower.includes('midi')) return { hour: 12, minute: 0, explicit: false };
+  if (lower.includes('apres-midi') || lower.includes('aprem')) return { hour: 14, minute: 0, explicit: false };
+  if (lower.includes('soir')) return { hour: 18, minute: 0, explicit: false };
+
+  return null;
+}
+
+function getNextWeekdayDate(targetWeekday) {
+  const nowParts = getParisDateParts();
+  const todayNoon = new Date(Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day, 12, 0, 0));
+  const todayWeekday = todayNoon.getUTCDay();
+  let delta = targetWeekday - todayWeekday;
+
+  if (delta <= 0) delta += 7;
+
+  return addDaysToParisDate(nowParts, delta);
+}
+
+function parseReminderDate(text) {
+  const lower = normalizeReminderDateText(text);
+  const nowParts = getParisDateParts();
+
+  if (lower.includes('apres-demain') || lower.includes('apres demain')) {
+    return addDaysToParisDate(nowParts, 2);
+  }
+
+  if (lower.includes('demain')) {
+    return addDaysToParisDate(nowParts, 1);
+  }
+
+  if (lower.includes("aujourd'hui") || lower.includes('ce soir') || lower.includes('cet apres-midi') || lower.includes('maintenant')) {
+    return {
+      year: nowParts.year,
+      month: nowParts.month,
+      day: nowParts.day,
+    };
+  }
+
+  const weekdays = [
+    { key: 'dimanche', value: 0 },
+    { key: 'lundi', value: 1 },
+    { key: 'mardi', value: 2 },
+    { key: 'mercredi', value: 3 },
+    { key: 'jeudi', value: 4 },
+    { key: 'vendredi', value: 5 },
+    { key: 'samedi', value: 6 },
+  ];
+
+  const weekday = weekdays.find(day => lower.includes(day.key));
+
+  if (weekday) {
+    return getNextWeekdayDate(weekday.value);
+  }
+
+  const explicitDate = lower.match(/\b(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?\b/);
+
+  if (explicitDate) {
+    const day = Number(explicitDate[1]);
+    const month = Number(explicitDate[2]);
+    const rawYear = explicitDate[3] ? Number(explicitDate[3]) : nowParts.year;
+    const year = rawYear < 100 ? 2000 + rawYear : rawYear;
+
+    if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+      return { year, month, day };
+    }
+  }
+
+  return null;
+}
+
+function parseReminderScheduledAt(text) {
+  const date = parseReminderDate(text);
+  const time = parseReminderTime(text);
+
+  if (!date || !time) return null;
+
+  // Sans heure explicite ni période claire, on garde le rappel en brouillon.
+  if (!time.explicit && !/(matin|midi|apres-midi|aprem|soir)/i.test(normalizeReminderDateText(text))) {
+    return null;
+  }
+
+  const iso = parisWallTimeToIso({
+    ...date,
+    hour: time.hour,
+    minute: time.minute,
+  });
+
+  if (new Date(iso).getTime() <= Date.now() + 60 * 1000) {
+    return null;
+  }
+
+  return iso;
+}
+
+
 function detectPriority(text, analysis) {
   const lower = normalizeText(text).toLowerCase();
 
@@ -767,6 +970,9 @@ function buildStructuredAction({ userId, message, actionType, label, status, ana
   const provider = actionToProvider(actionType);
   const connectionType = actionToConnectionType(actionType);
   const requiresConnection = actionNeedsConnection(actionType);
+  const scheduledAt = actionType === 'create_reminder'
+    ? parseReminderScheduledAt(target || message)
+    : null;
 
   return {
     id: crypto.randomUUID(),
@@ -776,10 +982,15 @@ function buildStructuredAction({ userId, message, actionType, label, status, ana
     label,
     title: cleanActionTitle(target),
     target,
-    status,
+    status: actionType === 'create_reminder' && scheduledAt ? 'done' : status,
     priority,
     datetime_hint: datetimeHint,
-    next_step: buildNextStep(actionType, datetimeHint),
+    scheduled_at: scheduledAt,
+    remind_at: scheduledAt,
+    reminder_at: scheduledAt,
+    next_step: scheduledAt
+      ? `Rappel programmé pour ${scheduledAt}.`
+      : buildNextStep(actionType, datetimeHint),
     provider,
     sync_status: requiresConnection ? 'requires_connection' : 'local_only',
     external_id: null,
@@ -1723,6 +1934,9 @@ function createStoredItem({ userId, message, analysis, action }) {
     urgency: analysis.urgency,
     priority: action ? action.priority : detectPriority(message, analysis),
     datetime_hint: action ? action.datetime_hint : analysis.datetime_hint,
+    scheduled_at: action ? action.scheduled_at || null : null,
+    remind_at: action ? action.remind_at || null : null,
+    reminder_at: action ? action.reminder_at || null : null,
     tags: action
       ? uniqueArray([
           'action',
@@ -3206,7 +3420,10 @@ function buildActionReply(action) {
   }
 
   if (action.action_type === 'add_to_today') return '✔ Ajouté à tes priorités d’aujourd’hui.';
-  if (action.action_type === 'create_reminder') return '✔ Rappel préparé. Prochaine étape : choisir l’heure exacte.';
+  if (action.action_type === 'create_reminder') {
+    if (action.scheduled_at) return '✔ Rappel créé et programmé.';
+    return '✔ Rappel préparé. Il manque une date et une heure exactes.';
+  }
   if (action.action_type === 'plan_now') return '✔ Plan créé : fais une seule action simple maintenant.';
   if (action.action_type === 'process_now') return '✔ On traite maintenant : commence par la plus petite action possible.';
   if (action.action_type === 'classify_as_idea') return '✔ Classé dans tes idées.';
@@ -7386,9 +7603,33 @@ app.get('/store/reminders', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const reminders = store.items.filter(
+  const reminderItems = store.items.filter(
     item => item.user_id === userId && item.bucket === 'reminders'
   );
+
+  const reminderActions = (Array.isArray(store.actions) ? store.actions : [])
+    .filter(action => {
+      return action.user_id === userId && (action.action_type === 'create_reminder' || action.type === 'create_reminder');
+    })
+    .map(action => ({
+      ...action,
+      id: action.item_id || action.id,
+      action_id: action.id,
+      bucket: 'reminders',
+      content: action.target || action.content || action.title || '',
+    }));
+
+  const byId = new Map();
+
+  [...reminderItems, ...reminderActions].forEach((reminder, index) => {
+    const id = normalizeText(reminder.id || reminder.action_id || `reminder-${index}`);
+    if (!byId.has(id)) byId.set(id, reminder);
+  });
+
+  const reminders = [...byId.values()].sort((a, b) => {
+    return new Date(a.scheduled_at || a.remind_at || a.reminder_at || a.created_at || 0).getTime() -
+      new Date(b.scheduled_at || b.remind_at || b.reminder_at || b.created_at || 0).getTime();
+  });
 
   res.json({
     ok: true,
