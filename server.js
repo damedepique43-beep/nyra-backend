@@ -717,19 +717,77 @@ function getLocalDateParts(date = new Date(), timeZone = 'Europe/Paris') {
   };
 }
 
+function getTimeZoneOffsetMs(date, timeZone = 'Europe/Paris') {
+  const formatter = new Intl.DateTimeFormat('fr-FR', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  });
+
+  const parts = formatter.formatToParts(date).reduce((acc, part) => {
+    acc[part.type] = part.value;
+    return acc;
+  }, {});
+
+  const asUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second || 0),
+    0
+  );
+
+  return asUtc - date.getTime();
+}
+
+function buildZonedDateIso({ year, month, day, hour, minute = 0, timeZone = 'Europe/Paris' }) {
+  const localAsUtc = Date.UTC(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour || 9),
+    Number(minute || 0),
+    0,
+    0
+  );
+
+  let offset = getTimeZoneOffsetMs(new Date(localAsUtc), timeZone);
+  let utcTime = localAsUtc - offset;
+
+  // Deuxième passe utile autour des changements d'heure été/hiver.
+  offset = getTimeZoneOffsetMs(new Date(utcTime), timeZone);
+  utcTime = localAsUtc - offset;
+
+  return new Date(utcTime).toISOString();
+}
+
 function buildParisDateAt(hour, minute = 0, dayOffset = 0) {
   const baseParts = getLocalDateParts(new Date(), 'Europe/Paris');
-  const utcCandidate = new Date(Date.UTC(
+  const targetLocalDate = new Date(Date.UTC(
     baseParts.year,
     baseParts.month - 1,
     baseParts.day + dayOffset,
-    Number(hour || 9) - 1,
-    Number(minute || 0),
+    12,
+    0,
     0,
     0
   ));
 
-  return utcCandidate.toISOString();
+  return buildZonedDateIso({
+    year: targetLocalDate.getUTCFullYear(),
+    month: targetLocalDate.getUTCMonth() + 1,
+    day: targetLocalDate.getUTCDate(),
+    hour: Number(hour || 9),
+    minute: Number(minute || 0),
+    timeZone: 'Europe/Paris',
+  });
 }
 
 function extractExplicitTime(text) {
@@ -744,6 +802,42 @@ function extractExplicitTime(text) {
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
 
   return { hour, minute };
+}
+
+function stripReminderDateWords(text) {
+  return normalizeText(text)
+    .replace(/(?:aujourd'hui|aujourd’hui|demain(?:\s+(?:matin|après-midi|apres-midi|soir))?|ce soir)/gi, ' ')
+    .replace(/(?:à|a|vers)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}/gi, ' ')
+    .replace(/dans\s+\d{1,3}\s+minutes?/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractReminderTarget(message) {
+  let clean = normalizeText(message)
+    .replace(/^contexte\s*:\s*/i, '')
+    .replace(/^aide-moi\s+à\s+créer\s+un\s+rappel\s*(?:pour|de)?\s*/i, '')
+    .replace(/^aide moi\s+à\s+créer\s+un\s+rappel\s*(?:pour|de)?\s*/i, '')
+    .replace(/^crée\s+un\s+rappel\s*(?:pour|de)?\s*/i, '')
+    .replace(/^créer\s+un\s+rappel\s*(?:pour|de)?\s*/i, '')
+    .replace(/^rappell?e?[-\s]*moi\s*/i, '')
+    .replace(/^rappel[-\s]*moi\s*/i, '')
+    .replace(/^rappel\s*/i, '')
+    .trim();
+
+  clean = stripReminderDateWords(clean)
+    .replace(/^d['’]\s*/i, '')
+    .replace(/^de\s+/i, '')
+    .replace(/^que\s+je\s+/i, '')
+    .replace(/^qu['’]il\s+faut\s+/i, '')
+    .replace(/^il\s+faut\s+/i, '')
+    .replace(/^je\s+dois\s+/i, '')
+    .replace(/[.!?;:]+$/g, '')
+    .trim();
+
+  if (!clean) return cleanActionTitle(message);
+
+  return cleanActionTitle(clean);
 }
 
 function resolveReminderSchedule(text, datetimeHint) {
@@ -938,10 +1032,11 @@ function buildNextStep(actionType, datetimeHint) {
 
 function buildStructuredAction({ userId, message, actionType, label, status, analysis, targetOverride }) {
   const target = normalizeText(targetOverride || extractContext(message));
-  const datetimeHint = detectDatetimeHint(target || message);
-  const priority = detectPriority(target || message, analysis);
+  const schedulingSource = actionType === 'create_reminder' ? message : target || message;
+  const datetimeHint = detectDatetimeHint(schedulingSource);
+  const priority = detectPriority(schedulingSource, analysis);
   const reminderSchedule = actionType === 'create_reminder'
-    ? resolveReminderSchedule(`${message} ${target}`, datetimeHint)
+    ? resolveReminderSchedule(schedulingSource, datetimeHint)
     : null;
   const provider = actionToProvider(actionType);
   const connectionType = actionToConnectionType(actionType);
@@ -1764,9 +1859,10 @@ function detectAction(message, userId, analysis) {
     return buildStructuredAction({
       userId,
       message,
+      targetOverride: extractReminderTarget(message),
       actionType: 'create_reminder',
       label: 'Créer un rappel',
-      status: 'draft',
+      status: 'suggested',
       analysis,
     });
   }
