@@ -836,6 +836,7 @@ function extractShoppingListItem(message) {
     /ajoute\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
     /mets\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
     /note\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+    /rajoute\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
   ];
 
   for (const pattern of patterns) {
@@ -919,8 +920,8 @@ function actionToBucket(actionType) {
 
 function buildNextStep(actionType, datetimeHint) {
   if (actionType === 'create_reminder') {
-    if (datetimeHint) return 'Choisir ou confirmer l’heure exacte du rappel.';
-    return 'Choisir une date et une heure pour le rappel.';
+    if (datetimeHint) return 'Rappel enregistré. Une notification sera programmée si une heure exacte est comprise.';
+    return 'Rappel enregistré sans date. Tu peux préciser une date plus tard.';
   }
 
   if (actionType === 'add_to_shopping_list') return 'Élément ajouté à la liste de courses.';
@@ -1572,7 +1573,6 @@ function analyzeMessage(message) {
   const text = normalizeText(message);
   const lower = text.toLowerCase();
 
-
   const detectedProjectName = detectKnownProjectName(text);
 
   const analysis = {
@@ -1754,6 +1754,11 @@ function detectAction(message, userId, analysis) {
       'rappelle moi de',
       'rappelle-moi demain',
       'rappelle moi demain',
+      'rappel moi',
+      'rappel-moi',
+      'rappel moi demain',
+      'rappel-moi demain',
+      'rappel',
     ])
   ) {
     return buildStructuredAction({
