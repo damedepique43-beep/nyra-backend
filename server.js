@@ -307,6 +307,9 @@ function verifyPassword(password, passwordHash) {
 function sanitizeUserForClient(user) {
   if (!user) return null;
 
+  const profileName = normalizeText(user.profile_name || '');
+  const profilePicture = normalizeText(user.profile_picture || user.profile_picture_url || '');
+
   return {
     id: user.id,
     provider: user.provider || null,
@@ -314,6 +317,10 @@ function sanitizeUserForClient(user) {
     email: user.email || null,
     name: user.name || null,
     picture: user.picture || null,
+    profile_name: profileName || null,
+    profile_picture: profilePicture || null,
+    display_name: profileName || user.name || user.email || null,
+    display_picture: profilePicture || user.picture || null,
     google_user_id: user.google_user_id || null,
     legacy_user_id: user.legacy_user_id || null,
     access_type: user.access_type || 'standard',
@@ -392,6 +399,43 @@ function findActiveSession(store, token) {
     user,
   };
 }
+
+function findUserForProfileUpdate(store, req) {
+  const token = getSessionTokenFromRequest(req);
+
+  if (token) {
+    const sessionResult = findActiveSession(store, token);
+
+    if (sessionResult?.user) {
+      return sessionResult.user;
+    }
+  }
+
+  const requestedUserId = normalizeText(req.body?.userId || req.query?.userId || '');
+
+  if (!requestedUserId) return null;
+
+  return (Array.isArray(store.users) ? store.users : []).find(existingUser => {
+    return (
+      existingUser.id === requestedUserId ||
+      existingUser.legacy_user_id === requestedUserId ||
+      existingUser.google_user_id === requestedUserId
+    );
+  }) || null;
+}
+
+function sanitizeProfilePicture(value) {
+  const picture = normalizeText(value || '');
+
+  if (!picture) return '';
+
+  if (!/^https:\/\//i.test(picture)) {
+    return '';
+  }
+
+  return picture.slice(0, 1000);
+}
+
 
 function upsertEmailUser(store, email, password, name = '') {
   const normalizedEmail = normalizeEmail(email);
@@ -4273,6 +4317,76 @@ app.post('/auth/login', (req, res) => {
       ok: false,
       error: 'AUTH_LOGIN_FAILED',
       message: 'Erreur connexion Nyra.',
+      details: error.message,
+    });
+  }
+});
+
+
+app.patch('/auth/profile', (req, res) => {
+  try {
+    const store = readStore();
+    const user = findUserForProfileUpdate(store, req);
+
+    if (!user) {
+      return res.status(401).json({
+        ok: false,
+        error: 'USER_NOT_FOUND',
+        message: 'Utilisateur introuvable ou session invalide.',
+      });
+    }
+
+    const profileName = normalizeText(
+      req.body?.profileName ||
+      req.body?.profile_name ||
+      req.body?.displayName ||
+      req.body?.display_name ||
+      ''
+    ).slice(0, 60);
+
+    const rawProfilePicture =
+      req.body?.profilePicture ||
+      req.body?.profile_picture ||
+      req.body?.profilePictureUrl ||
+      req.body?.profile_picture_url ||
+      '';
+
+    const profilePicture = sanitizeProfilePicture(rawProfilePicture);
+
+    if (profileName) {
+      user.profile_name = profileName;
+    }
+
+    if (rawProfilePicture === '' || rawProfilePicture === null) {
+      user.profile_picture = null;
+    } else if (profilePicture) {
+      user.profile_picture = profilePicture;
+    } else if (normalizeText(rawProfilePicture)) {
+      return res.status(400).json({
+        ok: false,
+        error: 'INVALID_PROFILE_PICTURE_URL',
+        message: 'La photo de profil doit être une URL https valide pour cette V1.',
+      });
+    }
+
+    user.updated_at = nowIso();
+    writeStore(store);
+
+    return res.json({
+      ok: true,
+      connected: true,
+      userId: user.id,
+      effective_user_id: user.id,
+      user: sanitizeUserForClient(user),
+      message: 'Profil Nyra mis à jour.',
+    });
+  } catch (error) {
+    console.error('❌ /auth/profile error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: 'PROFILE_UPDATE_FAILED',
+      message: 'Erreur mise à jour profil Nyra.',
       details: error.message,
     });
   }
