@@ -429,11 +429,17 @@ function sanitizeProfilePicture(value) {
 
   if (!picture) return '';
 
-  if (!/^https:\/\//i.test(picture)) {
+  const isAllowedProfilePicture =
+    /^https:\/\//i.test(picture) ||
+    /^file:\/\//i.test(picture) ||
+    /^content:\/\//i.test(picture) ||
+    /^data:image\//i.test(picture);
+
+  if (!isAllowedProfilePicture) {
     return '';
   }
 
-  return picture.slice(0, 1000);
+  return picture.slice(0, 4000);
 }
 
 
@@ -4365,7 +4371,7 @@ app.patch('/auth/profile', (req, res) => {
       return res.status(400).json({
         ok: false,
         error: 'INVALID_PROFILE_PICTURE_URL',
-        message: 'La photo de profil doit être une URL https valide pour cette V1.',
+        message: 'La photo de profil doit être une image valide : https://, file://, content:// ou data:image/.',
       });
     }
 
