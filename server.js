@@ -98,6 +98,7 @@ function createEmptyStore() {
     relations: [],
     contexts: [],
     connected_accounts: [],
+    sessions: [],
     user_states: [],
     focus_sessions: [],
     adaptive_profiles: [],
@@ -135,6 +136,9 @@ function readStore() {
       contexts: Array.isArray(parsed.contexts) ? parsed.contexts : [],
       connected_accounts: Array.isArray(parsed.connected_accounts)
         ? parsed.connected_accounts
+        : [],
+      sessions: Array.isArray(parsed.sessions)
+        ? parsed.sessions
         : [],
       user_states: Array.isArray(parsed.user_states)
         ? parsed.user_states
@@ -178,6 +182,7 @@ function writeStore(store) {
     const safeStore = {
       ...store,
       users: Array.isArray(store.users) ? store.users : [],
+      sessions: Array.isArray(store.sessions) ? store.sessions : [],
       action_events: Array.isArray(store.action_events) ? store.action_events : [],
       user_states: Array.isArray(store.user_states) ? store.user_states : [],
       focus_sessions: Array.isArray(store.focus_sessions) ? store.focus_sessions : [],
@@ -224,6 +229,222 @@ function buildGoogleNyraUserId(googleUserId, googleEmail) {
   const stableSource = normalizeText(googleUserId || googleEmail || crypto.randomUUID());
   return `google-${normalizeKey(stableSource)}`;
 }
+
+
+function normalizeEmail(value) {
+  return normalizeText(value).toLowerCase();
+}
+
+function buildEmailNyraUserId(email) {
+  const stableEmail = normalizeEmail(email);
+  const digest = crypto
+    .createHash('sha256')
+    .update(stableEmail)
+    .digest('hex')
+    .slice(0, 24);
+
+  return `email-${digest}`;
+}
+
+function isValidEmail(email) {
+  const value = normalizeEmail(email);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function validatePassword(password) {
+  const value = String(password || '');
+
+  if (value.length < 8) {
+    return {
+      ok: false,
+      error: 'PASSWORD_TOO_SHORT',
+      message: 'Le mot de passe doit contenir au moins 8 caractères.',
+    };
+  }
+
+  return {
+    ok: true,
+  };
+}
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+  const hash = crypto
+    .pbkdf2Sync(String(password || ''), salt, 120000, 64, 'sha512')
+    .toString('hex');
+
+  return {
+    algorithm: 'pbkdf2_sha512',
+    iterations: 120000,
+    salt,
+    hash,
+  };
+}
+
+function verifyPassword(password, passwordHash) {
+  if (!passwordHash || typeof passwordHash !== 'object') {
+    return false;
+  }
+
+  const salt = normalizeText(passwordHash.salt || '');
+  const expectedHash = normalizeText(passwordHash.hash || '');
+
+  if (!salt || !expectedHash) {
+    return false;
+  }
+
+  const candidate = hashPassword(password, salt).hash;
+
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(candidate, 'hex'),
+      Buffer.from(expectedHash, 'hex')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeUserForClient(user) {
+  if (!user) return null;
+
+  return {
+    id: user.id,
+    provider: user.provider || null,
+    auth_providers: Array.isArray(user.auth_providers) ? user.auth_providers : [user.provider || 'unknown'],
+    email: user.email || null,
+    name: user.name || null,
+    picture: user.picture || null,
+    google_user_id: user.google_user_id || null,
+    legacy_user_id: user.legacy_user_id || null,
+    access_type: user.access_type || 'standard',
+    onboarding_completed: Boolean(user.onboarding_completed),
+    created_at: user.created_at || null,
+    updated_at: user.updated_at || null,
+  };
+}
+
+function createNyraSession(store, user, source = 'email') {
+  store.sessions = Array.isArray(store.sessions) ? store.sessions : [];
+
+  const token = crypto.randomBytes(48).toString('hex');
+  const session = {
+    id: crypto.randomUUID(),
+    user_id: user.id,
+    token_hash: crypto
+      .createHash('sha256')
+      .update(token)
+      .digest('hex'),
+    source,
+    status: 'active',
+    created_at: nowIso(),
+    updated_at: nowIso(),
+    last_seen_at: nowIso(),
+  };
+
+  store.sessions.push(session);
+  store.sessions = store.sessions.slice(-1000);
+
+  return {
+    token,
+    session,
+  };
+}
+
+function getSessionTokenFromRequest(req) {
+  const authHeader = normalizeText(req.headers?.authorization || '');
+  const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+
+  if (bearerMatch?.[1]) {
+    return normalizeText(bearerMatch[1]);
+  }
+
+  return normalizeText(req.body?.token || req.query?.token || '');
+}
+
+function findActiveSession(store, token) {
+  const rawToken = normalizeText(token);
+
+  if (!rawToken) return null;
+
+  const tokenHash = crypto
+    .createHash('sha256')
+    .update(rawToken)
+    .digest('hex');
+
+  const sessions = Array.isArray(store.sessions) ? store.sessions : [];
+  const session = sessions.find(item => {
+    return item.token_hash === tokenHash && item.status === 'active';
+  });
+
+  if (!session) return null;
+
+  session.last_seen_at = nowIso();
+  session.updated_at = nowIso();
+
+  const user = (Array.isArray(store.users) ? store.users : []).find(existingUser => {
+    return existingUser.id === session.user_id;
+  });
+
+  if (!user) return null;
+
+  return {
+    session,
+    user,
+  };
+}
+
+function upsertEmailUser(store, email, password, name = '') {
+  const normalizedEmail = normalizeEmail(email);
+  const emailUserId = buildEmailNyraUserId(normalizedEmail);
+
+  let user = store.users.find(existingUser => {
+    return normalizeEmail(existingUser.email || '') === normalizedEmail;
+  });
+
+  const passwordHash = hashPassword(password);
+
+  if (!user) {
+    user = {
+      id: emailUserId,
+      provider: 'email',
+      auth_providers: ['email'],
+      email: normalizedEmail,
+      name: normalizeText(name) || null,
+      picture: null,
+      google_user_id: null,
+      legacy_user_id: null,
+      access_type: normalizedEmail === 'damedepique43@gmail.com' ? 'founder_or_local' : 'standard',
+      password_hash: passwordHash,
+      email_verified: false,
+      onboarding_completed: false,
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    };
+
+    store.users.push(user);
+    return {
+      user,
+      created: true,
+    };
+  }
+
+  const providers = new Set(Array.isArray(user.auth_providers) ? user.auth_providers : [user.provider || 'email']);
+  providers.add('email');
+
+  user.provider = user.provider === 'google' ? 'google' : 'email';
+  user.auth_providers = [...providers];
+  user.email = normalizedEmail;
+  user.name = normalizeText(name) || user.name || null;
+  user.password_hash = passwordHash;
+  user.access_type = user.access_type || (normalizedEmail === 'damedepique43@gmail.com' ? 'founder_or_local' : 'standard');
+  user.updated_at = nowIso();
+
+  return {
+    user,
+    created: false,
+  };
+}
+
 
 function buildSafeFileName(value) {
   const safe = normalizeKey(value || 'nyra-projet');
@@ -3198,6 +3419,7 @@ function upsertGoogleUser(store, googleProfile, requestedUserId) {
     user = {
       id: realUserId,
       provider: 'google',
+      auth_providers: ['google'],
       google_user_id: googleUserId || null,
       email: email || null,
       name: googleProfile.name || null,
@@ -3210,7 +3432,11 @@ function upsertGoogleUser(store, googleProfile, requestedUserId) {
 
     store.users.push(user);
   } else {
-    user.provider = 'google';
+    const providers = new Set(Array.isArray(user.auth_providers) ? user.auth_providers : [user.provider || 'google']);
+    providers.add('google');
+
+    user.provider = user.provider === 'email' ? 'email' : 'google';
+    user.auth_providers = [...providers];
     user.google_user_id = googleUserId || user.google_user_id || null;
     user.email = email || user.email || null;
     user.name = googleProfile.name || user.name || null;
@@ -3916,6 +4142,186 @@ app.post('/speak', async (req, res) => {
   }
 });
 
+
+app.post('/auth/register', (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email || '');
+    const password = String(req.body?.password || '');
+    const name = normalizeText(req.body?.name || '');
+
+    if (!isValidEmail(email)) {
+      return res.status(400).json({
+        ok: false,
+        error: 'INVALID_EMAIL',
+        message: 'Adresse email invalide.',
+      });
+    }
+
+    const passwordValidation = validatePassword(password);
+
+    if (!passwordValidation.ok) {
+      return res.status(400).json({
+        ok: false,
+        error: passwordValidation.error,
+        message: passwordValidation.message,
+      });
+    }
+
+    const store = readStore();
+    const existingUser = store.users.find(user => {
+      return normalizeEmail(user.email || '') === email &&
+        user.password_hash &&
+        Array.isArray(user.auth_providers) &&
+        user.auth_providers.includes('email');
+    });
+
+    if (existingUser) {
+      return res.status(409).json({
+        ok: false,
+        error: 'EMAIL_ALREADY_REGISTERED',
+        message: 'Un compte existe déjà avec cette adresse email.',
+      });
+    }
+
+    const result = upsertEmailUser(store, email, password, name);
+    const sessionResult = createNyraSession(store, result.user, 'email_register');
+
+    writeStore(store);
+
+    return res.status(result.created ? 201 : 200).json({
+      ok: true,
+      created: result.created,
+      connected: true,
+      userId: result.user.id,
+      effective_user_id: result.user.id,
+      token: sessionResult.token,
+      session: {
+        id: sessionResult.session.id,
+        source: sessionResult.session.source,
+        created_at: sessionResult.session.created_at,
+      },
+      user: sanitizeUserForClient(result.user),
+    });
+  } catch (error) {
+    console.error('❌ /auth/register error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: 'AUTH_REGISTER_FAILED',
+      message: 'Erreur création de compte Nyra.',
+      details: error.message,
+    });
+  }
+});
+
+app.post('/auth/login', (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email || '');
+    const password = String(req.body?.password || '');
+
+    if (!isValidEmail(email)) {
+      return res.status(400).json({
+        ok: false,
+        error: 'INVALID_EMAIL',
+        message: 'Adresse email invalide.',
+      });
+    }
+
+    if (!password) {
+      return res.status(400).json({
+        ok: false,
+        error: 'PASSWORD_REQUIRED',
+        message: 'Mot de passe obligatoire.',
+      });
+    }
+
+    const store = readStore();
+    const user = store.users.find(existingUser => {
+      return normalizeEmail(existingUser.email || '') === email;
+    });
+
+    if (!user || !verifyPassword(password, user.password_hash)) {
+      return res.status(401).json({
+        ok: false,
+        error: 'INVALID_CREDENTIALS',
+        message: 'Email ou mot de passe incorrect.',
+      });
+    }
+
+    const sessionResult = createNyraSession(store, user, 'email_login');
+    user.updated_at = nowIso();
+
+    writeStore(store);
+
+    return res.json({
+      ok: true,
+      connected: true,
+      userId: user.id,
+      effective_user_id: user.id,
+      token: sessionResult.token,
+      session: {
+        id: sessionResult.session.id,
+        source: sessionResult.session.source,
+        created_at: sessionResult.session.created_at,
+      },
+      user: sanitizeUserForClient(user),
+    });
+  } catch (error) {
+    console.error('❌ /auth/login error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: 'AUTH_LOGIN_FAILED',
+      message: 'Erreur connexion Nyra.',
+      details: error.message,
+    });
+  }
+});
+
+app.post('/auth/logout', (req, res) => {
+  try {
+    const token = getSessionTokenFromRequest(req);
+    const store = readStore();
+
+    if (token) {
+      const tokenHash = crypto
+        .createHash('sha256')
+        .update(token)
+        .digest('hex');
+
+      store.sessions = Array.isArray(store.sessions) ? store.sessions : [];
+      store.sessions = store.sessions.map(session => {
+        if (session.token_hash !== tokenHash) return session;
+
+        return {
+          ...session,
+          status: 'revoked',
+          updated_at: nowIso(),
+          revoked_at: nowIso(),
+        };
+      });
+
+      writeStore(store);
+    }
+
+    return res.json({
+      ok: true,
+      connected: false,
+      message: 'Session Nyra fermée.',
+    });
+  } catch (error) {
+    console.error('❌ /auth/logout error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: 'AUTH_LOGOUT_FAILED',
+      message: 'Erreur déconnexion Nyra.',
+      details: error.message,
+    });
+  }
+});
+
+
 app.get('/auth/google', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
 
@@ -4102,7 +4508,33 @@ app.get('/auth/google/callback', async (req, res) => {
 
 app.get('/auth/me', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
+  const token = getSessionTokenFromRequest(req);
   const store = readStore();
+
+  if (token) {
+    const sessionResult = findActiveSession(store, token);
+
+    if (sessionResult?.user) {
+      writeStore(store);
+
+      return res.json({
+        ok: true,
+        connected: true,
+        auth_type: 'session',
+        userId: sessionResult.user.id,
+        effective_user_id: sessionResult.user.id,
+        legacy_user_id: sessionResult.user.legacy_user_id || null,
+        user: sanitizeUserForClient(sessionResult.user),
+        session: {
+          id: sessionResult.session.id,
+          source: sessionResult.session.source,
+          created_at: sessionResult.session.created_at,
+          last_seen_at: sessionResult.session.last_seen_at,
+        },
+        account: null,
+      });
+    }
+  }
 
   const account = getGoogleDriveAccount(store, userId);
 
@@ -4110,7 +4542,9 @@ app.get('/auth/me', (req, res) => {
     return res.json({
       ok: true,
       connected: false,
+      auth_type: null,
       userId,
+      effective_user_id: null,
       user: null,
       account: null,
       connect_url: `/auth/google?userId=${encodeURIComponent(userId)}`,
@@ -4129,10 +4563,11 @@ app.get('/auth/me', (req, res) => {
   return res.json({
     ok: true,
     connected: true,
+    auth_type: 'google',
     userId,
     effective_user_id: account.user_id,
     legacy_user_id: account.legacy_user_id || null,
-    user: user || null,
+    user: sanitizeUserForClient(user) || user || null,
     account: {
       id: account.id,
       user_id: account.user_id,
