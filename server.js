@@ -658,6 +658,14 @@ function cleanActionTitle(text) {
     .replace(/^ajoute ça à\s+/i, '')
     .replace(/^crée un rappel pour\s+/i, '')
     .replace(/^créer un rappel pour\s+/i, '')
+    .replace(/^rappelle-moi\s+/i, '')
+    .replace(/^rappelle moi\s+/i, '')
+    .replace(/^rappelle\s+/i, '')
+    .replace(/^ajoute\s+/i, '')
+    .replace(/^rajoute\s+/i, '')
+    .replace(/^mets\s+/i, '')
+    .replace(/^note\s+/i, '')
+    .replace(/\s+(à|a|dans)\s+(ma\s+|la\s+)?liste\s+de\s+courses.*$/i, '')
     .replace(/^transforme cette idée en tâche\s*/i, '')
     .trim();
 
@@ -689,17 +697,12 @@ function detectDatetimeHint(text) {
   return null;
 }
 
-const PARIS_TIME_ZONE = 'Europe/Paris';
-
-function getParisDateParts(date = new Date()) {
+function getLocalDateParts(date = new Date(), timeZone = 'Europe/Paris') {
   const formatter = new Intl.DateTimeFormat('fr-FR', {
-    timeZone: PARIS_TIME_ZONE,
+    timeZone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
   });
 
   const parts = formatter.formatToParts(date).reduce((acc, part) => {
@@ -711,186 +714,153 @@ function getParisDateParts(date = new Date()) {
     year: Number(parts.year),
     month: Number(parts.month),
     day: Number(parts.day),
-    hour: Number(parts.hour),
-    minute: Number(parts.minute),
   };
 }
 
-function addDaysToParisDate(parts, days) {
-  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days, 12, 0, 0));
-  const shifted = getParisDateParts(date);
+function buildParisDateAt(hour, minute = 0, dayOffset = 0) {
+  const baseParts = getLocalDateParts(new Date(), 'Europe/Paris');
+  const utcCandidate = new Date(Date.UTC(
+    baseParts.year,
+    baseParts.month - 1,
+    baseParts.day + dayOffset,
+    Number(hour || 9) - 1,
+    Number(minute || 0),
+    0,
+    0
+  ));
 
-  return {
-    year: shifted.year,
-    month: shifted.month,
-    day: shifted.day,
-  };
+  return utcCandidate.toISOString();
 }
 
-function getParisOffsetMinutes(date) {
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: PARIS_TIME_ZONE,
-    timeZoneName: 'shortOffset',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
+function extractExplicitTime(text) {
+  const lower = normalizeText(text).toLowerCase();
+  const match = lower.match(/(?:à|a|vers)?\s*(\d{1,2})\s*(?:h|:|\.)\s*(\d{0,2})/i);
 
-  const timeZoneName = formatter
-    .formatToParts(date)
-    .find(part => part.type === 'timeZoneName')?.value || 'GMT+0';
+  if (!match) return null;
 
-  const match = timeZoneName.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/i);
+  const hour = Number(match[1]);
+  const minute = match[2] ? Number(match[2]) : 0;
 
-  if (!match) return 0;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
 
-  const sign = match[1] === '-' ? -1 : 1;
-  const hours = Number(match[2] || 0);
-  const minutes = Number(match[3] || 0);
-
-  return sign * ((hours * 60) + minutes);
+  return { hour, minute };
 }
 
-function parisWallTimeToIso({ year, month, day, hour, minute }) {
-  const wallTimeMs = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
-  const firstOffset = getParisOffsetMinutes(new Date(wallTimeMs));
-  let utcMs = wallTimeMs - firstOffset * 60 * 1000;
-  const secondOffset = getParisOffsetMinutes(new Date(utcMs));
+function resolveReminderSchedule(text, datetimeHint) {
+  const lower = normalizeText(text).toLowerCase();
+  const explicitTime = extractExplicitTime(lower);
 
-  if (secondOffset !== firstOffset) {
-    utcMs = wallTimeMs - secondOffset * 60 * 1000;
-  }
-
-  return new Date(utcMs).toISOString();
-}
-
-function normalizeReminderDateText(text) {
-  return normalizeText(text)
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[’']/g, "'");
-}
-
-function parseReminderTime(text) {
-  const lower = normalizeReminderDateText(text);
-  const explicit = lower.match(/(?:\ba\b|\bvers\b|\bpour\b)\s*(\d{1,2})(?:\s*h\s*(\d{0,2})?|:(\d{2}))?/i);
-
-  if (explicit) {
-    const hour = Number(explicit[1]);
-    const minute = Number(explicit[2] || explicit[3] || 0);
-
-    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
-      return { hour, minute, explicit: true };
-    }
-  }
-
-  const compact = lower.match(/\b(\d{1,2})\s*h\s*(\d{0,2})?\b/i);
-
-  if (compact) {
-    const hour = Number(compact[1]);
-    const minute = Number(compact[2] || 0);
-
-    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
-      return { hour, minute, explicit: true };
-    }
-  }
-
-  if (lower.includes('matin')) return { hour: 9, minute: 0, explicit: false };
-  if (lower.includes('midi')) return { hour: 12, minute: 0, explicit: false };
-  if (lower.includes('apres-midi') || lower.includes('aprem')) return { hour: 14, minute: 0, explicit: false };
-  if (lower.includes('soir')) return { hour: 18, minute: 0, explicit: false };
-
-  return null;
-}
-
-function getNextWeekdayDate(targetWeekday) {
-  const nowParts = getParisDateParts();
-  const todayNoon = new Date(Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day, 12, 0, 0));
-  const todayWeekday = todayNoon.getUTCDay();
-  let delta = targetWeekday - todayWeekday;
-
-  if (delta <= 0) delta += 7;
-
-  return addDaysToParisDate(nowParts, delta);
-}
-
-function parseReminderDate(text) {
-  const lower = normalizeReminderDateText(text);
-  const nowParts = getParisDateParts();
-
-  if (lower.includes('apres-demain') || lower.includes('apres demain')) {
-    return addDaysToParisDate(nowParts, 2);
-  }
-
-  if (lower.includes('demain')) {
-    return addDaysToParisDate(nowParts, 1);
-  }
-
-  if (lower.includes("aujourd'hui") || lower.includes('ce soir') || lower.includes('cet apres-midi') || lower.includes('maintenant')) {
+  if (includesAny(lower, ['dans 5 minutes'])) {
     return {
-      year: nowParts.year,
-      month: nowParts.month,
-      day: nowParts.day,
+      scheduled_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      precision: 'relative_exact',
+      has_exact_date: true,
     };
   }
 
-  const weekdays = [
-    { key: 'dimanche', value: 0 },
-    { key: 'lundi', value: 1 },
-    { key: 'mardi', value: 2 },
-    { key: 'mercredi', value: 3 },
-    { key: 'jeudi', value: 4 },
-    { key: 'vendredi', value: 5 },
-    { key: 'samedi', value: 6 },
-  ];
-
-  const weekday = weekdays.find(day => lower.includes(day.key));
-
-  if (weekday) {
-    return getNextWeekdayDate(weekday.value);
-  }
-
-  const explicitDate = lower.match(/\b(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?\b/);
-
-  if (explicitDate) {
-    const day = Number(explicitDate[1]);
-    const month = Number(explicitDate[2]);
-    const rawYear = explicitDate[3] ? Number(explicitDate[3]) : nowParts.year;
-    const year = rawYear < 100 ? 2000 + rawYear : rawYear;
-
-    if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
-      return { year, month, day };
+  const relativeMinutesMatch = lower.match(/dans\s+(\d{1,3})\s+minutes?/i);
+  if (relativeMinutesMatch?.[1]) {
+    const minutes = Number(relativeMinutesMatch[1]);
+    if (minutes > 0 && minutes <= 720) {
+      return {
+        scheduled_at: new Date(Date.now() + minutes * 60 * 1000).toISOString(),
+        precision: 'relative_exact',
+        has_exact_date: true,
+      };
     }
   }
 
-  return null;
-}
-
-function parseReminderScheduledAt(text) {
-  const date = parseReminderDate(text);
-  const time = parseReminderTime(text);
-
-  if (!date || !time) return null;
-
-  // Sans heure explicite ni période claire, on garde le rappel en brouillon.
-  if (!time.explicit && !/(matin|midi|apres-midi|aprem|soir)/i.test(normalizeReminderDateText(text))) {
-    return null;
+  if (datetimeHint === 'today' && explicitTime) {
+    const scheduled = buildParisDateAt(explicitTime.hour, explicitTime.minute, 0);
+    return {
+      scheduled_at: scheduled,
+      precision: 'exact',
+      has_exact_date: true,
+    };
   }
 
-  const iso = parisWallTimeToIso({
-    ...date,
-    hour: time.hour,
-    minute: time.minute,
-  });
-
-  if (new Date(iso).getTime() <= Date.now() + 60 * 1000) {
-    return null;
+  if (datetimeHint === 'tomorrow' && explicitTime) {
+    return {
+      scheduled_at: buildParisDateAt(explicitTime.hour, explicitTime.minute, 1),
+      precision: 'exact',
+      has_exact_date: true,
+    };
   }
 
-  return iso;
+  if (datetimeHint === 'tomorrow_morning') {
+    const time = explicitTime || { hour: 9, minute: 0 };
+    return {
+      scheduled_at: buildParisDateAt(time.hour, time.minute, 1),
+      precision: explicitTime ? 'exact' : 'default_time',
+      has_exact_date: true,
+    };
+  }
+
+  if (datetimeHint === 'tomorrow_afternoon') {
+    const time = explicitTime || { hour: 14, minute: 0 };
+    return {
+      scheduled_at: buildParisDateAt(time.hour, time.minute, 1),
+      precision: explicitTime ? 'exact' : 'default_time',
+      has_exact_date: true,
+    };
+  }
+
+  if (datetimeHint === 'tomorrow_evening') {
+    const time = explicitTime || { hour: 19, minute: 0 };
+    return {
+      scheduled_at: buildParisDateAt(time.hour, time.minute, 1),
+      precision: explicitTime ? 'exact' : 'default_time',
+      has_exact_date: true,
+    };
+  }
+
+  if (datetimeHint === 'today' && includesAny(lower, ['ce soir'])) {
+    const time = explicitTime || { hour: 19, minute: 0 };
+    return {
+      scheduled_at: buildParisDateAt(time.hour, time.minute, 0),
+      precision: explicitTime ? 'exact' : 'default_time',
+      has_exact_date: true,
+    };
+  }
+
+  return {
+    scheduled_at: null,
+    precision: datetimeHint ? 'date_hint_without_exact_time' : 'unscheduled',
+    has_exact_date: false,
+  };
 }
 
+function extractShoppingListItem(message) {
+  const text = normalizeText(message);
+  const patterns = [
+    /ajoute\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+    /mets\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+    /note\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      return normalizeText(match[1]).replace(/[.!?;:]+$/g, '');
+    }
+  }
+
+  return '';
+}
+
+function isShoppingListRequest(text) {
+  const lower = normalizeText(text).toLowerCase();
+  return includesAny(lower, [
+    'liste de courses',
+    'liste des courses',
+    'courses',
+  ]) && includesAny(lower, [
+    'ajoute',
+    'mets',
+    'note',
+    'rajoute',
+  ]);
+}
 
 function detectPriority(text, analysis) {
   const lower = normalizeText(text).toLowerCase();
@@ -937,6 +907,7 @@ function actionNeedsConnection(actionType) {
 function actionToBucket(actionType) {
   if (actionType === 'add_to_today') return 'today';
   if (actionType === 'create_reminder') return 'reminders';
+  if (actionType === 'add_to_shopping_list') return 'shopping_list';
   if (actionType === 'plan_now') return 'plans';
   if (actionType === 'process_now') return 'plans';
   if (actionType === 'classify_as_idea') return 'ideas';
@@ -952,6 +923,7 @@ function buildNextStep(actionType, datetimeHint) {
     return 'Choisir une date et une heure pour le rappel.';
   }
 
+  if (actionType === 'add_to_shopping_list') return 'Élément ajouté à la liste de courses.';
   if (actionType === 'add_to_today') return 'Traiter cette priorité aujourd’hui.';
   if (actionType === 'plan_now') return 'Faire la plus petite première action maintenant.';
   if (actionType === 'process_now') return 'Commencer par une étape simple et immédiate.';
@@ -963,16 +935,16 @@ function buildNextStep(actionType, datetimeHint) {
   return 'Action enregistrée.';
 }
 
-function buildStructuredAction({ userId, message, actionType, label, status, analysis }) {
-  const target = extractContext(message);
+function buildStructuredAction({ userId, message, actionType, label, status, analysis, targetOverride }) {
+  const target = normalizeText(targetOverride || extractContext(message));
   const datetimeHint = detectDatetimeHint(target || message);
   const priority = detectPriority(target || message, analysis);
+  const reminderSchedule = actionType === 'create_reminder'
+    ? resolveReminderSchedule(`${message} ${target}`, datetimeHint)
+    : null;
   const provider = actionToProvider(actionType);
   const connectionType = actionToConnectionType(actionType);
   const requiresConnection = actionNeedsConnection(actionType);
-  const scheduledAt = actionType === 'create_reminder'
-    ? parseReminderScheduledAt(target || message)
-    : null;
 
   return {
     id: crypto.randomUUID(),
@@ -982,15 +954,15 @@ function buildStructuredAction({ userId, message, actionType, label, status, ana
     label,
     title: cleanActionTitle(target),
     target,
-    status: actionType === 'create_reminder' && scheduledAt ? 'done' : status,
+    status,
     priority,
     datetime_hint: datetimeHint,
-    scheduled_at: scheduledAt,
-    remind_at: scheduledAt,
-    reminder_at: scheduledAt,
-    next_step: scheduledAt
-      ? `Rappel programmé pour ${scheduledAt}.`
-      : buildNextStep(actionType, datetimeHint),
+    scheduled_at: reminderSchedule?.scheduled_at || null,
+    remind_at: reminderSchedule?.scheduled_at || null,
+    reminder_at: reminderSchedule?.scheduled_at || null,
+    schedule_precision: reminderSchedule?.precision || null,
+    has_exact_date: reminderSchedule?.has_exact_date || false,
+    next_step: buildNextStep(actionType, datetimeHint),
     provider,
     sync_status: requiresConnection ? 'requires_connection' : 'local_only',
     external_id: null,
@@ -1600,6 +1572,7 @@ function analyzeMessage(message) {
   const text = normalizeText(message);
   const lower = text.toLowerCase();
 
+
   const detectedProjectName = detectKnownProjectName(text);
 
   const analysis = {
@@ -1736,6 +1709,20 @@ function detectAction(message, userId, analysis) {
   const text = normalizeText(message);
   const lower = text.toLowerCase();
 
+  if (isShoppingListRequest(lower)) {
+    const shoppingItem = extractShoppingListItem(message) || cleanActionTitle(message);
+
+    return buildStructuredAction({
+      userId,
+      message,
+      targetOverride: shoppingItem,
+      actionType: 'add_to_shopping_list',
+      label: 'Ajouter à la liste de courses',
+      status: 'done',
+      analysis,
+    });
+  }
+
   if (
     includesAny(lower, [
       'ajoute ça à mes priorités',
@@ -1761,6 +1748,12 @@ function detectAction(message, userId, analysis) {
       'crée un rappel',
       'créer un rappel',
       'rappel clair',
+      'rappelle-moi',
+      'rappelle moi',
+      'rappelle-moi de',
+      'rappelle moi de',
+      'rappelle-moi demain',
+      'rappelle moi demain',
     ])
   ) {
     return buildStructuredAction({
@@ -1937,6 +1930,8 @@ function createStoredItem({ userId, message, analysis, action }) {
     scheduled_at: action ? action.scheduled_at || null : null,
     remind_at: action ? action.remind_at || null : null,
     reminder_at: action ? action.reminder_at || null : null,
+    schedule_precision: action ? action.schedule_precision || null : null,
+    has_exact_date: action ? Boolean(action.has_exact_date) : false,
     tags: action
       ? uniqueArray([
           'action',
@@ -3370,6 +3365,7 @@ function getStoreSummary(userId) {
     projects: userItems.filter(item => item.bucket === 'projects').length,
     today: userItems.filter(item => item.bucket === 'today').length,
     reminders: userItems.filter(item => item.bucket === 'reminders').length,
+    shopping_list: userItems.filter(item => item.bucket === 'shopping_list').length,
     plans: userItems.filter(item => item.bucket === 'plans').length,
     inbox: userItems.filter(item => item.bucket === 'inbox').length,
     actions: userActions.length,
@@ -3420,9 +3416,10 @@ function buildActionReply(action) {
   }
 
   if (action.action_type === 'add_to_today') return '✔ Ajouté à tes priorités d’aujourd’hui.';
+  if (action.action_type === 'add_to_shopping_list') return `✔ Ajouté à ta liste de courses : ${action.title || action.target}.`;
   if (action.action_type === 'create_reminder') {
     if (action.scheduled_at) return '✔ Rappel créé et programmé.';
-    return '✔ Rappel préparé. Il manque une date et une heure exactes.';
+    return '✔ Rappel enregistré sans date. Tu pourras lui ajouter une date plus tard.';
   }
   if (action.action_type === 'plan_now') return '✔ Plan créé : fais une seule action simple maintenant.';
   if (action.action_type === 'process_now') return '✔ On traite maintenant : commence par la plus petite action possible.';
@@ -7603,39 +7600,31 @@ app.get('/store/reminders', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const reminderItems = store.items.filter(
+  const reminders = store.items.filter(
     item => item.user_id === userId && item.bucket === 'reminders'
   );
-
-  const reminderActions = (Array.isArray(store.actions) ? store.actions : [])
-    .filter(action => {
-      return action.user_id === userId && (action.action_type === 'create_reminder' || action.type === 'create_reminder');
-    })
-    .map(action => ({
-      ...action,
-      id: action.item_id || action.id,
-      action_id: action.id,
-      bucket: 'reminders',
-      content: action.target || action.content || action.title || '',
-    }));
-
-  const byId = new Map();
-
-  [...reminderItems, ...reminderActions].forEach((reminder, index) => {
-    const id = normalizeText(reminder.id || reminder.action_id || `reminder-${index}`);
-    if (!byId.has(id)) byId.set(id, reminder);
-  });
-
-  const reminders = [...byId.values()].sort((a, b) => {
-    return new Date(a.scheduled_at || a.remind_at || a.reminder_at || a.created_at || 0).getTime() -
-      new Date(b.scheduled_at || b.remind_at || b.reminder_at || b.created_at || 0).getTime();
-  });
 
   res.json({
     ok: true,
     userId,
     count: reminders.length,
     reminders,
+  });
+});
+
+app.get('/store/shopping-list', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const items = store.items.filter(
+    item => item.user_id === userId && item.bucket === 'shopping_list'
+  );
+
+  res.json({
+    ok: true,
+    userId,
+    count: items.length,
+    items,
   });
 });
 
