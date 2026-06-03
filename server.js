@@ -750,6 +750,18 @@ function resolveReminderSchedule(text, datetimeHint) {
   const lower = normalizeText(text).toLowerCase();
   const explicitTime = extractExplicitTime(lower);
 
+  const relativeSecondsMatch = lower.match(/dans\s+(\d{1,3})\s+secondes?/i);
+  if (relativeSecondsMatch?.[1]) {
+    const seconds = Number(relativeSecondsMatch[1]);
+    if (seconds > 0 && seconds <= 3600) {
+      return {
+        scheduled_at: new Date(Date.now() + seconds * 1000).toISOString(),
+        precision: 'relative_exact_seconds',
+        has_exact_date: true,
+      };
+    }
+  }
+
   if (includesAny(lower, ['dans 5 minutes'])) {
     return {
       scheduled_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
@@ -1569,6 +1581,39 @@ function updateProjectContext(store, userId, project) {
   return context;
 }
 
+function isLikelyStandaloneTask(text) {
+  const clean = normalizeText(text);
+  const lower = clean.toLowerCase();
+
+  if (!clean || clean.length < 4) return false;
+
+  const ignored = [
+    'bonjour',
+    'coucou',
+    'hello',
+    'salut',
+    'non',
+    'oui',
+    'ok',
+    'merci',
+  ];
+
+  if (ignored.includes(lower)) return false;
+
+  if (includesAny(lower, [
+    'je suis',
+    'je me sens',
+    'j’ai une idée',
+    "j'ai une idée",
+    'idée',
+    'idee',
+  ])) {
+    return false;
+  }
+
+  return /^(appeler|passer|faire|envoyer|répondre|repondre|ranger|nettoyer|payer|prendre|acheter|réserver|reserver|annuler|finir|terminer|préparer|preparer|créer|creer|vérifier|verifier|contacter|déposer|deposer|récupérer|recuperer|commander|relancer|chercher|trouver|imprimer|scanner|poster|mettre|sortir|vider)\b/i.test(clean);
+}
+
 function analyzeMessage(message) {
   const text = normalizeText(message);
   const lower = text.toLowerCase();
@@ -1588,8 +1633,6 @@ function analyzeMessage(message) {
     datetime_hint: detectDatetimeHint(text),
   };
 
-  const looksLikeShortActionTask = /^(passer|faire|appeler|envoyer|répondre|repondre|payer|acheter|prendre|préparer|preparer|terminer|finir|ranger|nettoyer|lancer|tester|vérifier|verifier|contacter|réserver|reserver)\b/i.test(lower);
-
   if (
     includesAny(lower, [
       'je dois',
@@ -1600,12 +1643,7 @@ function analyzeMessage(message) {
       'à faire',
       'a faire',
       'ne pas oublier',
-      'ajoute la tâche',
-      'ajoute la tache',
-      'ajoute tâche',
-      'ajoute tache',
-    ]) ||
-    looksLikeShortActionTask
+    ])
   ) {
     analysis.type = 'task';
     analysis.is_task = true;
@@ -1777,7 +1815,6 @@ function detectAction(message, userId, analysis) {
       analysis,
     });
   }
-
 
   if (analysis?.is_task) {
     const shouldGoToday =
@@ -2005,6 +2042,42 @@ function createStoredItem({ userId, message, analysis, action }) {
   };
 }
 
+function buildTodayTaskMirrorItem({ userId, sourceItem, analysis }) {
+  return {
+    ...sourceItem,
+    id: crypto.randomUUID(),
+    type: 'task',
+    bucket: 'tasks',
+    status: 'active',
+    action_type: 'idea_to_task',
+    action_label: 'Ajouter aux tâches',
+    action_id: null,
+    tags: uniqueArray([
+      ...(Array.isArray(sourceItem.tags) ? sourceItem.tags : []),
+      'tâche',
+      'linked_today',
+    ]),
+    linked_today_item_id: sourceItem.id,
+    created_at: nowIso(),
+    updated_at: nowIso(),
+  };
+}
+
+function shouldCreateTaskMirrorForToday(store, userId, sourceItem, action, analysis) {
+  if (!action || action.action_type !== 'add_to_today') return false;
+  if (!analysis?.is_task) return false;
+  if (!sourceItem || sourceItem.bucket !== 'today') return false;
+
+  const sourceKey = normalizeKey(sourceItem.content || sourceItem.title || '');
+  if (!sourceKey) return false;
+
+  return !(Array.isArray(store.items) ? store.items : []).some(item => {
+    if (item.user_id !== userId || item.bucket !== 'tasks') return false;
+    const itemKey = normalizeKey(item.content || item.title || '');
+    return itemKey === sourceKey && !['done', 'completed', 'cancelled', 'deleted'].includes(normalizeText(item.status || '').toLowerCase());
+  });
+}
+
 function saveCapture({ userId, message, reply, analysis, action }) {
   const store = readStore();
 
@@ -2027,28 +2100,21 @@ function saveCapture({ userId, message, reply, analysis, action }) {
 
   store.items.push(item);
 
-  if (action?.action_type === 'add_to_today' && analysis?.is_task) {
-    const companionTaskItem = {
-      ...item,
-      id: crypto.randomUUID(),
-      type: 'action_result',
-      bucket: 'tasks',
-      status: 'active',
-      action_type: 'idea_to_task',
-      action_label: 'Ajouter aux tâches',
-      action_id: null,
-      linked_today_item_id: item.id,
-      previous_bucket: null,
-      memory_category: null,
-      archived_at: null,
-      completed_at: null,
-      checked: false,
-      checked_at: null,
-      created_at: nowIso(),
-      updated_at: nowIso(),
-    };
+  let mirroredTaskItem = null;
 
-    store.items.push(companionTaskItem);
+  if (shouldCreateTaskMirrorForToday(store, userId, item, action, analysis)) {
+    mirroredTaskItem = buildTodayTaskMirrorItem({
+      userId,
+      sourceItem: item,
+      analysis,
+    });
+
+    if (linkedProject) {
+      mirroredTaskItem.project_id = linkedProject.id;
+      mirroredTaskItem.project_name = linkedProject.name;
+    }
+
+    store.items.push(mirroredTaskItem);
   }
 
   if (linkedProject && !relationExists(store, userId, item.id, linkedProject.id, 'belongs_to_project')) {
@@ -2131,6 +2197,7 @@ function saveCapture({ userId, message, reply, analysis, action }) {
 
   return {
     item,
+    mirrored_task_item: mirroredTaskItem,
     action: actionRecord,
     project: linkedProject,
     relation: createdRelation,
