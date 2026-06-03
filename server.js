@@ -658,14 +658,6 @@ function cleanActionTitle(text) {
     .replace(/^ajoute ça à\s+/i, '')
     .replace(/^crée un rappel pour\s+/i, '')
     .replace(/^créer un rappel pour\s+/i, '')
-    .replace(/^rappelle-moi\s+/i, '')
-    .replace(/^rappelle moi\s+/i, '')
-    .replace(/^rappelle\s+/i, '')
-    .replace(/^ajoute\s+/i, '')
-    .replace(/^rajoute\s+/i, '')
-    .replace(/^mets\s+/i, '')
-    .replace(/^note\s+/i, '')
-    .replace(/\s+(à|a|dans)\s+(ma\s+|la\s+)?liste\s+de\s+courses.*$/i, '')
     .replace(/^transforme cette idée en tâche\s*/i, '')
     .trim();
 
@@ -695,266 +687,6 @@ function detectDatetimeHint(text) {
   }
 
   return null;
-}
-
-function getLocalDateParts(date = new Date(), timeZone = 'Europe/Paris') {
-  const formatter = new Intl.DateTimeFormat('fr-FR', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-
-  const parts = formatter.formatToParts(date).reduce((acc, part) => {
-    acc[part.type] = part.value;
-    return acc;
-  }, {});
-
-  return {
-    year: Number(parts.year),
-    month: Number(parts.month),
-    day: Number(parts.day),
-  };
-}
-
-function getTimeZoneOffsetMs(date, timeZone = 'Europe/Paris') {
-  const formatter = new Intl.DateTimeFormat('fr-FR', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23',
-  });
-
-  const parts = formatter.formatToParts(date).reduce((acc, part) => {
-    acc[part.type] = part.value;
-    return acc;
-  }, {});
-
-  const asUtc = Date.UTC(
-    Number(parts.year),
-    Number(parts.month) - 1,
-    Number(parts.day),
-    Number(parts.hour),
-    Number(parts.minute),
-    Number(parts.second || 0),
-    0
-  );
-
-  return asUtc - date.getTime();
-}
-
-function buildZonedDateIso({ year, month, day, hour, minute = 0, timeZone = 'Europe/Paris' }) {
-  const localAsUtc = Date.UTC(
-    Number(year),
-    Number(month) - 1,
-    Number(day),
-    Number(hour || 9),
-    Number(minute || 0),
-    0,
-    0
-  );
-
-  let offset = getTimeZoneOffsetMs(new Date(localAsUtc), timeZone);
-  let utcTime = localAsUtc - offset;
-
-  // Deuxième passe utile autour des changements d'heure été/hiver.
-  offset = getTimeZoneOffsetMs(new Date(utcTime), timeZone);
-  utcTime = localAsUtc - offset;
-
-  return new Date(utcTime).toISOString();
-}
-
-function buildParisDateAt(hour, minute = 0, dayOffset = 0) {
-  const baseParts = getLocalDateParts(new Date(), 'Europe/Paris');
-  const targetLocalDate = new Date(Date.UTC(
-    baseParts.year,
-    baseParts.month - 1,
-    baseParts.day + dayOffset,
-    12,
-    0,
-    0,
-    0
-  ));
-
-  return buildZonedDateIso({
-    year: targetLocalDate.getUTCFullYear(),
-    month: targetLocalDate.getUTCMonth() + 1,
-    day: targetLocalDate.getUTCDate(),
-    hour: Number(hour || 9),
-    minute: Number(minute || 0),
-    timeZone: 'Europe/Paris',
-  });
-}
-
-function extractExplicitTime(text) {
-  const lower = normalizeText(text).toLowerCase();
-  const match = lower.match(/(?:à|a|vers)?\s*(\d{1,2})\s*(?:h|:|\.)\s*(\d{0,2})/i);
-
-  if (!match) return null;
-
-  const hour = Number(match[1]);
-  const minute = match[2] ? Number(match[2]) : 0;
-
-  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
-
-  return { hour, minute };
-}
-
-function stripReminderDateWords(text) {
-  return normalizeText(text)
-    .replace(/(?:aujourd'hui|aujourd’hui|demain(?:\s+(?:matin|après-midi|apres-midi|soir))?|ce soir)/gi, ' ')
-    .replace(/(?:à|a|vers)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}/gi, ' ')
-    .replace(/dans\s+\d{1,3}\s+minutes?/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function extractReminderTarget(message) {
-  let clean = normalizeText(message)
-    .replace(/^contexte\s*:\s*/i, '')
-    .replace(/^aide-moi\s+à\s+créer\s+un\s+rappel\s*(?:pour|de)?\s*/i, '')
-    .replace(/^aide moi\s+à\s+créer\s+un\s+rappel\s*(?:pour|de)?\s*/i, '')
-    .replace(/^crée\s+un\s+rappel\s*(?:pour|de)?\s*/i, '')
-    .replace(/^créer\s+un\s+rappel\s*(?:pour|de)?\s*/i, '')
-    .replace(/^rappell?e?[-\s]*moi\s*/i, '')
-    .replace(/^rappel[-\s]*moi\s*/i, '')
-    .replace(/^rappel\s*/i, '')
-    .trim();
-
-  clean = stripReminderDateWords(clean)
-    .replace(/^d['’]\s*/i, '')
-    .replace(/^de\s+/i, '')
-    .replace(/^que\s+je\s+/i, '')
-    .replace(/^qu['’]il\s+faut\s+/i, '')
-    .replace(/^il\s+faut\s+/i, '')
-    .replace(/^je\s+dois\s+/i, '')
-    .replace(/[.!?;:]+$/g, '')
-    .trim();
-
-  if (!clean) return cleanActionTitle(message);
-
-  return cleanActionTitle(clean);
-}
-
-function resolveReminderSchedule(text, datetimeHint) {
-  const lower = normalizeText(text).toLowerCase();
-  const explicitTime = extractExplicitTime(lower);
-
-  if (includesAny(lower, ['dans 5 minutes'])) {
-    return {
-      scheduled_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-      precision: 'relative_exact',
-      has_exact_date: true,
-    };
-  }
-
-  const relativeMinutesMatch = lower.match(/dans\s+(\d{1,3})\s+minutes?/i);
-  if (relativeMinutesMatch?.[1]) {
-    const minutes = Number(relativeMinutesMatch[1]);
-    if (minutes > 0 && minutes <= 720) {
-      return {
-        scheduled_at: new Date(Date.now() + minutes * 60 * 1000).toISOString(),
-        precision: 'relative_exact',
-        has_exact_date: true,
-      };
-    }
-  }
-
-  if (datetimeHint === 'today' && explicitTime) {
-    const scheduled = buildParisDateAt(explicitTime.hour, explicitTime.minute, 0);
-    return {
-      scheduled_at: scheduled,
-      precision: 'exact',
-      has_exact_date: true,
-    };
-  }
-
-  if (datetimeHint === 'tomorrow' && explicitTime) {
-    return {
-      scheduled_at: buildParisDateAt(explicitTime.hour, explicitTime.minute, 1),
-      precision: 'exact',
-      has_exact_date: true,
-    };
-  }
-
-  if (datetimeHint === 'tomorrow_morning') {
-    const time = explicitTime || { hour: 9, minute: 0 };
-    return {
-      scheduled_at: buildParisDateAt(time.hour, time.minute, 1),
-      precision: explicitTime ? 'exact' : 'default_time',
-      has_exact_date: true,
-    };
-  }
-
-  if (datetimeHint === 'tomorrow_afternoon') {
-    const time = explicitTime || { hour: 14, minute: 0 };
-    return {
-      scheduled_at: buildParisDateAt(time.hour, time.minute, 1),
-      precision: explicitTime ? 'exact' : 'default_time',
-      has_exact_date: true,
-    };
-  }
-
-  if (datetimeHint === 'tomorrow_evening') {
-    const time = explicitTime || { hour: 19, minute: 0 };
-    return {
-      scheduled_at: buildParisDateAt(time.hour, time.minute, 1),
-      precision: explicitTime ? 'exact' : 'default_time',
-      has_exact_date: true,
-    };
-  }
-
-  if (datetimeHint === 'today' && includesAny(lower, ['ce soir'])) {
-    const time = explicitTime || { hour: 19, minute: 0 };
-    return {
-      scheduled_at: buildParisDateAt(time.hour, time.minute, 0),
-      precision: explicitTime ? 'exact' : 'default_time',
-      has_exact_date: true,
-    };
-  }
-
-  return {
-    scheduled_at: null,
-    precision: datetimeHint ? 'date_hint_without_exact_time' : 'unscheduled',
-    has_exact_date: false,
-  };
-}
-
-function extractShoppingListItem(message) {
-  const text = normalizeText(message);
-  const patterns = [
-    /ajoute\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
-    /mets\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
-    /note\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
-    /rajoute\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match?.[1]) {
-      return normalizeText(match[1]).replace(/[.!?;:]+$/g, '');
-    }
-  }
-
-  return '';
-}
-
-function isShoppingListRequest(text) {
-  const lower = normalizeText(text).toLowerCase();
-  return includesAny(lower, [
-    'liste de courses',
-    'liste des courses',
-    'courses',
-  ]) && includesAny(lower, [
-    'ajoute',
-    'mets',
-    'note',
-    'rajoute',
-  ]);
 }
 
 function detectPriority(text, analysis) {
@@ -1002,7 +734,6 @@ function actionNeedsConnection(actionType) {
 function actionToBucket(actionType) {
   if (actionType === 'add_to_today') return 'today';
   if (actionType === 'create_reminder') return 'reminders';
-  if (actionType === 'add_to_shopping_list') return 'shopping_list';
   if (actionType === 'plan_now') return 'plans';
   if (actionType === 'process_now') return 'plans';
   if (actionType === 'classify_as_idea') return 'ideas';
@@ -1014,11 +745,10 @@ function actionToBucket(actionType) {
 
 function buildNextStep(actionType, datetimeHint) {
   if (actionType === 'create_reminder') {
-    if (datetimeHint) return 'Rappel enregistré. Une notification sera programmée si une heure exacte est comprise.';
-    return 'Rappel enregistré sans date. Tu peux préciser une date plus tard.';
+    if (datetimeHint) return 'Choisir ou confirmer l’heure exacte du rappel.';
+    return 'Choisir une date et une heure pour le rappel.';
   }
 
-  if (actionType === 'add_to_shopping_list') return 'Élément ajouté à la liste de courses.';
   if (actionType === 'add_to_today') return 'Traiter cette priorité aujourd’hui.';
   if (actionType === 'plan_now') return 'Faire la plus petite première action maintenant.';
   if (actionType === 'process_now') return 'Commencer par une étape simple et immédiate.';
@@ -1030,14 +760,10 @@ function buildNextStep(actionType, datetimeHint) {
   return 'Action enregistrée.';
 }
 
-function buildStructuredAction({ userId, message, actionType, label, status, analysis, targetOverride }) {
-  const target = normalizeText(targetOverride || extractContext(message));
-  const schedulingSource = actionType === 'create_reminder' ? message : target || message;
-  const datetimeHint = detectDatetimeHint(schedulingSource);
-  const priority = detectPriority(schedulingSource, analysis);
-  const reminderSchedule = actionType === 'create_reminder'
-    ? resolveReminderSchedule(schedulingSource, datetimeHint)
-    : null;
+function buildStructuredAction({ userId, message, actionType, label, status, analysis }) {
+  const target = extractContext(message);
+  const datetimeHint = detectDatetimeHint(target || message);
+  const priority = detectPriority(target || message, analysis);
   const provider = actionToProvider(actionType);
   const connectionType = actionToConnectionType(actionType);
   const requiresConnection = actionNeedsConnection(actionType);
@@ -1053,11 +779,6 @@ function buildStructuredAction({ userId, message, actionType, label, status, ana
     status,
     priority,
     datetime_hint: datetimeHint,
-    scheduled_at: reminderSchedule?.scheduled_at || null,
-    remind_at: reminderSchedule?.scheduled_at || null,
-    reminder_at: reminderSchedule?.scheduled_at || null,
-    schedule_precision: reminderSchedule?.precision || null,
-    has_exact_date: reminderSchedule?.has_exact_date || false,
     next_step: buildNextStep(actionType, datetimeHint),
     provider,
     sync_status: requiresConnection ? 'requires_connection' : 'local_only',
@@ -1804,20 +1525,6 @@ function detectAction(message, userId, analysis) {
   const text = normalizeText(message);
   const lower = text.toLowerCase();
 
-  if (isShoppingListRequest(lower)) {
-    const shoppingItem = extractShoppingListItem(message) || cleanActionTitle(message);
-
-    return buildStructuredAction({
-      userId,
-      message,
-      targetOverride: shoppingItem,
-      actionType: 'add_to_shopping_list',
-      label: 'Ajouter à la liste de courses',
-      status: 'done',
-      analysis,
-    });
-  }
-
   if (
     includesAny(lower, [
       'ajoute ça à mes priorités',
@@ -1843,26 +1550,14 @@ function detectAction(message, userId, analysis) {
       'crée un rappel',
       'créer un rappel',
       'rappel clair',
-      'rappelle-moi',
-      'rappelle moi',
-      'rappelle-moi de',
-      'rappelle moi de',
-      'rappelle-moi demain',
-      'rappelle moi demain',
-      'rappel moi',
-      'rappel-moi',
-      'rappel moi demain',
-      'rappel-moi demain',
-      'rappel',
     ])
   ) {
     return buildStructuredAction({
       userId,
       message,
-      targetOverride: extractReminderTarget(message),
       actionType: 'create_reminder',
       label: 'Créer un rappel',
-      status: 'suggested',
+      status: 'draft',
       analysis,
     });
   }
@@ -2028,11 +1723,6 @@ function createStoredItem({ userId, message, analysis, action }) {
     urgency: analysis.urgency,
     priority: action ? action.priority : detectPriority(message, analysis),
     datetime_hint: action ? action.datetime_hint : analysis.datetime_hint,
-    scheduled_at: action ? action.scheduled_at || null : null,
-    remind_at: action ? action.remind_at || null : null,
-    reminder_at: action ? action.reminder_at || null : null,
-    schedule_precision: action ? action.schedule_precision || null : null,
-    has_exact_date: action ? Boolean(action.has_exact_date) : false,
     tags: action
       ? uniqueArray([
           'action',
@@ -3466,7 +3156,6 @@ function getStoreSummary(userId) {
     projects: userItems.filter(item => item.bucket === 'projects').length,
     today: userItems.filter(item => item.bucket === 'today').length,
     reminders: userItems.filter(item => item.bucket === 'reminders').length,
-    shopping_list: userItems.filter(item => item.bucket === 'shopping_list').length,
     plans: userItems.filter(item => item.bucket === 'plans').length,
     inbox: userItems.filter(item => item.bucket === 'inbox').length,
     actions: userActions.length,
@@ -3517,11 +3206,7 @@ function buildActionReply(action) {
   }
 
   if (action.action_type === 'add_to_today') return '✔ Ajouté à tes priorités d’aujourd’hui.';
-  if (action.action_type === 'add_to_shopping_list') return `✔ Ajouté à ta liste de courses : ${action.title || action.target}.`;
-  if (action.action_type === 'create_reminder') {
-    if (action.scheduled_at) return '✔ Rappel créé et programmé.';
-    return '✔ Rappel enregistré sans date. Tu pourras lui ajouter une date plus tard.';
-  }
+  if (action.action_type === 'create_reminder') return '✔ Rappel préparé. Prochaine étape : choisir l’heure exacte.';
   if (action.action_type === 'plan_now') return '✔ Plan créé : fais une seule action simple maintenant.';
   if (action.action_type === 'process_now') return '✔ On traite maintenant : commence par la plus petite action possible.';
   if (action.action_type === 'classify_as_idea') return '✔ Classé dans tes idées.';
@@ -7400,6 +7085,7 @@ app.patch('/focus/sessions/:sessionId/status', (req, res) => {
 });
 
 
+
 function findUserStoreItem(store, userId, itemId) {
   const normalizedUserId = normalizeText(userId || 'local-user');
   const normalizedItemId = normalizeText(itemId || '');
@@ -7423,6 +7109,92 @@ function findUserStoreItem(store, userId, itemId) {
   };
 }
 
+function isCompletedStoreStatus(status) {
+  const normalized = normalizeText(status || '').toLowerCase();
+
+  return [
+    'done',
+    'completed',
+    'complete',
+    'cancelled',
+    'canceled',
+    'archived',
+    'dismissed',
+  ].includes(normalized);
+}
+
+function isStoreItemArchived(item) {
+  if (!item) return false;
+
+  return Boolean(
+    item.archived === true ||
+    item.archived_at ||
+    normalizeText(item.archive_status || '').toLowerCase() === 'archived' ||
+    normalizeText(item.status || '').toLowerCase() === 'archived'
+  );
+}
+
+function isStoreItemActive(item) {
+  if (!item) return false;
+  if (isStoreItemArchived(item)) return false;
+
+  return !isCompletedStoreStatus(item.status);
+}
+
+function archiveStoreItem(item, archiveType = 'completed', metadata = {}) {
+  if (!item) return item;
+
+  const now = nowIso();
+
+  item.archived = true;
+  item.archive_status = 'archived';
+  item.archive_type = archiveType;
+  item.original_bucket = item.original_bucket || item.bucket || null;
+  item.archived_at = item.archived_at || now;
+  item.updated_at = now;
+  item.archive_metadata = {
+    ...(item.archive_metadata && typeof item.archive_metadata === 'object' ? item.archive_metadata : {}),
+    ...(metadata && typeof metadata === 'object' ? metadata : {}),
+  };
+
+  if (!item.completed_at && ['completed', 'done', 'shopping_list_completed', 'routine_completed'].includes(archiveType)) {
+    item.completed_at = now;
+  }
+
+  if (!item.deleted_at && archiveType === 'deleted') {
+    item.deleted_at = now;
+  }
+
+  if (!isCompletedStoreStatus(item.status)) {
+    item.status = archiveType === 'deleted' ? 'cancelled' : 'done';
+  }
+
+  return item;
+}
+
+function getArchiveCategoryForItem(item) {
+  const bucket = item?.original_bucket || item?.bucket || '';
+  const actionType = item?.action_type || item?.type || '';
+
+  if (bucket === 'shopping_list' || actionType === 'add_to_shopping_list') return 'courses';
+  if (bucket === 'reminders' || actionType === 'create_reminder') return 'rappels';
+  if (bucket === 'tasks' || actionType === 'idea_to_task') return 'taches';
+  if (bucket === 'today') return 'today';
+  if (bucket === 'projects') return 'projets';
+  if (bucket === 'journal') return 'journal';
+  if (bucket === 'ideas') return 'idees';
+
+  return 'captures';
+}
+
+function decorateArchivedItem(item) {
+  return {
+    ...item,
+    memory_category: item.memory_category || getArchiveCategoryForItem(item),
+    memory_date: item.archived_at || item.completed_at || item.updated_at || item.created_at || null,
+  };
+}
+
 function syncActionFromUpdatedItem(store, item) {
   if (!item?.action_id) return null;
 
@@ -7440,9 +7212,53 @@ function syncActionFromUpdatedItem(store, item) {
   action.remind_at = item.remind_at ?? action.remind_at ?? null;
   action.reminder_at = item.reminder_at ?? action.reminder_at ?? null;
   action.checked = item.checked ?? action.checked ?? false;
+  action.archived = item.archived ?? action.archived ?? false;
+  action.archive_status = item.archive_status ?? action.archive_status ?? null;
+  action.archive_type = item.archive_type ?? action.archive_type ?? null;
+  action.archived_at = item.archived_at ?? action.archived_at ?? null;
+  action.original_bucket = item.original_bucket ?? action.original_bucket ?? item.bucket ?? null;
+  action.completed_at = item.completed_at ?? action.completed_at ?? null;
+  action.deleted_at = item.deleted_at ?? action.deleted_at ?? null;
   action.updated_at = nowIso();
 
   return action;
+}
+
+function archiveCompletedShoppingListIfReady(store, userId) {
+  const activeShoppingItems = (Array.isArray(store.items) ? store.items : []).filter(item => {
+    return item.user_id === userId && item.bucket === 'shopping_list' && !isStoreItemArchived(item);
+  });
+
+  if (!activeShoppingItems.length) {
+    return null;
+  }
+
+  const isFullyChecked = activeShoppingItems.every(item => Boolean(item.checked));
+
+  if (!isFullyChecked) {
+    return null;
+  }
+
+  const archiveGroupId = crypto.randomUUID();
+  const archivedAt = nowIso();
+
+  activeShoppingItems.forEach(item => {
+    item.completed_at = item.completed_at || archivedAt;
+    item.checked = true;
+    item.checked_at = item.checked_at || archivedAt;
+    archiveStoreItem(item, 'shopping_list_completed', {
+      archive_group_id: archiveGroupId,
+      item_count: activeShoppingItems.length,
+    });
+    syncActionFromUpdatedItem(store, item);
+  });
+
+  return {
+    archive_group_id: archiveGroupId,
+    archived_at: archivedAt,
+    item_count: activeShoppingItems.length,
+    items: activeShoppingItems.map(decorateArchivedItem),
+  };
 }
 
 app.patch('/store/items/:itemId', (req, res) => {
@@ -7460,7 +7276,7 @@ app.patch('/store/items/:itemId', (req, res) => {
   }
 
   const item = found.item;
-  const allowedStatuses = ['captured', 'todo', 'active', 'done', 'completed', 'cancelled', 'canceled', 'draft'];
+  const allowedStatuses = ['captured', 'todo', 'active', 'suggested', 'done', 'completed', 'cancelled', 'canceled', 'draft', 'archived'];
 
   if (Object.prototype.hasOwnProperty.call(req.body || {}, 'title')) {
     const title = normalizeText(req.body.title).slice(0, 120);
@@ -7484,6 +7300,7 @@ app.patch('/store/items/:itemId', (req, res) => {
 
   if (Object.prototype.hasOwnProperty.call(req.body || {}, 'status')) {
     const status = normalizeText(req.body.status).toLowerCase();
+
     if (!allowedStatuses.includes(status)) {
       return res.status(400).json({
         ok: false,
@@ -7493,14 +7310,28 @@ app.patch('/store/items/:itemId', (req, res) => {
     }
 
     item.status = status;
-    if (status === 'done' || status === 'completed') item.completed_at = nowIso();
-    if (status === 'cancelled' || status === 'canceled') item.cancelled_at = nowIso();
+
+    if (status === 'done' || status === 'completed' || status === 'archived') {
+      item.completed_at = item.completed_at || nowIso();
+      archiveStoreItem(item, item.bucket === 'reminders' ? 'reminder_completed' : 'completed', {
+        completed_from: 'mobile_organization',
+      });
+    }
+
+    if (status === 'cancelled' || status === 'canceled') {
+      item.cancelled_at = item.cancelled_at || nowIso();
+      archiveStoreItem(item, 'cancelled', {
+        completed_from: 'mobile_organization',
+      });
+    }
   }
 
   if (Object.prototype.hasOwnProperty.call(req.body || {}, 'scheduled_at')) {
     const scheduledAt = normalizeText(req.body.scheduled_at || '');
+
     if (scheduledAt) {
       const parsed = new Date(scheduledAt);
+
       if (Number.isNaN(parsed.getTime())) {
         return res.status(400).json({
           ok: false,
@@ -7508,6 +7339,7 @@ app.patch('/store/items/:itemId', (req, res) => {
           message: 'Date de rappel invalide.',
         });
       }
+
       item.scheduled_at = scheduledAt;
       item.remind_at = scheduledAt;
       item.reminder_at = scheduledAt;
@@ -7523,16 +7355,26 @@ app.patch('/store/items/:itemId', (req, res) => {
   }
 
   item.updated_at = nowIso();
-  const action = syncActionFromUpdatedItem(store, item);
+  let action = syncActionFromUpdatedItem(store, item);
+  const shoppingArchive = item.bucket === 'shopping_list'
+    ? archiveCompletedShoppingListIfReady(store, userId)
+    : null;
+
+  if (shoppingArchive) {
+    action = syncActionFromUpdatedItem(store, item) || action;
+  }
 
   writeStore(store);
 
   return res.json({
     ok: true,
     userId,
-    item,
+    item: decorateArchivedItem(item),
     action,
-    message: 'Élément mis à jour.',
+    shopping_archive: shoppingArchive,
+    message: shoppingArchive
+      ? 'Liste de courses terminée et archivée.'
+      : 'Élément mis à jour.',
   });
 });
 
@@ -7550,30 +7392,42 @@ app.delete('/store/items/:itemId', (req, res) => {
     });
   }
 
-  const [deletedItem] = store.items.splice(found.index, 1);
+  const item = archiveStoreItem(found.item, 'deleted', {
+    deleted_from: 'mobile_organization',
+  });
+  item.deleted_at = item.deleted_at || nowIso();
 
-  let deletedAction = null;
-  if (deletedItem?.action_id && Array.isArray(store.actions)) {
-    const actionIndex = store.actions.findIndex(action => action.id === deletedItem.action_id);
-    if (actionIndex >= 0) {
-      [deletedAction] = store.actions.splice(actionIndex, 1);
-    }
-  }
-
-  if (Array.isArray(store.relations)) {
-    store.relations = store.relations.filter(relation => {
-      return relation.source_id !== deletedItem.id && relation.source_id !== deletedItem.action_id;
-    });
-  }
+  const action = syncActionFromUpdatedItem(store, item);
 
   writeStore(store);
 
   return res.json({
     ok: true,
     userId,
-    deleted_item: deletedItem,
-    deleted_action: deletedAction,
-    message: 'Élément supprimé.',
+    archived_item: decorateArchivedItem(item),
+    action,
+    message: 'Élément retiré de l’organisation et gardé en mémoire.',
+  });
+});
+
+app.get('/store/memory', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const items = (Array.isArray(store.items) ? store.items : [])
+    .filter(item => {
+      return item.user_id === userId && (isStoreItemArchived(item) || (item.bucket !== 'shopping_list' && isCompletedStoreStatus(item.status)));
+    })
+    .map(decorateArchivedItem)
+    .sort((a, b) => {
+      return new Date(b.memory_date || 0).getTime() - new Date(a.memory_date || 0).getTime();
+    });
+
+  return res.json({
+    ok: true,
+    userId,
+    count: items.length,
+    items,
   });
 });
 
@@ -7582,12 +7436,16 @@ app.get('/store', (req, res) => {
   const store = readStore();
 
   const items = store.items.filter(item => item.user_id === userId);
+  const memory_items = items
+    .filter(item => isStoreItemArchived(item) || (item.bucket !== 'shopping_list' && isCompletedStoreStatus(item.status)))
+    .map(decorateArchivedItem);
 
   res.json({
     ok: true,
     userId,
     summary: getStoreSummary(userId),
     items,
+    memory_items,
   });
 });
 
@@ -7832,7 +7690,7 @@ app.get('/store/tasks', (req, res) => {
   const store = readStore();
 
   const tasks = store.items.filter(
-    item => item.user_id === userId && item.bucket === 'tasks'
+    item => item.user_id === userId && item.bucket === 'tasks' && isStoreItemActive(item)
   );
 
   res.json({
@@ -7864,7 +7722,7 @@ app.get('/store/today', (req, res) => {
   const store = readStore();
 
   const today = store.items.filter(
-    item => item.user_id === userId && item.bucket === 'today'
+    item => item.user_id === userId && item.bucket === 'today' && isStoreItemActive(item)
   );
 
   res.json({
@@ -7880,7 +7738,7 @@ app.get('/store/reminders', (req, res) => {
   const store = readStore();
 
   const reminders = store.items.filter(
-    item => item.user_id === userId && item.bucket === 'reminders'
+    item => item.user_id === userId && item.bucket === 'reminders' && isStoreItemActive(item)
   );
 
   res.json({
@@ -7891,12 +7749,14 @@ app.get('/store/reminders', (req, res) => {
   });
 });
 
+
+
 app.get('/store/shopping-list', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
   const items = store.items.filter(
-    item => item.user_id === userId && item.bucket === 'shopping_list'
+    item => item.user_id === userId && item.bucket === 'shopping_list' && !isStoreItemArchived(item)
   );
 
   res.json({
