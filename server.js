@@ -678,24 +678,26 @@ function cleanActionTitle(text) {
 
 
 function cleanReminderTitle(text) {
-  let clean = normalizeText(text)
-    .replace(/^contexte\s*:\s*/i, '')
-    .replace(/^aide-moi\s+à\s+créer\s+un\s+rappel\s+(?:pour\s+|de\s+)?/i, '')
-    .replace(/^aide moi\s+à\s+créer\s+un\s+rappel\s+(?:pour\s+|de\s+)?/i, '')
-    .replace(/^crée\s+un\s+rappel\s+(?:pour\s+|de\s+)?/i, '')
-    .replace(/^créer\s+un\s+rappel\s+(?:pour\s+|de\s+)?/i, '')
-    .replace(/^rappelle-moi\s+(?:de\s+)?/i, '')
-    .replace(/^rappelle moi\s+(?:de\s+)?/i, '')
-    .replace(/^rappel-moi\s+(?:de\s+)?/i, '')
-    .replace(/^rappel moi\s+(?:de\s+)?/i, '')
-    .replace(/^rappel\s+(?:de\s+)?/i, '')
-    .replace(/^rappelle\s+(?:de\s+)?/i, '');
+  let clean = normalizeText(text);
 
   clean = clean
-    .replace(/(?:aujourd'hui|aujourd’hui|demain matin|demain après-midi|demain apres-midi|demain soir|demain|ce soir|cette semaine|ce week-end|week-end|weekend)/gi, ' ')
-    .replace(/(?:à|a|vers)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}/gi, ' ')
-    .replace(/dans\s+\d{1,3}\s+minutes?/gi, ' ')
-    .replace(/^\s*(?:de|d'|d’|pour)\s+/i, '')
+    .replace(/^contexte\s*:\s*/i, '')
+    .replace(/^aide[- ]?moi\s+à\s+créer\s+un\s+rappel\s*(?:pour\s+|de\s+)?/i, '')
+    .replace(/^crée\s+un\s+rappel\s*(?:pour\s+|de\s+)?/i, '')
+    .replace(/^créer\s+un\s+rappel\s*(?:pour\s+|de\s+)?/i, '')
+    .replace(/^rappelle[- ]?moi\s*(?:de\s+)?/i, '')
+    .replace(/^rappel[- ]?moi\s*(?:de\s+)?/i, '')
+    .replace(/^rappel\s*(?:de\s+)?/i, '')
+    .replace(/^rappelle\s*(?:de\s+)?/i, '')
+    .trim();
+
+  // Retire les marqueurs de date/heure qui ne doivent jamais devenir le titre du rappel.
+  clean = clean
+    .replace(/(^|\s)(aujourd'hui|aujourd’hui|demain matin|demain après-midi|demain apres-midi|demain soir|demain|ce soir|cette semaine|ce week-end|week-end|weekend)(?=\s|$)/gi, ' ')
+    .replace(/(^|\s)(à|a|vers)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}(?=\s|$)/gi, ' ')
+    .replace(/(^|\s)dans\s+\d{1,3}\s+minutes?(?=\s|$)/gi, ' ')
+    .replace(/^\s*(?:de|d'|d’|pour)\s*/i, '')
+    .replace(/\s+(?:de|d'|d’|pour)\s*/i, ' ')
     .replace(/\s+/g, ' ')
     .replace(/[.!?;:]+$/g, '')
     .trim();
@@ -705,7 +707,6 @@ function cleanReminderTitle(text) {
   const title = clean.charAt(0).toUpperCase() + clean.slice(1);
   return title.length > 80 ? `${title.slice(0, 80)}…` : title;
 }
-
 function detectDatetimeHint(text) {
   const lower = normalizeText(text).toLowerCase();
 
