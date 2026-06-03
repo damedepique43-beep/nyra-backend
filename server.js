@@ -225,20 +225,6 @@ function normalizeKey(value) {
     .replace(/^-+|-+$/g, '');
 }
 
-function isInternalProjectName(value) {
-  const key = normalizeKey(value || '');
-  return key === 'nyra';
-}
-
-function isInternalProject(project) {
-  return Boolean(
-    isInternalProjectName(project?.name) ||
-    isInternalProjectName(project?.key) ||
-    project?.internal_project === true ||
-    project?.system_project === true
-  );
-}
-
 function buildGoogleNyraUserId(googleUserId, googleEmail) {
   const stableSource = normalizeText(googleUserId || googleEmail || crypto.randomUUID());
   return `google-${normalizeKey(stableSource)}`;
@@ -672,6 +658,14 @@ function cleanActionTitle(text) {
     .replace(/^ajoute ça à\s+/i, '')
     .replace(/^crée un rappel pour\s+/i, '')
     .replace(/^créer un rappel pour\s+/i, '')
+    .replace(/^rappelle-moi\s+/i, '')
+    .replace(/^rappelle moi\s+/i, '')
+    .replace(/^rappelle\s+/i, '')
+    .replace(/^ajoute\s+/i, '')
+    .replace(/^rajoute\s+/i, '')
+    .replace(/^mets\s+/i, '')
+    .replace(/^note\s+/i, '')
+    .replace(/\s+(à|a|dans)\s+(ma\s+|la\s+)?liste\s+de\s+courses.*$/i, '')
     .replace(/^transforme cette idée en tâche\s*/i, '')
     .trim();
 
@@ -701,6 +695,172 @@ function detectDatetimeHint(text) {
   }
 
   return null;
+}
+
+function getLocalDateParts(date = new Date(), timeZone = 'Europe/Paris') {
+  const formatter = new Intl.DateTimeFormat('fr-FR', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+
+  const parts = formatter.formatToParts(date).reduce((acc, part) => {
+    acc[part.type] = part.value;
+    return acc;
+  }, {});
+
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+  };
+}
+
+function buildParisDateAt(hour, minute = 0, dayOffset = 0) {
+  const baseParts = getLocalDateParts(new Date(), 'Europe/Paris');
+  const utcCandidate = new Date(Date.UTC(
+    baseParts.year,
+    baseParts.month - 1,
+    baseParts.day + dayOffset,
+    Number(hour || 9) - 1,
+    Number(minute || 0),
+    0,
+    0
+  ));
+
+  return utcCandidate.toISOString();
+}
+
+function extractExplicitTime(text) {
+  const lower = normalizeText(text).toLowerCase();
+  const match = lower.match(/(?:à|a|vers)?\s*(\d{1,2})\s*(?:h|:|\.)\s*(\d{0,2})/i);
+
+  if (!match) return null;
+
+  const hour = Number(match[1]);
+  const minute = match[2] ? Number(match[2]) : 0;
+
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+
+  return { hour, minute };
+}
+
+function resolveReminderSchedule(text, datetimeHint) {
+  const lower = normalizeText(text).toLowerCase();
+  const explicitTime = extractExplicitTime(lower);
+
+  if (includesAny(lower, ['dans 5 minutes'])) {
+    return {
+      scheduled_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      precision: 'relative_exact',
+      has_exact_date: true,
+    };
+  }
+
+  const relativeMinutesMatch = lower.match(/dans\s+(\d{1,3})\s+minutes?/i);
+  if (relativeMinutesMatch?.[1]) {
+    const minutes = Number(relativeMinutesMatch[1]);
+    if (minutes > 0 && minutes <= 720) {
+      return {
+        scheduled_at: new Date(Date.now() + minutes * 60 * 1000).toISOString(),
+        precision: 'relative_exact',
+        has_exact_date: true,
+      };
+    }
+  }
+
+  if (datetimeHint === 'today' && explicitTime) {
+    const scheduled = buildParisDateAt(explicitTime.hour, explicitTime.minute, 0);
+    return {
+      scheduled_at: scheduled,
+      precision: 'exact',
+      has_exact_date: true,
+    };
+  }
+
+  if (datetimeHint === 'tomorrow' && explicitTime) {
+    return {
+      scheduled_at: buildParisDateAt(explicitTime.hour, explicitTime.minute, 1),
+      precision: 'exact',
+      has_exact_date: true,
+    };
+  }
+
+  if (datetimeHint === 'tomorrow_morning') {
+    const time = explicitTime || { hour: 9, minute: 0 };
+    return {
+      scheduled_at: buildParisDateAt(time.hour, time.minute, 1),
+      precision: explicitTime ? 'exact' : 'default_time',
+      has_exact_date: true,
+    };
+  }
+
+  if (datetimeHint === 'tomorrow_afternoon') {
+    const time = explicitTime || { hour: 14, minute: 0 };
+    return {
+      scheduled_at: buildParisDateAt(time.hour, time.minute, 1),
+      precision: explicitTime ? 'exact' : 'default_time',
+      has_exact_date: true,
+    };
+  }
+
+  if (datetimeHint === 'tomorrow_evening') {
+    const time = explicitTime || { hour: 19, minute: 0 };
+    return {
+      scheduled_at: buildParisDateAt(time.hour, time.minute, 1),
+      precision: explicitTime ? 'exact' : 'default_time',
+      has_exact_date: true,
+    };
+  }
+
+  if (datetimeHint === 'today' && includesAny(lower, ['ce soir'])) {
+    const time = explicitTime || { hour: 19, minute: 0 };
+    return {
+      scheduled_at: buildParisDateAt(time.hour, time.minute, 0),
+      precision: explicitTime ? 'exact' : 'default_time',
+      has_exact_date: true,
+    };
+  }
+
+  return {
+    scheduled_at: null,
+    precision: datetimeHint ? 'date_hint_without_exact_time' : 'unscheduled',
+    has_exact_date: false,
+  };
+}
+
+function extractShoppingListItem(message) {
+  const text = normalizeText(message);
+  const patterns = [
+    /ajoute\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+    /mets\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+    /note\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+    /rajoute\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      return normalizeText(match[1]).replace(/[.!?;:]+$/g, '');
+    }
+  }
+
+  return '';
+}
+
+function isShoppingListRequest(text) {
+  const lower = normalizeText(text).toLowerCase();
+  return includesAny(lower, [
+    'liste de courses',
+    'liste des courses',
+    'courses',
+  ]) && includesAny(lower, [
+    'ajoute',
+    'mets',
+    'note',
+    'rajoute',
+  ]);
 }
 
 function detectPriority(text, analysis) {
@@ -748,6 +908,7 @@ function actionNeedsConnection(actionType) {
 function actionToBucket(actionType) {
   if (actionType === 'add_to_today') return 'today';
   if (actionType === 'create_reminder') return 'reminders';
+  if (actionType === 'add_to_shopping_list') return 'shopping_list';
   if (actionType === 'plan_now') return 'plans';
   if (actionType === 'process_now') return 'plans';
   if (actionType === 'classify_as_idea') return 'ideas';
@@ -759,10 +920,11 @@ function actionToBucket(actionType) {
 
 function buildNextStep(actionType, datetimeHint) {
   if (actionType === 'create_reminder') {
-    if (datetimeHint) return 'Choisir ou confirmer l’heure exacte du rappel.';
-    return 'Choisir une date et une heure pour le rappel.';
+    if (datetimeHint) return 'Rappel enregistré. Une notification sera programmée si une heure exacte est comprise.';
+    return 'Rappel enregistré sans date. Tu peux préciser une date plus tard.';
   }
 
+  if (actionType === 'add_to_shopping_list') return 'Élément ajouté à la liste de courses.';
   if (actionType === 'add_to_today') return 'Traiter cette priorité aujourd’hui.';
   if (actionType === 'plan_now') return 'Faire la plus petite première action maintenant.';
   if (actionType === 'process_now') return 'Commencer par une étape simple et immédiate.';
@@ -774,10 +936,13 @@ function buildNextStep(actionType, datetimeHint) {
   return 'Action enregistrée.';
 }
 
-function buildStructuredAction({ userId, message, actionType, label, status, analysis }) {
-  const target = extractContext(message);
+function buildStructuredAction({ userId, message, actionType, label, status, analysis, targetOverride }) {
+  const target = normalizeText(targetOverride || extractContext(message));
   const datetimeHint = detectDatetimeHint(target || message);
   const priority = detectPriority(target || message, analysis);
+  const reminderSchedule = actionType === 'create_reminder'
+    ? resolveReminderSchedule(`${message} ${target}`, datetimeHint)
+    : null;
   const provider = actionToProvider(actionType);
   const connectionType = actionToConnectionType(actionType);
   const requiresConnection = actionNeedsConnection(actionType);
@@ -793,6 +958,11 @@ function buildStructuredAction({ userId, message, actionType, label, status, ana
     status,
     priority,
     datetime_hint: datetimeHint,
+    scheduled_at: reminderSchedule?.scheduled_at || null,
+    remind_at: reminderSchedule?.scheduled_at || null,
+    reminder_at: reminderSchedule?.scheduled_at || null,
+    schedule_precision: reminderSchedule?.precision || null,
+    has_exact_date: reminderSchedule?.has_exact_date || false,
     next_step: buildNextStep(actionType, datetimeHint),
     provider,
     sync_status: requiresConnection ? 'requires_connection' : 'local_only',
@@ -1539,6 +1709,20 @@ function detectAction(message, userId, analysis) {
   const text = normalizeText(message);
   const lower = text.toLowerCase();
 
+  if (isShoppingListRequest(lower)) {
+    const shoppingItem = extractShoppingListItem(message) || cleanActionTitle(message);
+
+    return buildStructuredAction({
+      userId,
+      message,
+      targetOverride: shoppingItem,
+      actionType: 'add_to_shopping_list',
+      label: 'Ajouter à la liste de courses',
+      status: 'done',
+      analysis,
+    });
+  }
+
   if (
     includesAny(lower, [
       'ajoute ça à mes priorités',
@@ -1564,6 +1748,17 @@ function detectAction(message, userId, analysis) {
       'crée un rappel',
       'créer un rappel',
       'rappel clair',
+      'rappelle-moi',
+      'rappelle moi',
+      'rappelle-moi de',
+      'rappelle moi de',
+      'rappelle-moi demain',
+      'rappelle moi demain',
+      'rappel moi',
+      'rappel-moi',
+      'rappel moi demain',
+      'rappel-moi demain',
+      'rappel',
     ])
   ) {
     return buildStructuredAction({
@@ -1737,6 +1932,11 @@ function createStoredItem({ userId, message, analysis, action }) {
     urgency: analysis.urgency,
     priority: action ? action.priority : detectPriority(message, analysis),
     datetime_hint: action ? action.datetime_hint : analysis.datetime_hint,
+    scheduled_at: action ? action.scheduled_at || null : null,
+    remind_at: action ? action.remind_at || null : null,
+    reminder_at: action ? action.reminder_at || null : null,
+    schedule_precision: action ? action.schedule_precision || null : null,
+    has_exact_date: action ? Boolean(action.has_exact_date) : false,
     tags: action
       ? uniqueArray([
           'action',
@@ -1775,13 +1975,10 @@ function saveCapture({ userId, message, reply, analysis, action }) {
   let createdRelation = null;
   let updatedContext = null;
 
-  if (analysis.project_name && !isInternalProjectName(analysis.project_name)) {
+  if (analysis.project_name) {
     linkedProject = ensureProject(store, userId, analysis.project_name, message);
-
-    if (linkedProject) {
-      item.project_id = linkedProject.id;
-      item.project_name = linkedProject.name;
-    }
+    item.project_id = linkedProject.id;
+    item.project_name = linkedProject.name;
   }
 
   store.items.push(item);
@@ -3173,6 +3370,7 @@ function getStoreSummary(userId) {
     projects: userItems.filter(item => item.bucket === 'projects').length,
     today: userItems.filter(item => item.bucket === 'today').length,
     reminders: userItems.filter(item => item.bucket === 'reminders').length,
+    shopping_list: userItems.filter(item => item.bucket === 'shopping_list').length,
     plans: userItems.filter(item => item.bucket === 'plans').length,
     inbox: userItems.filter(item => item.bucket === 'inbox').length,
     actions: userActions.length,
@@ -3223,7 +3421,11 @@ function buildActionReply(action) {
   }
 
   if (action.action_type === 'add_to_today') return '✔ Ajouté à tes priorités d’aujourd’hui.';
-  if (action.action_type === 'create_reminder') return '✔ Rappel préparé. Prochaine étape : choisir l’heure exacte.';
+  if (action.action_type === 'add_to_shopping_list') return `✔ Ajouté à ta liste de courses : ${action.title || action.target}.`;
+  if (action.action_type === 'create_reminder') {
+    if (action.scheduled_at) return '✔ Rappel créé et programmé.';
+    return '✔ Rappel enregistré sans date. Tu pourras lui ajouter une date plus tard.';
+  }
   if (action.action_type === 'plan_now') return '✔ Plan créé : fais une seule action simple maintenant.';
   if (action.action_type === 'process_now') return '✔ On traite maintenant : commence par la plus petite action possible.';
   if (action.action_type === 'classify_as_idea') return '✔ Classé dans tes idées.';
@@ -7351,6 +7553,374 @@ app.post('/store/actions/:actionId/cancel', (req, res) => {
   });
 });
 
+
+function itemBelongsToUser(item, userId) {
+  const normalizedUserId = normalizeText(userId || 'local-user');
+
+  if (!normalizedUserId || normalizedUserId === 'local-user') {
+    return true;
+  }
+
+  return (
+    item.user_id === normalizedUserId ||
+    item.legacy_user_id === normalizedUserId ||
+    item.google_user_id === normalizedUserId
+  );
+}
+
+function itemMatchesId(item, itemId) {
+  const normalizedItemId = normalizeText(itemId || '');
+
+  if (!normalizedItemId) return false;
+
+  return (
+    item.id === normalizedItemId ||
+    item.item_id === normalizedItemId ||
+    item.stored_item_id === normalizedItemId ||
+    item.action_id === normalizedItemId
+  );
+}
+
+function findUserStoreItem(store, userId, itemId) {
+  const normalizedUserId = normalizeText(userId || 'local-user');
+  const normalizedItemId = normalizeText(itemId || '');
+
+  if (!normalizedItemId) return null;
+
+  const items = Array.isArray(store.items) ? store.items : [];
+
+  let index = items.findIndex(item => {
+    return itemMatchesId(item, normalizedItemId) && itemBelongsToUser(item, normalizedUserId);
+  });
+
+  if (index === -1) {
+    index = items.findIndex(item => itemMatchesId(item, normalizedItemId));
+  }
+
+  if (index === -1) return null;
+
+  return {
+    index,
+    item: items[index],
+  };
+}
+
+function isCompletedStatus(status) {
+  const normalized = normalizeText(status || '').toLowerCase();
+
+  return ['done', 'completed', 'complete', 'cancelled', 'canceled'].includes(normalized);
+}
+
+function syncActionFromUpdatedItem(store, item) {
+  if (!item?.action_id) return null;
+
+  const actions = Array.isArray(store.actions) ? store.actions : [];
+  const action = actions.find(existingAction => {
+    return existingAction.id === item.action_id || existingAction.item_id === item.id;
+  });
+
+  if (!action) return null;
+
+  action.title = item.title || action.title;
+  action.target = item.content || item.target || action.target;
+  action.status = item.status || action.status;
+  action.priority = item.priority || action.priority;
+  action.datetime_hint = item.datetime_hint ?? action.datetime_hint ?? null;
+  action.scheduled_at = item.scheduled_at ?? action.scheduled_at ?? null;
+  action.remind_at = item.remind_at ?? action.remind_at ?? null;
+  action.reminder_at = item.reminder_at ?? action.reminder_at ?? null;
+  action.checked = item.checked ?? action.checked ?? false;
+  action.updated_at = nowIso();
+
+  if (isCompletedStatus(action.status)) {
+    action.completed_at = action.completed_at || nowIso();
+  }
+
+  return action;
+}
+
+function moveItemToMemory(item, category = null) {
+  if (!item || item.bucket === 'memory') return item;
+
+  item.previous_bucket = item.previous_bucket || item.bucket || null;
+  item.memory_category = category || item.previous_bucket || item.bucket || item.type || 'item';
+  item.bucket = 'memory';
+  item.archived_at = item.archived_at || nowIso();
+  item.updated_at = nowIso();
+
+  return item;
+}
+
+function shouldArchiveCompletedItem(item) {
+  if (!item) return false;
+
+  const bucket = normalizeText(item.bucket || '');
+  const type = normalizeText(item.type || '');
+
+  if (bucket === 'memory') return false;
+  if (bucket === 'routines' || type === 'routine') return false;
+
+  return ['tasks', 'today', 'reminders', 'shopping_list'].includes(bucket);
+}
+
+function archiveCompletedOrganizationItem(store, item) {
+  if (!item || !shouldArchiveCompletedItem(item)) return null;
+
+  if (item.checked || isCompletedStatus(item.status)) {
+    return moveItemToMemory(item, item.bucket);
+  }
+
+  return null;
+}
+
+function archiveShoppingListIfFullyChecked(store, userId) {
+  const items = Array.isArray(store.items) ? store.items : [];
+  const shoppingItems = items.filter(item => {
+    return itemBelongsToUser(item, userId) && item.bucket === 'shopping_list';
+  });
+
+  if (!shoppingItems.length) return null;
+
+  const allChecked = shoppingItems.every(item => {
+    return Boolean(item.checked) || isCompletedStatus(item.status);
+  });
+
+  if (!allChecked) return null;
+
+  const archivedItems = shoppingItems.map(item => {
+    item.checked = true;
+    item.checked_at = item.checked_at || nowIso();
+    item.status = 'done';
+    item.completed_at = item.completed_at || nowIso();
+    return moveItemToMemory(item, 'shopping_list');
+  });
+
+  return {
+    archived: true,
+    archived_count: archivedItems.length,
+    archived_items: archivedItems,
+    archived_at: nowIso(),
+  };
+}
+
+app.get('/store/memory', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const items = (Array.isArray(store.items) ? store.items : [])
+    .filter(item => {
+      return (
+        itemBelongsToUser(item, userId) &&
+        (
+          item.bucket === 'memory' ||
+          Boolean(item.archived_at) ||
+          isCompletedStatus(item.status)
+        )
+      );
+    })
+    .sort((a, b) => {
+      return new Date(b.archived_at || b.completed_at || b.updated_at || b.created_at || 0).getTime() -
+        new Date(a.archived_at || a.completed_at || a.updated_at || a.created_at || 0).getTime();
+    });
+
+  return res.json({
+    ok: true,
+    userId,
+    count: items.length,
+    items,
+    memory_items: items,
+  });
+});
+
+app.get('/store/shopping-list', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const items = (Array.isArray(store.items) ? store.items : []).filter(item => {
+    return (
+      itemBelongsToUser(item, userId) &&
+      item.bucket === 'shopping_list' &&
+      !item.archived_at &&
+      !isCompletedStatus(item.status)
+    );
+  });
+
+  return res.json({
+    ok: true,
+    userId,
+    count: items.length,
+    items,
+    shopping_list: items,
+  });
+});
+
+app.patch('/store/items/:itemId', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const itemId = normalizeText(req.params.itemId);
+  const store = readStore();
+  const found = findUserStoreItem(store, userId, itemId);
+
+  if (!found) {
+    return res.status(404).json({
+      ok: false,
+      error: 'ITEM_NOT_FOUND',
+      message: 'Élément introuvable.',
+    });
+  }
+
+  const item = found.item;
+  const allowedStatuses = ['captured', 'todo', 'active', 'done', 'completed', 'cancelled', 'canceled', 'draft'];
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'title')) {
+    const title = normalizeText(req.body.title).slice(0, 120);
+    if (title) item.title = title;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'content')) {
+    const content = normalizeText(req.body.content).slice(0, 1000);
+    if (content) item.content = content;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'target')) {
+    const target = normalizeText(req.body.target).slice(0, 1000);
+    if (target) item.target = target;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'checked')) {
+    item.checked = Boolean(req.body.checked);
+    item.checked_at = item.checked ? nowIso() : null;
+
+    if (item.checked) {
+      item.status = 'done';
+      item.completed_at = item.completed_at || nowIso();
+    } else if (item.status === 'done' || item.status === 'completed') {
+      item.status = 'todo';
+      item.completed_at = null;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'status')) {
+    const status = normalizeText(req.body.status).toLowerCase();
+
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        ok: false,
+        error: 'INVALID_STATUS',
+        allowed_statuses: allowedStatuses,
+      });
+    }
+
+    item.status = status;
+
+    if (isCompletedStatus(status)) {
+      item.completed_at = item.completed_at || nowIso();
+      item.checked = true;
+      item.checked_at = item.checked_at || nowIso();
+    }
+
+    if (!isCompletedStatus(status) && status !== 'done') {
+      item.cancelled_at = null;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'scheduled_at')) {
+    const scheduledAt = normalizeText(req.body.scheduled_at || '');
+
+    if (scheduledAt) {
+      const parsed = new Date(scheduledAt);
+
+      if (Number.isNaN(parsed.getTime())) {
+        return res.status(400).json({
+          ok: false,
+          error: 'INVALID_SCHEDULED_AT',
+          message: 'Date de rappel invalide.',
+        });
+      }
+
+      item.scheduled_at = scheduledAt;
+      item.remind_at = scheduledAt;
+      item.reminder_at = scheduledAt;
+      item.has_exact_date = true;
+      item.schedule_precision = item.schedule_precision || 'manual_exact';
+    } else {
+      item.scheduled_at = null;
+      item.remind_at = null;
+      item.reminder_at = null;
+      item.has_exact_date = false;
+      item.schedule_precision = 'unscheduled';
+    }
+  }
+
+  item.updated_at = nowIso();
+
+  const previousBucket = item.previous_bucket || item.bucket;
+  const archivedItem = archiveCompletedOrganizationItem(store, item);
+  const shoppingArchive = previousBucket === 'shopping_list'
+    ? archiveShoppingListIfFullyChecked(store, userId)
+    : null;
+  const action = syncActionFromUpdatedItem(store, item);
+
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    item,
+    action,
+    archived_item: archivedItem,
+    shopping_archive: shoppingArchive,
+    message: archivedItem ? 'Élément terminé et archivé dans la mémoire.' : 'Élément mis à jour.',
+  });
+});
+
+app.delete('/store/items/:itemId', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const itemId = normalizeText(req.params.itemId);
+  const store = readStore();
+  const found = findUserStoreItem(store, userId, itemId);
+
+  if (!found) {
+    return res.status(404).json({
+      ok: false,
+      error: 'ITEM_NOT_FOUND',
+      message: 'Élément introuvable.',
+    });
+  }
+
+  const [deletedItem] = store.items.splice(found.index, 1);
+
+  let deletedAction = null;
+  if (deletedItem?.action_id && Array.isArray(store.actions)) {
+    const actionIndex = store.actions.findIndex(action => {
+      return action.id === deletedItem.action_id || action.item_id === deletedItem.id;
+    });
+
+    if (actionIndex >= 0) {
+      [deletedAction] = store.actions.splice(actionIndex, 1);
+    }
+  }
+
+  if (Array.isArray(store.relations)) {
+    store.relations = store.relations.filter(relation => {
+      return relation.source_id !== deletedItem.id &&
+        relation.target_id !== deletedItem.id &&
+        relation.source_id !== deletedItem.action_id &&
+        relation.target_id !== deletedItem.action_id;
+    });
+  }
+
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    deleted_item: deletedItem,
+    deleted_action: deletedAction,
+    message: 'Élément supprimé.',
+  });
+});
+
+
 app.get('/store/tasks', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
@@ -7415,13 +7985,27 @@ app.get('/store/reminders', (req, res) => {
   });
 });
 
+app.get('/store/shopping-list', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const items = store.items.filter(
+    item => item.user_id === userId && item.bucket === 'shopping_list'
+  );
+
+  res.json({
+    ok: true,
+    userId,
+    count: items.length,
+    items,
+  });
+});
+
 app.get('/store/projects', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const projects = store.projects.filter(project => {
-    return project.user_id === userId && !isInternalProject(project);
-  });
+  const projects = store.projects.filter(project => project.user_id === userId);
 
   res.json({
     ok: true,
@@ -7497,153 +8081,13 @@ app.get('/store/connected-accounts', (req, res) => {
   });
 });
 
-
-app.patch('/store/project/:projectId', (req, res) => {
-  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
-  const projectId = normalizeText(req.params.projectId);
-  const nextName = normalizeText(req.body?.name || req.body?.title || '');
-  const nextDescription = normalizeText(req.body?.description || '');
-  const store = readStore();
-
-  const project = store.projects.find(item => {
-    return item.user_id === userId && item.id === projectId && !isInternalProject(item);
-  });
-
-  if (!project) {
-    return res.status(404).json({
-      ok: false,
-      error: 'Projet introuvable',
-    });
-  }
-
-  if (nextName) {
-    if (isInternalProjectName(nextName)) {
-      return res.status(400).json({
-        ok: false,
-        error: 'PROJECT_NAME_RESERVED',
-        message: 'Ce nom est réservé au système Nyra.',
-      });
-    }
-
-    project.name = nextName.slice(0, 80);
-    project.key = normalizeKey(project.name);
-  }
-
-  if (typeof req.body?.description === 'string') {
-    project.description = nextDescription.slice(0, 500);
-  }
-
-  project.updated_at = nowIso();
-
-  store.contexts = Array.isArray(store.contexts) ? store.contexts.map(context => {
-    if (context.project_id !== project.id) return context;
-
-    return {
-      ...context,
-      name: context.context_type === 'project_spec'
-        ? `Cahier des charges — ${project.name}`
-        : `Contexte — ${project.name}`,
-      updated_at: nowIso(),
-    };
-  }) : [];
-
-  store.items = Array.isArray(store.items) ? store.items.map(item => {
-    if (item.project_id !== project.id) return item;
-
-    return {
-      ...item,
-      project_name: project.name,
-      updated_at: nowIso(),
-    };
-  }) : [];
-
-  store.actions = Array.isArray(store.actions) ? store.actions.map(action => {
-    if (action.project_id !== project.id) return action;
-
-    return {
-      ...action,
-      project_name: project.name,
-      updated_at: nowIso(),
-    };
-  }) : [];
-
-  writeStore(store);
-
-  return res.json({
-    ok: true,
-    userId,
-    project,
-    message: 'Projet mis à jour.',
-  });
-});
-
-app.delete('/store/project/:projectId', (req, res) => {
-  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
-  const projectId = normalizeText(req.params.projectId);
-  const store = readStore();
-
-  const project = store.projects.find(item => {
-    return item.user_id === userId && item.id === projectId && !isInternalProject(item);
-  });
-
-  if (!project) {
-    return res.status(404).json({
-      ok: false,
-      error: 'Projet introuvable',
-    });
-  }
-
-  store.projects = (Array.isArray(store.projects) ? store.projects : []).filter(item => {
-    return !(item.user_id === userId && item.id === projectId);
-  });
-
-  store.relations = (Array.isArray(store.relations) ? store.relations : []).filter(relation => {
-    return relation.user_id !== userId || (relation.source_id !== projectId && relation.target_id !== projectId);
-  });
-
-  store.contexts = (Array.isArray(store.contexts) ? store.contexts : []).filter(context => {
-    return context.user_id !== userId || context.project_id !== projectId;
-  });
-
-  store.items = (Array.isArray(store.items) ? store.items : []).map(item => {
-    if (item.user_id !== userId || item.project_id !== projectId) return item;
-
-    return {
-      ...item,
-      project_id: null,
-      project_name: null,
-      updated_at: nowIso(),
-    };
-  });
-
-  store.actions = (Array.isArray(store.actions) ? store.actions : []).map(action => {
-    if (action.user_id !== userId || action.project_id !== projectId) return action;
-
-    return {
-      ...action,
-      project_id: null,
-      project_name: null,
-      updated_at: nowIso(),
-    };
-  });
-
-  writeStore(store);
-
-  return res.json({
-    ok: true,
-    userId,
-    deleted_project_id: projectId,
-    message: 'Projet supprimé.',
-  });
-});
-
 app.get('/store/project/:projectId', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const projectId = normalizeText(req.params.projectId);
   const store = readStore();
 
   const project = store.projects.find(item => {
-    return item.user_id === userId && item.id === projectId && !isInternalProject(item);
+    return item.user_id === userId && item.id === projectId;
   });
 
   if (!project) {
