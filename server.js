@@ -1588,6 +1588,8 @@ function analyzeMessage(message) {
     datetime_hint: detectDatetimeHint(text),
   };
 
+  const looksLikeShortActionTask = /^(passer|faire|appeler|envoyer|répondre|repondre|payer|acheter|prendre|préparer|preparer|terminer|finir|ranger|nettoyer|lancer|tester|vérifier|verifier|contacter|réserver|reserver)\b/i.test(lower);
+
   if (
     includesAny(lower, [
       'je dois',
@@ -1598,7 +1600,12 @@ function analyzeMessage(message) {
       'à faire',
       'a faire',
       'ne pas oublier',
-    ])
+      'ajoute la tâche',
+      'ajoute la tache',
+      'ajoute tâche',
+      'ajoute tache',
+    ]) ||
+    looksLikeShortActionTask
   ) {
     analysis.type = 'task';
     analysis.is_task = true;
@@ -1742,33 +1749,6 @@ function detectAction(message, userId, analysis) {
     });
   }
 
-  if (analysis?.is_task) {
-    const shouldGoToday =
-      analysis.datetime_hint === 'today' ||
-      analysis.urgency === 'high' ||
-      detectPriority(text, analysis) === 'high';
-
-    if (shouldGoToday) {
-      return buildStructuredAction({
-        userId,
-        message,
-        actionType: 'add_to_today',
-        label: 'Ajouter à aujourd’hui',
-        status: 'done',
-        analysis,
-      });
-    }
-
-    return buildStructuredAction({
-      userId,
-      message,
-      actionType: 'idea_to_task',
-      label: 'Ajouter aux tâches',
-      status: 'done',
-      analysis,
-    });
-  }
-
   if (
     includesAny(lower, [
       'aide-moi à créer un rappel',
@@ -1794,6 +1774,33 @@ function detectAction(message, userId, analysis) {
       actionType: 'create_reminder',
       label: 'Créer un rappel',
       status: 'draft',
+      analysis,
+    });
+  }
+
+
+  if (analysis?.is_task) {
+    const shouldGoToday =
+      analysis.datetime_hint === 'today' ||
+      includesAny(lower, ['aujourd’hui', "aujourd'hui", 'ce soir', 'maintenant']);
+
+    if (shouldGoToday) {
+      return buildStructuredAction({
+        userId,
+        message,
+        actionType: 'add_to_today',
+        label: 'Ajouter à aujourd’hui',
+        status: 'done',
+        analysis,
+      });
+    }
+
+    return buildStructuredAction({
+      userId,
+      message,
+      actionType: 'idea_to_task',
+      label: 'Ajouter aux tâches',
+      status: 'done',
       analysis,
     });
   }
@@ -1949,12 +1956,9 @@ function buildSuggestions(analysis, action) {
 function getStoredItemStatusForAction(action) {
   const actionType = normalizeText(action?.action_type || action?.type || '');
 
-  // Une action peut être "terminée" techniquement parce que Nyra a bien rangé
+  // Une action peut être "terminée" techniquement parce que Nyra a bien ajouté
   // l'élément, mais l'élément utilisateur doit rester actif dans l'organisation.
   if (actionType === 'add_to_shopping_list') return 'active';
-  if (actionType === 'create_reminder') return 'active';
-  if (actionType === 'add_to_today') return 'active';
-  if (actionType === 'idea_to_task') return 'active';
 
   return action?.status || 'captured';
 }
@@ -2022,6 +2026,30 @@ function saveCapture({ userId, message, reply, analysis, action }) {
   }
 
   store.items.push(item);
+
+  if (action?.action_type === 'add_to_today' && analysis?.is_task) {
+    const companionTaskItem = {
+      ...item,
+      id: crypto.randomUUID(),
+      type: 'action_result',
+      bucket: 'tasks',
+      status: 'active',
+      action_type: 'idea_to_task',
+      action_label: 'Ajouter aux tâches',
+      action_id: null,
+      linked_today_item_id: item.id,
+      previous_bucket: null,
+      memory_category: null,
+      archived_at: null,
+      completed_at: null,
+      checked: false,
+      checked_at: null,
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    };
+
+    store.items.push(companionTaskItem);
+  }
 
   if (linkedProject && !relationExists(store, userId, item.id, linkedProject.id, 'belongs_to_project')) {
     createdRelation = createRelation({
@@ -3469,7 +3497,7 @@ function buildActionReply(action) {
   if (action.action_type === 'plan_now') return '✔ Plan créé : fais une seule action simple maintenant.';
   if (action.action_type === 'process_now') return '✔ On traite maintenant : commence par la plus petite action possible.';
   if (action.action_type === 'classify_as_idea') return '✔ Classé dans tes idées.';
-  if (action.action_type === 'idea_to_task') return '✔ Tâche ajoutée.';
+  if (action.action_type === 'idea_to_task') return '✔ Transformé en tâche concrète.';
   if (action.action_type === 'add_to_roadmap') return '✔ Ajouté à la roadmap projet.';
   if (action.action_type === 'create_project_spec') {
     return '✔ Idée capturée. Prochaine étape : la transformer en cahier des charges structuré.';
