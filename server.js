@@ -225,6 +225,20 @@ function normalizeKey(value) {
     .replace(/^-+|-+$/g, '');
 }
 
+function isInternalProjectName(value) {
+  const key = normalizeKey(value || '');
+  return key === 'nyra';
+}
+
+function isInternalProject(project) {
+  return Boolean(
+    isInternalProjectName(project?.name) ||
+    isInternalProjectName(project?.key) ||
+    project?.internal_project === true ||
+    project?.system_project === true
+  );
+}
+
 function buildGoogleNyraUserId(googleUserId, googleEmail) {
   const stableSource = normalizeText(googleUserId || googleEmail || crypto.randomUUID());
   return `google-${normalizeKey(stableSource)}`;
@@ -1761,10 +1775,13 @@ function saveCapture({ userId, message, reply, analysis, action }) {
   let createdRelation = null;
   let updatedContext = null;
 
-  if (analysis.project_name) {
+  if (analysis.project_name && !isInternalProjectName(analysis.project_name)) {
     linkedProject = ensureProject(store, userId, analysis.project_name, message);
-    item.project_id = linkedProject.id;
-    item.project_name = linkedProject.name;
+
+    if (linkedProject) {
+      item.project_id = linkedProject.id;
+      item.project_name = linkedProject.name;
+    }
   }
 
   store.items.push(item);
@@ -7084,368 +7101,17 @@ app.patch('/focus/sessions/:sessionId/status', (req, res) => {
   });
 });
 
-
-
-function findUserStoreItem(store, userId, itemId) {
-  const normalizedUserId = normalizeText(userId || 'local-user');
-  const normalizedItemId = normalizeText(itemId || '');
-
-  if (!normalizedItemId) return null;
-
-  const items = Array.isArray(store.items) ? store.items : [];
-  let index = items.findIndex(item => {
-    return item.id === normalizedItemId && item.user_id === normalizedUserId;
-  });
-
-  if (index === -1) {
-    index = items.findIndex(item => item.id === normalizedItemId);
-  }
-
-  if (index === -1) return null;
-
-  return {
-    index,
-    item: items[index],
-  };
-}
-
-function isCompletedStoreStatus(status) {
-  const normalized = normalizeText(status || '').toLowerCase();
-
-  return [
-    'done',
-    'completed',
-    'complete',
-    'cancelled',
-    'canceled',
-    'archived',
-    'dismissed',
-  ].includes(normalized);
-}
-
-function isStoreItemArchived(item) {
-  if (!item) return false;
-
-  return Boolean(
-    item.archived === true ||
-    item.archived_at ||
-    normalizeText(item.archive_status || '').toLowerCase() === 'archived' ||
-    normalizeText(item.status || '').toLowerCase() === 'archived'
-  );
-}
-
-function isStoreItemActive(item) {
-  if (!item) return false;
-  if (isStoreItemArchived(item)) return false;
-
-  return !isCompletedStoreStatus(item.status);
-}
-
-function archiveStoreItem(item, archiveType = 'completed', metadata = {}) {
-  if (!item) return item;
-
-  const now = nowIso();
-
-  item.archived = true;
-  item.archive_status = 'archived';
-  item.archive_type = archiveType;
-  item.original_bucket = item.original_bucket || item.bucket || null;
-  item.archived_at = item.archived_at || now;
-  item.updated_at = now;
-  item.archive_metadata = {
-    ...(item.archive_metadata && typeof item.archive_metadata === 'object' ? item.archive_metadata : {}),
-    ...(metadata && typeof metadata === 'object' ? metadata : {}),
-  };
-
-  if (!item.completed_at && ['completed', 'done', 'shopping_list_completed', 'routine_completed'].includes(archiveType)) {
-    item.completed_at = now;
-  }
-
-  if (!item.deleted_at && archiveType === 'deleted') {
-    item.deleted_at = now;
-  }
-
-  if (!isCompletedStoreStatus(item.status)) {
-    item.status = archiveType === 'deleted' ? 'cancelled' : 'done';
-  }
-
-  return item;
-}
-
-function getArchiveCategoryForItem(item) {
-  const bucket = item?.original_bucket || item?.bucket || '';
-  const actionType = item?.action_type || item?.type || '';
-
-  if (bucket === 'shopping_list' || actionType === 'add_to_shopping_list') return 'courses';
-  if (bucket === 'reminders' || actionType === 'create_reminder') return 'rappels';
-  if (bucket === 'tasks' || actionType === 'idea_to_task') return 'taches';
-  if (bucket === 'today') return 'today';
-  if (bucket === 'projects') return 'projets';
-  if (bucket === 'journal') return 'journal';
-  if (bucket === 'ideas') return 'idees';
-
-  return 'captures';
-}
-
-function decorateArchivedItem(item) {
-  return {
-    ...item,
-    memory_category: item.memory_category || getArchiveCategoryForItem(item),
-    memory_date: item.archived_at || item.completed_at || item.updated_at || item.created_at || null,
-  };
-}
-
-function syncActionFromUpdatedItem(store, item) {
-  if (!item?.action_id) return null;
-
-  const actions = Array.isArray(store.actions) ? store.actions : [];
-  const action = actions.find(existingAction => existingAction.id === item.action_id);
-
-  if (!action) return null;
-
-  action.title = item.title || action.title;
-  action.target = item.content || item.target || action.target;
-  action.status = item.status || action.status;
-  action.priority = item.priority || action.priority;
-  action.datetime_hint = item.datetime_hint ?? action.datetime_hint ?? null;
-  action.scheduled_at = item.scheduled_at ?? action.scheduled_at ?? null;
-  action.remind_at = item.remind_at ?? action.remind_at ?? null;
-  action.reminder_at = item.reminder_at ?? action.reminder_at ?? null;
-  action.checked = item.checked ?? action.checked ?? false;
-  action.archived = item.archived ?? action.archived ?? false;
-  action.archive_status = item.archive_status ?? action.archive_status ?? null;
-  action.archive_type = item.archive_type ?? action.archive_type ?? null;
-  action.archived_at = item.archived_at ?? action.archived_at ?? null;
-  action.original_bucket = item.original_bucket ?? action.original_bucket ?? item.bucket ?? null;
-  action.completed_at = item.completed_at ?? action.completed_at ?? null;
-  action.deleted_at = item.deleted_at ?? action.deleted_at ?? null;
-  action.updated_at = nowIso();
-
-  return action;
-}
-
-function archiveCompletedShoppingListIfReady(store, userId) {
-  const activeShoppingItems = (Array.isArray(store.items) ? store.items : []).filter(item => {
-    return item.user_id === userId && item.bucket === 'shopping_list' && !isStoreItemArchived(item);
-  });
-
-  if (!activeShoppingItems.length) {
-    return null;
-  }
-
-  const isFullyChecked = activeShoppingItems.every(item => Boolean(item.checked));
-
-  if (!isFullyChecked) {
-    return null;
-  }
-
-  const archiveGroupId = crypto.randomUUID();
-  const archivedAt = nowIso();
-
-  activeShoppingItems.forEach(item => {
-    item.completed_at = item.completed_at || archivedAt;
-    item.checked = true;
-    item.checked_at = item.checked_at || archivedAt;
-    archiveStoreItem(item, 'shopping_list_completed', {
-      archive_group_id: archiveGroupId,
-      item_count: activeShoppingItems.length,
-    });
-    syncActionFromUpdatedItem(store, item);
-  });
-
-  return {
-    archive_group_id: archiveGroupId,
-    archived_at: archivedAt,
-    item_count: activeShoppingItems.length,
-    items: activeShoppingItems.map(decorateArchivedItem),
-  };
-}
-
-app.patch('/store/items/:itemId', (req, res) => {
-  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
-  const itemId = normalizeText(req.params.itemId);
-  const store = readStore();
-  const found = findUserStoreItem(store, userId, itemId);
-
-  if (!found) {
-    return res.status(404).json({
-      ok: false,
-      error: 'ITEM_NOT_FOUND',
-      message: 'Élément introuvable.',
-    });
-  }
-
-  const item = found.item;
-  const allowedStatuses = ['captured', 'todo', 'active', 'suggested', 'done', 'completed', 'cancelled', 'canceled', 'draft', 'archived'];
-
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'title')) {
-    const title = normalizeText(req.body.title).slice(0, 120);
-    if (title) item.title = title;
-  }
-
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'content')) {
-    const content = normalizeText(req.body.content).slice(0, 1000);
-    if (content) item.content = content;
-  }
-
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'target')) {
-    const target = normalizeText(req.body.target).slice(0, 1000);
-    if (target) item.target = target;
-  }
-
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'checked')) {
-    item.checked = Boolean(req.body.checked);
-    item.checked_at = item.checked ? nowIso() : null;
-  }
-
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'status')) {
-    const status = normalizeText(req.body.status).toLowerCase();
-
-    if (!allowedStatuses.includes(status)) {
-      return res.status(400).json({
-        ok: false,
-        error: 'INVALID_STATUS',
-        allowed_statuses: allowedStatuses,
-      });
-    }
-
-    item.status = status;
-
-    if (status === 'done' || status === 'completed' || status === 'archived') {
-      item.completed_at = item.completed_at || nowIso();
-      archiveStoreItem(item, item.bucket === 'reminders' ? 'reminder_completed' : 'completed', {
-        completed_from: 'mobile_organization',
-      });
-    }
-
-    if (status === 'cancelled' || status === 'canceled') {
-      item.cancelled_at = item.cancelled_at || nowIso();
-      archiveStoreItem(item, 'cancelled', {
-        completed_from: 'mobile_organization',
-      });
-    }
-  }
-
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'scheduled_at')) {
-    const scheduledAt = normalizeText(req.body.scheduled_at || '');
-
-    if (scheduledAt) {
-      const parsed = new Date(scheduledAt);
-
-      if (Number.isNaN(parsed.getTime())) {
-        return res.status(400).json({
-          ok: false,
-          error: 'INVALID_SCHEDULED_AT',
-          message: 'Date de rappel invalide.',
-        });
-      }
-
-      item.scheduled_at = scheduledAt;
-      item.remind_at = scheduledAt;
-      item.reminder_at = scheduledAt;
-      item.has_exact_date = true;
-      item.schedule_precision = item.schedule_precision || 'manual_exact';
-    } else {
-      item.scheduled_at = null;
-      item.remind_at = null;
-      item.reminder_at = null;
-      item.has_exact_date = false;
-      item.schedule_precision = 'unscheduled';
-    }
-  }
-
-  item.updated_at = nowIso();
-  let action = syncActionFromUpdatedItem(store, item);
-  const shoppingArchive = item.bucket === 'shopping_list'
-    ? archiveCompletedShoppingListIfReady(store, userId)
-    : null;
-
-  if (shoppingArchive) {
-    action = syncActionFromUpdatedItem(store, item) || action;
-  }
-
-  writeStore(store);
-
-  return res.json({
-    ok: true,
-    userId,
-    item: decorateArchivedItem(item),
-    action,
-    shopping_archive: shoppingArchive,
-    message: shoppingArchive
-      ? 'Liste de courses terminée et archivée.'
-      : 'Élément mis à jour.',
-  });
-});
-
-app.delete('/store/items/:itemId', (req, res) => {
-  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
-  const itemId = normalizeText(req.params.itemId);
-  const store = readStore();
-  const found = findUserStoreItem(store, userId, itemId);
-
-  if (!found) {
-    return res.status(404).json({
-      ok: false,
-      error: 'ITEM_NOT_FOUND',
-      message: 'Élément introuvable.',
-    });
-  }
-
-  const item = archiveStoreItem(found.item, 'deleted', {
-    deleted_from: 'mobile_organization',
-  });
-  item.deleted_at = item.deleted_at || nowIso();
-
-  const action = syncActionFromUpdatedItem(store, item);
-
-  writeStore(store);
-
-  return res.json({
-    ok: true,
-    userId,
-    archived_item: decorateArchivedItem(item),
-    action,
-    message: 'Élément retiré de l’organisation et gardé en mémoire.',
-  });
-});
-
-app.get('/store/memory', (req, res) => {
-  const userId = normalizeText(req.query?.userId || 'local-user');
-  const store = readStore();
-
-  const items = (Array.isArray(store.items) ? store.items : [])
-    .filter(item => {
-      return item.user_id === userId && (isStoreItemArchived(item) || (item.bucket !== 'shopping_list' && isCompletedStoreStatus(item.status)));
-    })
-    .map(decorateArchivedItem)
-    .sort((a, b) => {
-      return new Date(b.memory_date || 0).getTime() - new Date(a.memory_date || 0).getTime();
-    });
-
-  return res.json({
-    ok: true,
-    userId,
-    count: items.length,
-    items,
-  });
-});
-
 app.get('/store', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
   const items = store.items.filter(item => item.user_id === userId);
-  const memory_items = items
-    .filter(item => isStoreItemArchived(item) || (item.bucket !== 'shopping_list' && isCompletedStoreStatus(item.status)))
-    .map(decorateArchivedItem);
 
   res.json({
     ok: true,
     userId,
     summary: getStoreSummary(userId),
     items,
-    memory_items,
   });
 });
 
@@ -7690,7 +7356,7 @@ app.get('/store/tasks', (req, res) => {
   const store = readStore();
 
   const tasks = store.items.filter(
-    item => item.user_id === userId && item.bucket === 'tasks' && isStoreItemActive(item)
+    item => item.user_id === userId && item.bucket === 'tasks'
   );
 
   res.json({
@@ -7722,7 +7388,7 @@ app.get('/store/today', (req, res) => {
   const store = readStore();
 
   const today = store.items.filter(
-    item => item.user_id === userId && item.bucket === 'today' && isStoreItemActive(item)
+    item => item.user_id === userId && item.bucket === 'today'
   );
 
   res.json({
@@ -7738,7 +7404,7 @@ app.get('/store/reminders', (req, res) => {
   const store = readStore();
 
   const reminders = store.items.filter(
-    item => item.user_id === userId && item.bucket === 'reminders' && isStoreItemActive(item)
+    item => item.user_id === userId && item.bucket === 'reminders'
   );
 
   res.json({
@@ -7749,29 +7415,13 @@ app.get('/store/reminders', (req, res) => {
   });
 });
 
-
-
-app.get('/store/shopping-list', (req, res) => {
-  const userId = normalizeText(req.query?.userId || 'local-user');
-  const store = readStore();
-
-  const items = store.items.filter(
-    item => item.user_id === userId && item.bucket === 'shopping_list' && !isStoreItemArchived(item)
-  );
-
-  res.json({
-    ok: true,
-    userId,
-    count: items.length,
-    items,
-  });
-});
-
 app.get('/store/projects', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const projects = store.projects.filter(project => project.user_id === userId);
+  const projects = store.projects.filter(project => {
+    return project.user_id === userId && !isInternalProject(project);
+  });
 
   res.json({
     ok: true,
@@ -7847,13 +7497,153 @@ app.get('/store/connected-accounts', (req, res) => {
   });
 });
 
+
+app.patch('/store/project/:projectId', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const projectId = normalizeText(req.params.projectId);
+  const nextName = normalizeText(req.body?.name || req.body?.title || '');
+  const nextDescription = normalizeText(req.body?.description || '');
+  const store = readStore();
+
+  const project = store.projects.find(item => {
+    return item.user_id === userId && item.id === projectId && !isInternalProject(item);
+  });
+
+  if (!project) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Projet introuvable',
+    });
+  }
+
+  if (nextName) {
+    if (isInternalProjectName(nextName)) {
+      return res.status(400).json({
+        ok: false,
+        error: 'PROJECT_NAME_RESERVED',
+        message: 'Ce nom est réservé au système Nyra.',
+      });
+    }
+
+    project.name = nextName.slice(0, 80);
+    project.key = normalizeKey(project.name);
+  }
+
+  if (typeof req.body?.description === 'string') {
+    project.description = nextDescription.slice(0, 500);
+  }
+
+  project.updated_at = nowIso();
+
+  store.contexts = Array.isArray(store.contexts) ? store.contexts.map(context => {
+    if (context.project_id !== project.id) return context;
+
+    return {
+      ...context,
+      name: context.context_type === 'project_spec'
+        ? `Cahier des charges — ${project.name}`
+        : `Contexte — ${project.name}`,
+      updated_at: nowIso(),
+    };
+  }) : [];
+
+  store.items = Array.isArray(store.items) ? store.items.map(item => {
+    if (item.project_id !== project.id) return item;
+
+    return {
+      ...item,
+      project_name: project.name,
+      updated_at: nowIso(),
+    };
+  }) : [];
+
+  store.actions = Array.isArray(store.actions) ? store.actions.map(action => {
+    if (action.project_id !== project.id) return action;
+
+    return {
+      ...action,
+      project_name: project.name,
+      updated_at: nowIso(),
+    };
+  }) : [];
+
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    project,
+    message: 'Projet mis à jour.',
+  });
+});
+
+app.delete('/store/project/:projectId', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const projectId = normalizeText(req.params.projectId);
+  const store = readStore();
+
+  const project = store.projects.find(item => {
+    return item.user_id === userId && item.id === projectId && !isInternalProject(item);
+  });
+
+  if (!project) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Projet introuvable',
+    });
+  }
+
+  store.projects = (Array.isArray(store.projects) ? store.projects : []).filter(item => {
+    return !(item.user_id === userId && item.id === projectId);
+  });
+
+  store.relations = (Array.isArray(store.relations) ? store.relations : []).filter(relation => {
+    return relation.user_id !== userId || (relation.source_id !== projectId && relation.target_id !== projectId);
+  });
+
+  store.contexts = (Array.isArray(store.contexts) ? store.contexts : []).filter(context => {
+    return context.user_id !== userId || context.project_id !== projectId;
+  });
+
+  store.items = (Array.isArray(store.items) ? store.items : []).map(item => {
+    if (item.user_id !== userId || item.project_id !== projectId) return item;
+
+    return {
+      ...item,
+      project_id: null,
+      project_name: null,
+      updated_at: nowIso(),
+    };
+  });
+
+  store.actions = (Array.isArray(store.actions) ? store.actions : []).map(action => {
+    if (action.user_id !== userId || action.project_id !== projectId) return action;
+
+    return {
+      ...action,
+      project_id: null,
+      project_name: null,
+      updated_at: nowIso(),
+    };
+  });
+
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    deleted_project_id: projectId,
+    message: 'Projet supprimé.',
+  });
+});
+
 app.get('/store/project/:projectId', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const projectId = normalizeText(req.params.projectId);
   const store = readStore();
 
   const project = store.projects.find(item => {
-    return item.user_id === userId && item.id === projectId;
+    return item.user_id === userId && item.id === projectId && !isInternalProject(item);
   });
 
   if (!project) {
