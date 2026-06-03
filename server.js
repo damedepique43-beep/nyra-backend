@@ -1919,6 +1919,16 @@ function buildSuggestions(analysis, action) {
   return uniqueArray(suggestions).slice(0, 4);
 }
 
+function getStoredItemStatusForAction(action) {
+  const actionType = normalizeText(action?.action_type || action?.type || '');
+
+  // Une action peut être "terminée" techniquement parce que Nyra a bien ajouté
+  // l'élément, mais l'élément utilisateur doit rester actif dans l'organisation.
+  if (actionType === 'add_to_shopping_list') return 'active';
+
+  return action?.status || 'captured';
+}
+
 function createStoredItem({ userId, message, analysis, action }) {
   const bucket = action ? actionToBucket(action.action_type) : analysis.suggested_bucket;
 
@@ -1945,7 +1955,7 @@ function createStoredItem({ userId, message, analysis, action }) {
           analysis.project_name ? normalizeKey(analysis.project_name) : null,
         ])
       : analysis.tags,
-    status: action ? action.status : analysis.is_task ? 'todo' : 'captured',
+    status: action ? getStoredItemStatusForAction(action) : analysis.is_task ? 'todo' : 'captured',
     project_name: analysis.project_name || null,
     project_id: null,
     action_type: action ? action.action_type : null,
