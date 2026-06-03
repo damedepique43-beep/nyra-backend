@@ -7935,9 +7935,16 @@ app.get('/store/tasks', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const tasks = store.items.filter(
-    item => item.user_id === userId && item.bucket === 'tasks'
-  );
+  const tasks = (Array.isArray(store.items) ? store.items : [])
+    .filter(item => {
+      return (
+        itemBelongsToUser(item, userId) &&
+        item.bucket === 'tasks' &&
+        !item.archived_at &&
+        !isCompletedStatus(item.status) &&
+        normalizeText(item.status || '').toLowerCase() !== 'captured'
+      );
+    });
 
   res.json({
     ok: true,
@@ -7967,9 +7974,15 @@ app.get('/store/today', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const today = store.items.filter(
-    item => item.user_id === userId && item.bucket === 'today'
-  );
+  const today = (Array.isArray(store.items) ? store.items : [])
+    .filter(item => {
+      return (
+        itemBelongsToUser(item, userId) &&
+        item.bucket === 'today' &&
+        !item.archived_at &&
+        !isCompletedStatus(item.status)
+      );
+    });
 
   res.json({
     ok: true,
@@ -7983,15 +7996,22 @@ app.get('/store/reminders', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const reminders = store.items.filter(
-    item => item.user_id === userId && item.bucket === 'reminders'
-  );
+  const reminders = (Array.isArray(store.items) ? store.items : [])
+    .filter(item => {
+      return (
+        itemBelongsToUser(item, userId) &&
+        item.bucket === 'reminders' &&
+        !item.archived_at &&
+        !isCompletedStatus(item.status)
+      );
+    });
 
   res.json({
     ok: true,
     userId,
     count: reminders.length,
     reminders,
+    items: reminders,
   });
 });
 
@@ -7999,15 +8019,22 @@ app.get('/store/shopping-list', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const items = store.items.filter(
-    item => item.user_id === userId && item.bucket === 'shopping_list'
-  );
+  const items = (Array.isArray(store.items) ? store.items : [])
+    .filter(item => {
+      return (
+        itemBelongsToUser(item, userId) &&
+        item.bucket === 'shopping_list' &&
+        !item.archived_at &&
+        !isCompletedStatus(item.status)
+      );
+    });
 
   res.json({
     ok: true,
     userId,
     count: items.length,
     items,
+    shopping_list: items,
   });
 });
 
@@ -8015,7 +8042,15 @@ app.get('/store/projects', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const projects = store.projects.filter(project => project.user_id === userId);
+  const projects = (Array.isArray(store.projects) ? store.projects : [])
+    .filter(project => {
+      const projectName = normalizeText(project.name || '').toLowerCase();
+      return (
+        project.user_id === userId &&
+        projectName !== 'nyra' &&
+        normalizeText(project.status || 'active').toLowerCase() !== 'deleted'
+      );
+    });
 
   res.json({
     ok: true,
