@@ -676,6 +676,36 @@ function cleanActionTitle(text) {
   return title.length > 80 ? `${title.slice(0, 80)}…` : title;
 }
 
+
+function cleanReminderTitle(text) {
+  let clean = normalizeText(text)
+    .replace(/^contexte\s*:\s*/i, '')
+    .replace(/^aide-moi\s+à\s+créer\s+un\s+rappel\s+(?:pour\s+|de\s+)?/i, '')
+    .replace(/^aide moi\s+à\s+créer\s+un\s+rappel\s+(?:pour\s+|de\s+)?/i, '')
+    .replace(/^crée\s+un\s+rappel\s+(?:pour\s+|de\s+)?/i, '')
+    .replace(/^créer\s+un\s+rappel\s+(?:pour\s+|de\s+)?/i, '')
+    .replace(/^rappelle-moi\s+(?:de\s+)?/i, '')
+    .replace(/^rappelle moi\s+(?:de\s+)?/i, '')
+    .replace(/^rappel-moi\s+(?:de\s+)?/i, '')
+    .replace(/^rappel moi\s+(?:de\s+)?/i, '')
+    .replace(/^rappel\s+(?:de\s+)?/i, '')
+    .replace(/^rappelle\s+(?:de\s+)?/i, '');
+
+  clean = clean
+    .replace(/(?:aujourd'hui|aujourd’hui|demain matin|demain après-midi|demain apres-midi|demain soir|demain|ce soir|cette semaine|ce week-end|week-end|weekend)/gi, ' ')
+    .replace(/(?:à|a|vers)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}/gi, ' ')
+    .replace(/dans\s+\d{1,3}\s+minutes?/gi, ' ')
+    .replace(/^\s*(?:de|d'|d’|pour)\s+/i, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[.!?;:]+$/g, '')
+    .trim();
+
+  if (!clean) return 'Rappel Nyra';
+
+  const title = clean.charAt(0).toUpperCase() + clean.slice(1);
+  return title.length > 80 ? `${title.slice(0, 80)}…` : title;
+}
+
 function detectDatetimeHint(text) {
   const lower = normalizeText(text).toLowerCase();
 
@@ -717,19 +747,51 @@ function getLocalDateParts(date = new Date(), timeZone = 'Europe/Paris') {
   };
 }
 
+function getTimeZoneOffsetMinutes(date, timeZone = 'Europe/Paris') {
+  const formatter = new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(date).reduce((acc, part) => {
+    acc[part.type] = part.value;
+    return acc;
+  }, {});
+
+  const asUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second)
+  );
+
+  return Math.round((asUtc - date.getTime()) / 60000);
+}
+
 function buildParisDateAt(hour, minute = 0, dayOffset = 0) {
   const baseParts = getLocalDateParts(new Date(), 'Europe/Paris');
-  const utcCandidate = new Date(Date.UTC(
+  const localWallTimeAsUtc = new Date(Date.UTC(
     baseParts.year,
     baseParts.month - 1,
     baseParts.day + dayOffset,
-    Number(hour || 9) - 1,
+    Number(hour || 9),
     Number(minute || 0),
     0,
     0
   ));
 
-  return utcCandidate.toISOString();
+  const offsetMinutes = getTimeZoneOffsetMinutes(localWallTimeAsUtc, 'Europe/Paris');
+  const realUtcDate = new Date(localWallTimeAsUtc.getTime() - offsetMinutes * 60000);
+
+  return realUtcDate.toISOString();
 }
 
 function extractExplicitTime(text) {
@@ -953,8 +1015,8 @@ function buildStructuredAction({ userId, message, actionType, label, status, ana
     action_type: actionType,
     type: actionType,
     label,
-    title: cleanActionTitle(target),
-    target,
+    title: actionType === 'create_reminder' ? cleanReminderTitle(target) : cleanActionTitle(target),
+    target: actionType === 'create_reminder' ? cleanReminderTitle(target) : target,
     status,
     priority,
     datetime_hint: datetimeHint,
@@ -1925,6 +1987,7 @@ function getStoredItemStatusForAction(action) {
   // Une action peut être "terminée" techniquement parce que Nyra a bien ajouté
   // l'élément, mais l'élément utilisateur doit rester actif dans l'organisation.
   if (actionType === 'add_to_shopping_list') return 'active';
+  if (actionType === 'create_reminder') return 'active';
 
   return action?.status || 'captured';
 }
@@ -7935,16 +7998,9 @@ app.get('/store/tasks', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const tasks = (Array.isArray(store.items) ? store.items : [])
-    .filter(item => {
-      return (
-        itemBelongsToUser(item, userId) &&
-        item.bucket === 'tasks' &&
-        !item.archived_at &&
-        !isCompletedStatus(item.status) &&
-        normalizeText(item.status || '').toLowerCase() !== 'captured'
-      );
-    });
+  const tasks = store.items.filter(
+    item => item.user_id === userId && item.bucket === 'tasks'
+  );
 
   res.json({
     ok: true,
@@ -7974,15 +8030,9 @@ app.get('/store/today', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const today = (Array.isArray(store.items) ? store.items : [])
-    .filter(item => {
-      return (
-        itemBelongsToUser(item, userId) &&
-        item.bucket === 'today' &&
-        !item.archived_at &&
-        !isCompletedStatus(item.status)
-      );
-    });
+  const today = store.items.filter(
+    item => item.user_id === userId && item.bucket === 'today'
+  );
 
   res.json({
     ok: true,
@@ -7996,22 +8046,15 @@ app.get('/store/reminders', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const reminders = (Array.isArray(store.items) ? store.items : [])
-    .filter(item => {
-      return (
-        itemBelongsToUser(item, userId) &&
-        item.bucket === 'reminders' &&
-        !item.archived_at &&
-        !isCompletedStatus(item.status)
-      );
-    });
+  const reminders = store.items.filter(
+    item => item.user_id === userId && item.bucket === 'reminders'
+  );
 
   res.json({
     ok: true,
     userId,
     count: reminders.length,
     reminders,
-    items: reminders,
   });
 });
 
@@ -8019,22 +8062,15 @@ app.get('/store/shopping-list', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const items = (Array.isArray(store.items) ? store.items : [])
-    .filter(item => {
-      return (
-        itemBelongsToUser(item, userId) &&
-        item.bucket === 'shopping_list' &&
-        !item.archived_at &&
-        !isCompletedStatus(item.status)
-      );
-    });
+  const items = store.items.filter(
+    item => item.user_id === userId && item.bucket === 'shopping_list'
+  );
 
   res.json({
     ok: true,
     userId,
     count: items.length,
     items,
-    shopping_list: items,
   });
 });
 
@@ -8042,15 +8078,7 @@ app.get('/store/projects', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const projects = (Array.isArray(store.projects) ? store.projects : [])
-    .filter(project => {
-      const projectName = normalizeText(project.name || '').toLowerCase();
-      return (
-        project.user_id === userId &&
-        projectName !== 'nyra' &&
-        normalizeText(project.status || 'active').toLowerCase() !== 'deleted'
-      );
-    });
+  const projects = store.projects.filter(project => project.user_id === userId);
 
   res.json({
     ok: true,
