@@ -750,18 +750,6 @@ function resolveReminderSchedule(text, datetimeHint) {
   const lower = normalizeText(text).toLowerCase();
   const explicitTime = extractExplicitTime(lower);
 
-  const relativeSecondsMatch = lower.match(/dans\s+(\d{1,3})\s+secondes?/i);
-  if (relativeSecondsMatch?.[1]) {
-    const seconds = Number(relativeSecondsMatch[1]);
-    if (seconds > 0 && seconds <= 3600) {
-      return {
-        scheduled_at: new Date(Date.now() + seconds * 1000).toISOString(),
-        precision: 'relative_exact_seconds',
-        has_exact_date: true,
-      };
-    }
-  }
-
   if (includesAny(lower, ['dans 5 minutes'])) {
     return {
       scheduled_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
@@ -1581,37 +1569,100 @@ function updateProjectContext(store, userId, project) {
   return context;
 }
 
-function isLikelyStandaloneTask(text) {
-  const clean = normalizeText(text);
-  const lower = clean.toLowerCase();
 
-  if (!clean || clean.length < 4) return false;
+function looksLikeBareTask(text) {
+  const value = normalizeText(text);
+  const lower = value.toLowerCase();
 
-  const ignored = [
+  if (!value) return false;
+  if (value.length < 3 || value.length > 140) return false;
+  if (value.includes('?')) return false;
+
+  if (includesAny(lower, [
     'bonjour',
     'coucou',
     'hello',
     'salut',
-    'non',
-    'oui',
-    'ok',
     'merci',
-  ];
-
-  if (ignored.includes(lower)) return false;
+    'ok',
+    'oui',
+    'non',
+  ]) && value.split(/\s+/).length <= 3) {
+    return false;
+  }
 
   if (includesAny(lower, [
-    'je suis',
     'je me sens',
-    'j’ai une idée',
-    "j'ai une idée",
-    'idée',
-    'idee',
+    'je suis ko',
+    'je suis fatiguée',
+    'je suis fatiguee',
+    'je suis triste',
+    'j ai peur',
+    "j'ai peur",
+    'angoisse',
+    'stress',
   ])) {
     return false;
   }
 
-  return /^(appeler|passer|faire|envoyer|répondre|repondre|ranger|nettoyer|payer|prendre|acheter|réserver|reserver|annuler|finir|terminer|préparer|preparer|créer|creer|vérifier|verifier|contacter|déposer|deposer|récupérer|recuperer|commander|relancer|chercher|trouver|imprimer|scanner|poster|mettre|sortir|vider)\b/i.test(clean);
+  if (includesAny(lower, [
+    'idée',
+    'idee',
+    'j ai une idée',
+    "j'ai une idée",
+    'concept',
+    'ça pourrait',
+    'ca pourrait',
+    'on pourrait',
+  ])) {
+    return false;
+  }
+
+  const startsLikeAction = /^(appeler|envoyer|répondre|repondre|payer|faire|passer|ranger|nettoyer|laver|acheter|prendre|préparer|preparer|terminer|finir|relancer|contacter|réserver|reserver|annuler|programmer|vérifier|verifier|imprimer|poster|déposer|deposer|chercher|commander|remplir|envoyer|mettre|sortir)\b/i.test(value);
+
+  const containsTaskNoun = includesAny(lower, [
+    'aspirateur',
+    'caf',
+    'garage',
+    'médecin',
+    'medecin',
+    'rdv',
+    'rendez-vous',
+    'facture',
+    'assurance',
+    'papier',
+    'dossier',
+    'mail',
+    'message',
+    'appel',
+    'courses',
+    'lessive',
+    'vaisselle',
+    'ménage',
+    'menage',
+  ]);
+
+  const hasDateHint = Boolean(detectDatetimeHint(value));
+
+  return startsLikeAction || (containsTaskNoun && hasDateHint);
+}
+
+function cloneStoredItemAsTaskFromToday({ sourceItem, userId }) {
+  if (!sourceItem || sourceItem.bucket !== 'today') return null;
+
+  return {
+    ...sourceItem,
+    id: crypto.randomUUID(),
+    user_id: userId || sourceItem.user_id,
+    bucket: 'tasks',
+    type: 'task',
+    status: 'active',
+    action_type: 'idea_to_task',
+    action_label: 'Ajouter une tâche',
+    created_at: nowIso(),
+    updated_at: nowIso(),
+    mirrored_from_today_id: sourceItem.id,
+  };
 }
 
 function analyzeMessage(message) {
@@ -1643,7 +1694,10 @@ function analyzeMessage(message) {
       'à faire',
       'a faire',
       'ne pas oublier',
-    ])
+      'tâche',
+      'tache',
+    ]) ||
+    looksLikeBareTask(text)
   ) {
     analysis.type = 'task';
     analysis.is_task = true;
@@ -1816,32 +1870,6 @@ function detectAction(message, userId, analysis) {
     });
   }
 
-  if (analysis?.is_task) {
-    const shouldGoToday =
-      analysis.datetime_hint === 'today' ||
-      includesAny(lower, ['aujourd’hui', "aujourd'hui", 'ce soir', 'maintenant']);
-
-    if (shouldGoToday) {
-      return buildStructuredAction({
-        userId,
-        message,
-        actionType: 'add_to_today',
-        label: 'Ajouter à aujourd’hui',
-        status: 'done',
-        analysis,
-      });
-    }
-
-    return buildStructuredAction({
-      userId,
-      message,
-      actionType: 'idea_to_task',
-      label: 'Ajouter aux tâches',
-      status: 'done',
-      analysis,
-    });
-  }
-
   if (
     includesAny(lower, [
       'aide-moi à planifier',
@@ -1948,6 +1976,32 @@ function detectAction(message, userId, analysis) {
     });
   }
 
+  if (analysis?.is_task) {
+    const shouldGoToday =
+      analysis.datetime_hint === 'today' ||
+      includesAny(lower, ['aujourd’hui', "aujourd'hui", 'maintenant', 'ce soir']);
+
+    if (shouldGoToday) {
+      return buildStructuredAction({
+        userId,
+        message,
+        actionType: 'add_to_today',
+        label: 'Ajouter à aujourd’hui',
+        status: 'done',
+        analysis,
+      });
+    }
+
+    return buildStructuredAction({
+      userId,
+      message,
+      actionType: 'idea_to_task',
+      label: 'Ajouter une tâche',
+      status: 'done',
+      analysis,
+    });
+  }
+
   return null;
 }
 
@@ -1993,9 +2047,12 @@ function buildSuggestions(analysis, action) {
 function getStoredItemStatusForAction(action) {
   const actionType = normalizeText(action?.action_type || action?.type || '');
 
-  // Une action peut être "terminée" techniquement parce que Nyra a bien ajouté
+  // Une action peut être "terminée" techniquement parce que Nyra a bien rangé
   // l'élément, mais l'élément utilisateur doit rester actif dans l'organisation.
   if (actionType === 'add_to_shopping_list') return 'active';
+  if (actionType === 'create_reminder') return 'active';
+  if (actionType === 'add_to_today') return 'active';
+  if (actionType === 'idea_to_task') return 'active';
 
   return action?.status || 'captured';
 }
@@ -2042,42 +2099,6 @@ function createStoredItem({ userId, message, analysis, action }) {
   };
 }
 
-function buildTodayTaskMirrorItem({ userId, sourceItem, analysis }) {
-  return {
-    ...sourceItem,
-    id: crypto.randomUUID(),
-    type: 'task',
-    bucket: 'tasks',
-    status: 'active',
-    action_type: 'idea_to_task',
-    action_label: 'Ajouter aux tâches',
-    action_id: null,
-    tags: uniqueArray([
-      ...(Array.isArray(sourceItem.tags) ? sourceItem.tags : []),
-      'tâche',
-      'linked_today',
-    ]),
-    linked_today_item_id: sourceItem.id,
-    created_at: nowIso(),
-    updated_at: nowIso(),
-  };
-}
-
-function shouldCreateTaskMirrorForToday(store, userId, sourceItem, action, analysis) {
-  if (!action || action.action_type !== 'add_to_today') return false;
-  if (!analysis?.is_task) return false;
-  if (!sourceItem || sourceItem.bucket !== 'today') return false;
-
-  const sourceKey = normalizeKey(sourceItem.content || sourceItem.title || '');
-  if (!sourceKey) return false;
-
-  return !(Array.isArray(store.items) ? store.items : []).some(item => {
-    if (item.user_id !== userId || item.bucket !== 'tasks') return false;
-    const itemKey = normalizeKey(item.content || item.title || '');
-    return itemKey === sourceKey && !['done', 'completed', 'cancelled', 'deleted'].includes(normalizeText(item.status || '').toLowerCase());
-  });
-}
-
 function saveCapture({ userId, message, reply, analysis, action }) {
   const store = readStore();
 
@@ -2100,15 +2121,11 @@ function saveCapture({ userId, message, reply, analysis, action }) {
 
   store.items.push(item);
 
-  let mirroredTaskItem = null;
+  const mirroredTaskItem = action?.action_type === 'add_to_today' && analysis?.is_task
+    ? cloneStoredItemAsTaskFromToday({ sourceItem: item, userId })
+    : null;
 
-  if (shouldCreateTaskMirrorForToday(store, userId, item, action, analysis)) {
-    mirroredTaskItem = buildTodayTaskMirrorItem({
-      userId,
-      sourceItem: item,
-      analysis,
-    });
-
+  if (mirroredTaskItem) {
     if (linkedProject) {
       mirroredTaskItem.project_id = linkedProject.id;
       mirroredTaskItem.project_name = linkedProject.name;
@@ -2132,6 +2149,22 @@ function saveCapture({ userId, message, reply, analysis, action }) {
 
     store.relations.push(createdRelation);
     updatedContext = updateProjectContext(store, userId, linkedProject);
+  }
+
+  if (linkedProject && mirroredTaskItem && !relationExists(store, userId, mirroredTaskItem.id, linkedProject.id, 'belongs_to_project')) {
+    store.relations.push(
+      createRelation({
+        userId,
+        sourceId: mirroredTaskItem.id,
+        targetId: linkedProject.id,
+        relationType: 'belongs_to_project',
+        confidence: 0.9,
+        metadata: {
+          project_name: linkedProject.name,
+          detection: 'today_task_mirror',
+        },
+      })
+    );
   }
 
   let actionRecord = null;
@@ -2197,7 +2230,6 @@ function saveCapture({ userId, message, reply, analysis, action }) {
 
   return {
     item,
-    mirrored_task_item: mirroredTaskItem,
     action: actionRecord,
     project: linkedProject,
     relation: createdRelation,
@@ -3555,7 +3587,7 @@ function buildActionReply(action) {
     return '✔ Action préparée. Une connexion externe sera nécessaire pour la synchroniser.';
   }
 
-  if (action.action_type === 'add_to_today') return '✔ Ajouté à tes priorités d’aujourd’hui.';
+  if (action.action_type === 'add_to_today') return `✔ Ajouté à aujourd’hui : ${action.title || action.target}.`;
   if (action.action_type === 'add_to_shopping_list') return `✔ Ajouté à ta liste de courses : ${action.title || action.target}.`;
   if (action.action_type === 'create_reminder') {
     if (action.scheduled_at) return '✔ Rappel créé et programmé.';
