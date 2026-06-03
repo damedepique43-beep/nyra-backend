@@ -661,6 +661,9 @@ function cleanActionTitle(text) {
     .replace(/^rappelle-moi\s+/i, '')
     .replace(/^rappelle moi\s+/i, '')
     .replace(/^rappelle\s+/i, '')
+    .replace(/^ajoute\s+(?:la\s+)?t[âa]che\s*:?\s*/i, '')
+    .replace(/^cr[ée]e\s+(?:la\s+)?t[âa]che\s*:?\s*/i, '')
+    .replace(/^note\s+(?:la\s+)?t[âa]che\s*:?\s*/i, '')
     .replace(/^ajoute\s+/i, '')
     .replace(/^rajoute\s+/i, '')
     .replace(/^mets\s+/i, '')
@@ -676,37 +679,6 @@ function cleanActionTitle(text) {
   return title.length > 80 ? `${title.slice(0, 80)}…` : title;
 }
 
-
-function cleanReminderTitle(text) {
-  let clean = normalizeText(text);
-
-  clean = clean
-    .replace(/^contexte\s*:\s*/i, '')
-    .replace(/^aide[- ]?moi\s+à\s+créer\s+un\s+rappel\s*(?:pour\s+|de\s+)?/i, '')
-    .replace(/^crée\s+un\s+rappel\s*(?:pour\s+|de\s+)?/i, '')
-    .replace(/^créer\s+un\s+rappel\s*(?:pour\s+|de\s+)?/i, '')
-    .replace(/^rappelle[- ]?moi\s*(?:de\s+)?/i, '')
-    .replace(/^rappel[- ]?moi\s*(?:de\s+)?/i, '')
-    .replace(/^rappel\s*(?:de\s+)?/i, '')
-    .replace(/^rappelle\s*(?:de\s+)?/i, '')
-    .trim();
-
-  // Retire les marqueurs de date/heure qui ne doivent jamais devenir le titre du rappel.
-  clean = clean
-    .replace(/(^|\s)(aujourd'hui|aujourd’hui|demain matin|demain après-midi|demain apres-midi|demain soir|demain|ce soir|cette semaine|ce week-end|week-end|weekend)(?=\s|$)/gi, ' ')
-    .replace(/(^|\s)(à|a|vers)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}(?=\s|$)/gi, ' ')
-    .replace(/(^|\s)dans\s+\d{1,3}\s+minutes?(?=\s|$)/gi, ' ')
-    .replace(/^\s*(?:de|d'|d’|pour)\s*/i, '')
-    .replace(/\s+(?:de|d'|d’|pour)\s*/i, ' ')
-    .replace(/\s+/g, ' ')
-    .replace(/[.!?;:]+$/g, '')
-    .trim();
-
-  if (!clean) return 'Rappel Nyra';
-
-  const title = clean.charAt(0).toUpperCase() + clean.slice(1);
-  return title.length > 80 ? `${title.slice(0, 80)}…` : title;
-}
 function detectDatetimeHint(text) {
   const lower = normalizeText(text).toLowerCase();
 
@@ -748,51 +720,19 @@ function getLocalDateParts(date = new Date(), timeZone = 'Europe/Paris') {
   };
 }
 
-function getTimeZoneOffsetMinutes(date, timeZone = 'Europe/Paris') {
-  const formatter = new Intl.DateTimeFormat('en-GB', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
-
-  const parts = formatter.formatToParts(date).reduce((acc, part) => {
-    acc[part.type] = part.value;
-    return acc;
-  }, {});
-
-  const asUtc = Date.UTC(
-    Number(parts.year),
-    Number(parts.month) - 1,
-    Number(parts.day),
-    Number(parts.hour),
-    Number(parts.minute),
-    Number(parts.second)
-  );
-
-  return Math.round((asUtc - date.getTime()) / 60000);
-}
-
 function buildParisDateAt(hour, minute = 0, dayOffset = 0) {
   const baseParts = getLocalDateParts(new Date(), 'Europe/Paris');
-  const localWallTimeAsUtc = new Date(Date.UTC(
+  const utcCandidate = new Date(Date.UTC(
     baseParts.year,
     baseParts.month - 1,
     baseParts.day + dayOffset,
-    Number(hour || 9),
+    Number(hour || 9) - 1,
     Number(minute || 0),
     0,
     0
   ));
 
-  const offsetMinutes = getTimeZoneOffsetMinutes(localWallTimeAsUtc, 'Europe/Paris');
-  const realUtcDate = new Date(localWallTimeAsUtc.getTime() - offsetMinutes * 60000);
-
-  return realUtcDate.toISOString();
+  return utcCandidate.toISOString();
 }
 
 function extractExplicitTime(text) {
@@ -812,6 +752,18 @@ function extractExplicitTime(text) {
 function resolveReminderSchedule(text, datetimeHint) {
   const lower = normalizeText(text).toLowerCase();
   const explicitTime = extractExplicitTime(lower);
+
+  const relativeSecondsMatch = lower.match(/dans\s+(\d{1,3})\s+secondes?/i);
+  if (relativeSecondsMatch?.[1]) {
+    const seconds = Number(relativeSecondsMatch[1]);
+    if (seconds > 0 && seconds <= 3600) {
+      return {
+        scheduled_at: new Date(Date.now() + seconds * 1000).toISOString(),
+        precision: 'relative_exact',
+        has_exact_date: true,
+      };
+    }
+  }
 
   if (includesAny(lower, ['dans 5 minutes'])) {
     return {
@@ -1016,8 +968,8 @@ function buildStructuredAction({ userId, message, actionType, label, status, ana
     action_type: actionType,
     type: actionType,
     label,
-    title: actionType === 'create_reminder' ? cleanReminderTitle(target) : cleanActionTitle(target),
-    target: actionType === 'create_reminder' ? cleanReminderTitle(target) : target,
+    title: cleanActionTitle(target),
+    target,
     status,
     priority,
     datetime_hint: datetimeHint,
@@ -1768,6 +1720,26 @@ function analyzeMessage(message) {
   return analysis;
 }
 
+
+function extractTaskTitle(message) {
+  const text = normalizeText(message);
+  const patterns = [
+    /(?:ajoute|crée|cree|note|mets|rajoute)\s+(?:la\s+)?t[âa]che\s*:?\s*(.+)$/i,
+    /(?:je dois|il faut que je|il faut)\s+(.+)$/i,
+    /(?:pense à|penser à)\s+(.+)$/i,
+    /(.+?)\s+(?:à faire|a faire)$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      return normalizeText(match[1]).replace(/[.!?;:]+$/g, '');
+    }
+  }
+
+  return cleanActionTitle(text);
+}
+
 function detectAction(message, userId, analysis) {
   const text = normalizeText(message);
   const lower = text.toLowerCase();
@@ -1781,6 +1753,33 @@ function detectAction(message, userId, analysis) {
       targetOverride: shoppingItem,
       actionType: 'add_to_shopping_list',
       label: 'Ajouter à la liste de courses',
+      status: 'done',
+      analysis,
+    });
+  }
+
+  if (
+    includesAny(lower, [
+      'ajoute la tâche',
+      'ajoute la tache',
+      'crée la tâche',
+      'cree la tache',
+      'note la tâche',
+      'note la tache',
+    ]) ||
+    (
+      analysis?.is_task &&
+      !lower.includes('rappel') &&
+      !lower.includes('rappelle') &&
+      !lower.includes('liste de courses')
+    )
+  ) {
+    return buildStructuredAction({
+      userId,
+      message,
+      targetOverride: extractTaskTitle(message),
+      actionType: 'idea_to_task',
+      label: 'Ajouter une tâche',
       status: 'done',
       analysis,
     });
@@ -1989,6 +1988,7 @@ function getStoredItemStatusForAction(action) {
   // l'élément, mais l'élément utilisateur doit rester actif dans l'organisation.
   if (actionType === 'add_to_shopping_list') return 'active';
   if (actionType === 'create_reminder') return 'active';
+  if (actionType === 'idea_to_task') return 'active';
 
   return action?.status || 'captured';
 }
@@ -3503,7 +3503,7 @@ function buildActionReply(action) {
   if (action.action_type === 'plan_now') return '✔ Plan créé : fais une seule action simple maintenant.';
   if (action.action_type === 'process_now') return '✔ On traite maintenant : commence par la plus petite action possible.';
   if (action.action_type === 'classify_as_idea') return '✔ Classé dans tes idées.';
-  if (action.action_type === 'idea_to_task') return '✔ Transformé en tâche concrète.';
+  if (action.action_type === 'idea_to_task') return `✔ Tâche ajoutée : ${action.title || action.target}.`;
   if (action.action_type === 'add_to_roadmap') return '✔ Ajouté à la roadmap projet.';
   if (action.action_type === 'create_project_spec') {
     return '✔ Idée capturée. Prochaine étape : la transformer en cahier des charges structuré.';
