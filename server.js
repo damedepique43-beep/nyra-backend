@@ -719,19 +719,77 @@ function getLocalDateParts(date = new Date(), timeZone = 'Europe/Paris') {
   };
 }
 
+function getLocalDateTimeParts(date = new Date(), timeZone = 'Europe/Paris') {
+  const formatter = new Intl.DateTimeFormat('fr-FR', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(date).reduce((acc, part) => {
+    acc[part.type] = part.value;
+    return acc;
+  }, {});
+
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+    second: Number(parts.second),
+  };
+}
+
 function buildParisDateAt(hour, minute = 0, dayOffset = 0) {
   const baseParts = getLocalDateParts(new Date(), 'Europe/Paris');
-  const utcCandidate = new Date(Date.UTC(
-    baseParts.year,
-    baseParts.month - 1,
-    baseParts.day + dayOffset,
-    Number(hour || 9) - 1,
-    Number(minute || 0),
+  const targetLocal = {
+    year: baseParts.year,
+    month: baseParts.month,
+    day: baseParts.day + dayOffset,
+    hour: Number(hour || 9),
+    minute: Number(minute || 0),
+    second: 0,
+  };
+
+  // Conversion robuste heure locale Europe/Paris -> UTC.
+  // Corrige le bug où 14h était stocké comme 15h à cause du décalage d'été.
+  const naiveUtc = new Date(Date.UTC(
+    targetLocal.year,
+    targetLocal.month - 1,
+    targetLocal.day,
+    targetLocal.hour,
+    targetLocal.minute,
     0,
     0
   ));
 
-  return utcCandidate.toISOString();
+  const displayedInParis = getLocalDateTimeParts(naiveUtc, 'Europe/Paris');
+  const wantedUtcMs = Date.UTC(
+    targetLocal.year,
+    targetLocal.month - 1,
+    targetLocal.day,
+    targetLocal.hour,
+    targetLocal.minute,
+    targetLocal.second,
+    0
+  );
+  const displayedUtcMs = Date.UTC(
+    displayedInParis.year,
+    displayedInParis.month - 1,
+    displayedInParis.day,
+    displayedInParis.hour,
+    displayedInParis.minute,
+    displayedInParis.second || 0,
+    0
+  );
+
+  return new Date(naiveUtc.getTime() + (wantedUtcMs - displayedUtcMs)).toISOString();
 }
 
 function extractExplicitTime(text) {
@@ -1291,40 +1349,52 @@ function syncLinkedItemWithAction(store, action) {
     item.completed_at = item.completed_at || nowIso();
     item.checked = true;
     item.checked_at = item.checked_at || nowIso();
-  }
 
-  const actionType = normalizeText(action.action_type || action.type || '');
+    if (shouldArchiveCompletedItem(item)) {
+      const memoryCategory = item.bucket === 'today' ? 'tasks' : item.bucket;
+      moveItemToMemory(item, memoryCategory);
+    }
 
-  if (actionType === 'add_to_today') {
-    const linkedItems = store.items.filter(existingItem => {
-      if (!existingItem || existingItem.id === item.id) return false;
-
-      return (
-        existingItem.mirrored_from_today_id === item.id ||
-        item.mirrored_from_today_id === existingItem.id
-      );
-    });
-
-    linkedItems.forEach(linkedItem => {
-      linkedItem.status = action.status;
-      linkedItem.sync_status = action.sync_status || linkedItem.sync_status || 'local_only';
-      linkedItem.action_id = action.id;
-      linkedItem.updated_at = nowIso();
-
-      if (completed) {
-        linkedItem.completed_at = linkedItem.completed_at || nowIso();
-        linkedItem.checked = true;
-        linkedItem.checked_at = linkedItem.checked_at || nowIso();
-        archiveCompletedOrganizationItem(store, linkedItem);
-      }
-    });
-  }
-
-  if (completed) {
-    archiveCompletedOrganizationItem(store, item);
+    hideMirroredTaskDuplicatesForCompletedItem(store, item, action);
   }
 
   return item;
+}
+
+function hideMirroredTaskDuplicatesForCompletedItem(store, item, action) {
+  if (!item || !Array.isArray(store.items)) return [];
+
+  const actionId = normalizeText(action?.id || item.action_id || '');
+  const sourceItemId = normalizeText(item.id || '');
+  const comparableText = normalizeKey(item.title || item.content || item.target || '');
+  const hidden = [];
+
+  store.items.forEach(candidate => {
+    if (!candidate || candidate.id === item.id) return;
+
+    const sameAction = actionId && normalizeText(candidate.action_id || '') === actionId;
+    const mirrorsSource = sourceItemId && normalizeText(candidate.mirrored_from_today_id || '') === sourceItemId;
+    const sameText = comparableText && normalizeKey(candidate.title || candidate.content || candidate.target || '') === comparableText;
+    const isTaskMirror = candidate.bucket === 'tasks' || candidate.type === 'task' || candidate.action_type === 'idea_to_task';
+
+    if (!isTaskMirror || (!sameAction && !mirrorsSource && !sameText)) return;
+
+    candidate.status = 'done';
+    candidate.checked = true;
+    candidate.checked_at = candidate.checked_at || nowIso();
+    candidate.completed_at = candidate.completed_at || nowIso();
+    candidate.archived_at = candidate.archived_at || nowIso();
+    candidate.previous_bucket = candidate.previous_bucket || candidate.bucket || 'tasks';
+    candidate.memory_category = candidate.memory_category || 'tasks';
+    candidate.bucket = 'memory';
+    candidate.memory_hidden = true;
+    candidate.duplicated_by_memory_item_id = item.id;
+    candidate.updated_at = nowIso();
+
+    hidden.push(candidate);
+  });
+
+  return hidden;
 }
 
 function updateActionStatusInStore({ store, userId, actionId, status, reason, metadata, source }) {
@@ -7930,6 +8000,7 @@ app.get('/store/memory', (req, res) => {
 
       return (
         itemBelongsToUser(item, userId) &&
+        !item.memory_hidden &&
         !isShoppingHistory &&
         (
           item.bucket === 'memory' ||
@@ -8208,9 +8279,9 @@ function shouldReminderAppearInToday(item) {
   const datetimeHint = normalizeText(item.datetime_hint || '').toLowerCase();
   const priority = normalizeText(item.priority || '').toLowerCase();
   const urgency = normalizeText(item.urgency || '').toLowerCase();
+  const hasExactDate = Boolean(item.has_exact_date && item.scheduled_at);
   const hasExactDateToday = Boolean(
-    item.has_exact_date &&
-    item.scheduled_at &&
+    hasExactDate &&
     (() => {
       const scheduledParts = getLocalDateParts(new Date(item.scheduled_at), 'Europe/Paris');
       const todayParts = getLocalDateParts(new Date(), 'Europe/Paris');
@@ -8220,8 +8291,11 @@ function shouldReminderAppearInToday(item) {
     })()
   );
 
+  if (hasExactDate) {
+    return hasExactDateToday;
+  }
+
   return Boolean(
-    hasExactDateToday ||
     datetimeHint === 'today' ||
     priority === 'high' ||
     urgency === 'high' ||
