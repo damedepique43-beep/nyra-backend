@@ -1279,6 +1279,38 @@ function syncLinkedItemWithAction(store, action) {
   item.action_id = action.id;
   item.updated_at = nowIso();
 
+  if (isCompletedStatus(action.status)) {
+    item.completed_at = item.completed_at || nowIso();
+    item.checked = true;
+    item.checked_at = item.checked_at || nowIso();
+  }
+
+  const actionType = normalizeText(action.action_type || action.type || '');
+
+  if (actionType === 'add_to_today') {
+    const linkedItems = store.items.filter(existingItem => {
+      if (!existingItem || existingItem.id === item.id) return false;
+
+      return (
+        existingItem.mirrored_from_today_id === item.id ||
+        item.mirrored_from_today_id === existingItem.id
+      );
+    });
+
+    linkedItems.forEach(linkedItem => {
+      linkedItem.status = action.status;
+      linkedItem.sync_status = action.sync_status || linkedItem.sync_status || 'local_only';
+      linkedItem.action_id = action.id;
+      linkedItem.updated_at = nowIso();
+
+      if (isCompletedStatus(action.status)) {
+        linkedItem.completed_at = linkedItem.completed_at || nowIso();
+        linkedItem.checked = true;
+        linkedItem.checked_at = linkedItem.checked_at || nowIso();
+      }
+    });
+  }
+
   return item;
 }
 
@@ -8092,9 +8124,14 @@ app.get('/store/tasks', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const tasks = store.items.filter(
-    item => item.user_id === userId && item.bucket === 'tasks'
-  );
+  const tasks = (Array.isArray(store.items) ? store.items : []).filter(item => {
+    return (
+      itemBelongsToUser(item, userId) &&
+      item.bucket === 'tasks' &&
+      !item.archived_at &&
+      !isCompletedStatus(item.status)
+    );
+  });
 
   res.json({
     ok: true,
@@ -8124,9 +8161,14 @@ app.get('/store/today', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const today = store.items.filter(
-    item => item.user_id === userId && item.bucket === 'today'
-  );
+  const today = (Array.isArray(store.items) ? store.items : []).filter(item => {
+    return (
+      itemBelongsToUser(item, userId) &&
+      item.bucket === 'today' &&
+      !item.archived_at &&
+      !isCompletedStatus(item.status)
+    );
+  });
 
   res.json({
     ok: true,
@@ -8140,9 +8182,14 @@ app.get('/store/reminders', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const reminders = store.items.filter(
-    item => item.user_id === userId && item.bucket === 'reminders'
-  );
+  const reminders = (Array.isArray(store.items) ? store.items : []).filter(item => {
+    return (
+      itemBelongsToUser(item, userId) &&
+      item.bucket === 'reminders' &&
+      !item.archived_at &&
+      !isCompletedStatus(item.status)
+    );
+  });
 
   res.json({
     ok: true,
@@ -8156,15 +8203,21 @@ app.get('/store/shopping-list', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const items = store.items.filter(
-    item => item.user_id === userId && item.bucket === 'shopping_list'
-  );
+  const items = (Array.isArray(store.items) ? store.items : []).filter(item => {
+    return (
+      itemBelongsToUser(item, userId) &&
+      item.bucket === 'shopping_list' &&
+      !item.archived_at &&
+      !isCompletedStatus(item.status)
+    );
+  });
 
   res.json({
     ok: true,
     userId,
     count: items.length,
     items,
+    shopping_list: items,
   });
 });
 
