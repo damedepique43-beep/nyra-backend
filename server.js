@@ -7987,26 +7987,116 @@ function archiveShoppingListIfFullyChecked(store, userId) {
   };
 }
 
+
+function getMemoryDisplayBucket(item) {
+  const bucket = normalizeText(item?.bucket || '').toLowerCase();
+  const previousBucket = normalizeText(item?.previous_bucket || '').toLowerCase();
+  const memoryCategory = normalizeText(item?.memory_category || '').toLowerCase();
+  const actionType = normalizeText(item?.action_type || item?.type || '').toLowerCase();
+  const itemType = normalizeText(item?.type || '').toLowerCase();
+  const actionLabel = normalizeText(item?.action_label || '').toLowerCase();
+  const tags = Array.isArray(item?.tags) ? item.tags.map(tag => normalizeText(tag).toLowerCase()) : [];
+  const combinedText = normalizeText(`${item?.title || ''} ${item?.content || ''} ${item?.target || ''}`);
+
+  const isShoppingHistory =
+    bucket === 'shopping_list' ||
+    previousBucket === 'shopping_list' ||
+    memoryCategory === 'shopping_list' ||
+    actionType === 'add_to_shopping_list';
+
+  if (isShoppingHistory) return null;
+
+  const isReminder =
+    bucket === 'reminders' ||
+    previousBucket === 'reminders' ||
+    memoryCategory === 'reminders' ||
+    actionType === 'create_reminder';
+
+  if (isReminder) return 'reminders';
+
+  const isTask =
+    bucket === 'tasks' ||
+    bucket === 'today' ||
+    previousBucket === 'tasks' ||
+    previousBucket === 'today' ||
+    memoryCategory === 'tasks' ||
+    memoryCategory === 'today' ||
+    itemType === 'task' ||
+    actionType === 'add_to_today' ||
+    actionType === 'idea_to_task' ||
+    actionLabel.includes('tâche') ||
+    actionLabel.includes('aujourd') ||
+    tags.includes('tâche') ||
+    tags.includes('tache') ||
+    looksLikeBareTask(combinedText);
+
+  if (isTask) return 'tasks';
+
+  if (memoryCategory && memoryCategory !== 'memory') return memoryCategory;
+  if (previousBucket && previousBucket !== 'memory') return previousBucket;
+  if (bucket && bucket !== 'memory') return bucket;
+
+  return 'captures';
+}
+
+function getMemoryComparableText(item) {
+  return normalizeKey(item?.title || item?.content || item?.target || item?.label || '');
+}
+
+function getMemoryItemQualityScore(item) {
+  let score = 0;
+
+  if (item?.archived_at) score += 50;
+  if (item?.completed_at) score += 40;
+  if (isCompletedStatus(item?.status)) score += 35;
+  if (item?.previous_bucket === 'tasks' || item?.previous_bucket === 'today') score += 20;
+  if (item?.memory_category === 'tasks') score += 20;
+  if (item?.action_type) score += 10;
+  if (item?.bucket === 'memory') score += 5;
+
+  return score;
+}
+
+function deduplicateMemoryItems(items) {
+  const byKey = new Map();
+
+  items.forEach(item => {
+    const displayBucket = getMemoryDisplayBucket(item);
+    if (!displayBucket) return;
+
+    const textKey = getMemoryComparableText(item);
+    const fallbackKey = normalizeText(item?.id || crypto.randomUUID());
+    const key = `${displayBucket}:${textKey || fallbackKey}`;
+    const decorated = {
+      ...item,
+      memory_bucket: item.bucket,
+      original_bucket: item.bucket,
+      bucket: displayBucket,
+    };
+
+    const existing = byKey.get(key);
+    if (!existing || getMemoryItemQualityScore(decorated) > getMemoryItemQualityScore(existing)) {
+      byKey.set(key, decorated);
+    }
+  });
+
+  return Array.from(byKey.values());
+}
+
 app.get('/store/memory', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const items = (Array.isArray(store.items) ? store.items : [])
+  const candidates = (Array.isArray(store.items) ? store.items : [])
     .filter(item => {
-      const bucket = normalizeText(item.bucket || '');
-      const previousBucket = normalizeText(item.previous_bucket || '');
-      const memoryCategory = normalizeText(item.memory_category || '');
-      const isShoppingHistory = bucket === 'shopping_list' || previousBucket === 'shopping_list' || memoryCategory === 'shopping_list';
+      const displayBucket = getMemoryDisplayBucket(item);
+      const isStoredInMemory = item.bucket === 'memory' || Boolean(item.archived_at) || isCompletedStatus(item.status);
 
       return (
         itemBelongsToUser(item, userId) &&
         !item.memory_hidden &&
-        !isShoppingHistory &&
-        (
-          item.bucket === 'memory' ||
-          Boolean(item.archived_at) ||
-          isCompletedStatus(item.status)
-        )
+        Boolean(displayBucket) &&
+        isStoredInMemory
       );
     })
     .sort((a, b) => {
@@ -8014,26 +8104,9 @@ app.get('/store/memory', (req, res) => {
         new Date(a.archived_at || a.completed_at || a.updated_at || a.created_at || 0).getTime();
     });
 
-  const decoratedItems = items.map(item => {
-    const previousBucket = normalizeText(item.previous_bucket || '').toLowerCase();
-    const memoryCategory = normalizeText(item.memory_category || '').toLowerCase();
-    const actionType = normalizeText(item.action_type || '').toLowerCase();
-    let displayBucket = memoryCategory || previousBucket || normalizeText(item.bucket || '').toLowerCase();
-
-    if (displayBucket === 'today' && (actionType === 'add_to_today' || item.type === 'task' || item.action_label === 'Ajouter à aujourd’hui')) {
-      displayBucket = 'tasks';
-    }
-
-    if (!displayBucket || displayBucket === 'memory') {
-      displayBucket = item.type === 'task' ? 'tasks' : 'captures';
-    }
-
-    return {
-      ...item,
-      memory_bucket: item.bucket,
-      original_bucket: item.bucket,
-      bucket: displayBucket,
-    };
+  const decoratedItems = deduplicateMemoryItems(candidates).sort((a, b) => {
+    return new Date(b.archived_at || b.completed_at || b.updated_at || b.created_at || 0).getTime() -
+      new Date(a.archived_at || a.completed_at || a.updated_at || a.created_at || 0).getTime();
   });
 
   return res.json({
@@ -8271,6 +8344,7 @@ app.get('/store/ideas', (req, res) => {
   });
 });
 
+
 function shouldReminderAppearInToday(item) {
   if (!item || item.bucket !== 'reminders') return false;
   if (item.archived_at || isCompletedStatus(item.status)) return false;
@@ -8279,6 +8353,14 @@ function shouldReminderAppearInToday(item) {
   const datetimeHint = normalizeText(item.datetime_hint || '').toLowerCase();
   const priority = normalizeText(item.priority || '').toLowerCase();
   const urgency = normalizeText(item.urgency || '').toLowerCase();
+  const schedulePrecision = normalizeText(item.schedule_precision || '').toLowerCase();
+
+  // Les rappels minute/seconde servent à déclencher une notification rapide,
+  // pas à encombrer la vue Aujourd'hui.
+  if (schedulePrecision === 'relative_exact_seconds' || schedulePrecision === 'relative_exact_minutes') {
+    return false;
+  }
+
   const hasExactDate = Boolean(item.has_exact_date && item.scheduled_at);
   const hasExactDateToday = Boolean(
     hasExactDate &&
@@ -8290,14 +8372,6 @@ function shouldReminderAppearInToday(item) {
         scheduledParts.day === todayParts.day;
     })()
   );
-
-  const schedulePrecision = normalizeText(item.schedule_precision || '').toLowerCase();
-
-  // Les rappels très courts (dans 30s, dans 2mn, etc.) doivent déclencher une
-  // notification, mais ne doivent pas polluer l'écran Aujourd'hui.
-  if (schedulePrecision === 'relative_exact_seconds' || schedulePrecision === 'relative_exact_minutes') {
-    return false;
-  }
 
   if (hasExactDate) {
     return hasExactDateToday;
