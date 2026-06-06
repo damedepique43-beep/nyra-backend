@@ -660,30 +660,12 @@ function cleanActionTitle(text) {
     .replace(/^créer un rappel pour\s+/i, '')
     .replace(/^rappelle-moi\s+/i, '')
     .replace(/^rappelle moi\s+/i, '')
-    .replace(/^rappel-moi\s+/i, '')
-    .replace(/^rappel moi\s+/i, '')
     .replace(/^rappelle\s+/i, '')
-    .replace(/^rappel\s+/i, '')
-    .replace(/^de\s+/i, '')
-    .replace(/\s+dans\s+\d{1,3}\s*(?:secondes?|secs?|sec|s|minutes?|mins?|mn)\b.*$/i, '')
-    .replace(/^demain\s+(?:à|a)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\s+d['’]?/i, '')
-    .replace(/^demain\s+(?:à|a)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\s+/i, '')
-    .replace(/^demain\s+d['’]?/i, '')
-    .replace(/^demain\s+/i, '')
-    .replace(/^aujourd['’]?hui\s+(?:à|a)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\s+d['’]?/i, '')
-    .replace(/^aujourd['’]?hui\s+d['’]?/i, '')
-    .replace(/^aujourd['’]?hui\s+/i, '')
-    .replace(/^à\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\s+d['’]?/i, '')
-    .replace(/^a\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\s+d['’]?/i, '')
-    .replace(/^à\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\s+/i, '')
-    .replace(/^a\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\s+/i, '')
-    .replace(/^d['’]\s*/i, '')
-    .replace(/^d['’]/i, '')
     .replace(/^ajoute\s+/i, '')
     .replace(/^rajoute\s+/i, '')
     .replace(/^mets\s+/i, '')
     .replace(/^note\s+/i, '')
-    .replace(/\s+(à|a|dans|sur)\s+(ma\s+|la\s+)?liste\s+de\s+courses.*$/i, '')
+    .replace(/\s+(à|a|dans)\s+(ma\s+|la\s+)?liste\s+de\s+courses.*$/i, '')
     .replace(/^transforme cette idée en tâche\s*/i, '')
     .trim();
 
@@ -692,20 +674,6 @@ function cleanActionTitle(text) {
   const title = clean.charAt(0).toUpperCase() + clean.slice(1);
 
   return title.length > 80 ? `${title.slice(0, 80)}…` : title;
-}
-
-
-function extractReminderTarget(message) {
-  const text = normalizeText(message);
-  const lower = text.toLowerCase();
-
-  const afterDeMatch = text.match(/(?:^|\s)d['’]([^.!?]+)$/i);
-  if (afterDeMatch?.[1] && includesAny(lower, ['rappelle', 'rappel'])) {
-    return cleanActionTitle(afterDeMatch[1]);
-  }
-
-  const cleaned = cleanActionTitle(text);
-  return cleaned === 'Action Nyra' ? cleanActionTitle(message) : cleaned;
 }
 
 function detectDatetimeHint(text) {
@@ -749,77 +717,19 @@ function getLocalDateParts(date = new Date(), timeZone = 'Europe/Paris') {
   };
 }
 
-function getLocalDateTimeParts(date = new Date(), timeZone = 'Europe/Paris') {
-  const formatter = new Intl.DateTimeFormat('fr-FR', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
-
-  const parts = formatter.formatToParts(date).reduce((acc, part) => {
-    acc[part.type] = part.value;
-    return acc;
-  }, {});
-
-  return {
-    year: Number(parts.year),
-    month: Number(parts.month),
-    day: Number(parts.day),
-    hour: Number(parts.hour),
-    minute: Number(parts.minute),
-    second: Number(parts.second),
-  };
-}
-
 function buildParisDateAt(hour, minute = 0, dayOffset = 0) {
   const baseParts = getLocalDateParts(new Date(), 'Europe/Paris');
-  const targetLocal = {
-    year: baseParts.year,
-    month: baseParts.month,
-    day: baseParts.day + dayOffset,
-    hour: Number(hour || 9),
-    minute: Number(minute || 0),
-    second: 0,
-  };
-
-  // Conversion robuste heure locale Europe/Paris -> UTC.
-  // Corrige le bug où 14h était stocké comme 15h à cause du décalage d'été.
-  const naiveUtc = new Date(Date.UTC(
-    targetLocal.year,
-    targetLocal.month - 1,
-    targetLocal.day,
-    targetLocal.hour,
-    targetLocal.minute,
+  const utcCandidate = new Date(Date.UTC(
+    baseParts.year,
+    baseParts.month - 1,
+    baseParts.day + dayOffset,
+    Number(hour || 9) - 1,
+    Number(minute || 0),
     0,
     0
   ));
 
-  const displayedInParis = getLocalDateTimeParts(naiveUtc, 'Europe/Paris');
-  const wantedUtcMs = Date.UTC(
-    targetLocal.year,
-    targetLocal.month - 1,
-    targetLocal.day,
-    targetLocal.hour,
-    targetLocal.minute,
-    targetLocal.second,
-    0
-  );
-  const displayedUtcMs = Date.UTC(
-    displayedInParis.year,
-    displayedInParis.month - 1,
-    displayedInParis.day,
-    displayedInParis.hour,
-    displayedInParis.minute,
-    displayedInParis.second || 0,
-    0
-  );
-
-  return new Date(naiveUtc.getTime() + (wantedUtcMs - displayedUtcMs)).toISOString();
+  return utcCandidate.toISOString();
 }
 
 function extractExplicitTime(text) {
@@ -840,25 +750,21 @@ function resolveReminderSchedule(text, datetimeHint) {
   const lower = normalizeText(text).toLowerCase();
   const explicitTime = extractExplicitTime(lower);
 
-  const relativeSecondsMatch = lower.match(/dans\s+(\d{1,3})\s*(?:secondes?|secs?|sec|s)\b/i);
-  if (relativeSecondsMatch?.[1]) {
-    const seconds = Number(relativeSecondsMatch[1]);
-    if (seconds > 0 && seconds <= 86400) {
-      return {
-        scheduled_at: new Date(Date.now() + seconds * 1000).toISOString(),
-        precision: 'relative_exact_seconds',
-        has_exact_date: true,
-      };
-    }
+  if (includesAny(lower, ['dans 5 minutes'])) {
+    return {
+      scheduled_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      precision: 'relative_exact',
+      has_exact_date: true,
+    };
   }
 
-  const relativeMinutesMatch = lower.match(/dans\s+(\d{1,3})\s*(?:minutes?|mins?|mn)\b/i);
+  const relativeMinutesMatch = lower.match(/dans\s+(\d{1,3})\s+minutes?/i);
   if (relativeMinutesMatch?.[1]) {
     const minutes = Number(relativeMinutesMatch[1]);
     if (minutes > 0 && minutes <= 720) {
       return {
         scheduled_at: new Date(Date.now() + minutes * 60 * 1000).toISOString(),
-        precision: 'relative_exact_minutes',
+        precision: 'relative_exact',
         has_exact_date: true,
       };
     }
@@ -927,10 +833,10 @@ function resolveReminderSchedule(text, datetimeHint) {
 function extractShoppingListItem(message) {
   const text = normalizeText(message);
   const patterns = [
-    /ajoute\s+(.+?)\s+(?:à|a|dans|sur)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
-    /mets\s+(.+?)\s+(?:à|a|dans|sur)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
-    /note\s+(.+?)\s+(?:à|a|dans|sur)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
-    /rajoute\s+(.+?)\s+(?:à|a|dans|sur)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+    /ajoute\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+    /mets\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+    /note\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+    /rajoute\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
   ];
 
   for (const pattern of patterns) {
@@ -1032,11 +938,10 @@ function buildNextStep(actionType, datetimeHint) {
 
 function buildStructuredAction({ userId, message, actionType, label, status, analysis, targetOverride }) {
   const target = normalizeText(targetOverride || extractContext(message));
-  const actionContextText = normalizeText(`${message} ${target}`);
-  const datetimeHint = detectDatetimeHint(actionContextText);
-  const priority = detectPriority(actionContextText, analysis);
+  const datetimeHint = detectDatetimeHint(target || message);
+  const priority = detectPriority(target || message, analysis);
   const reminderSchedule = actionType === 'create_reminder'
-    ? resolveReminderSchedule(actionContextText, datetimeHint)
+    ? resolveReminderSchedule(`${message} ${target}`, datetimeHint)
     : null;
   const provider = actionToProvider(actionType);
   const connectionType = actionToConnectionType(actionType);
@@ -1374,58 +1279,7 @@ function syncLinkedItemWithAction(store, action) {
   item.action_id = action.id;
   item.updated_at = nowIso();
 
-  const completed = isCompletedStatus(action.status);
-
-  if (completed) {
-    item.completed_at = item.completed_at || nowIso();
-    item.checked = true;
-    item.checked_at = item.checked_at || nowIso();
-
-    if (shouldArchiveCompletedItem(item)) {
-      const memoryCategory = item.bucket === 'today' ? 'tasks' : item.bucket;
-      moveItemToMemory(item, memoryCategory);
-    }
-
-    hideMirroredTaskDuplicatesForCompletedItem(store, item, action);
-  }
-
   return item;
-}
-
-function hideMirroredTaskDuplicatesForCompletedItem(store, item, action) {
-  if (!item || !Array.isArray(store.items)) return [];
-
-  const actionId = normalizeText(action?.id || item.action_id || '');
-  const sourceItemId = normalizeText(item.id || '');
-  const comparableText = normalizeKey(item.title || item.content || item.target || '');
-  const hidden = [];
-
-  store.items.forEach(candidate => {
-    if (!candidate || candidate.id === item.id) return;
-
-    const sameAction = actionId && normalizeText(candidate.action_id || '') === actionId;
-    const mirrorsSource = sourceItemId && normalizeText(candidate.mirrored_from_today_id || '') === sourceItemId;
-    const sameText = comparableText && normalizeKey(candidate.title || candidate.content || candidate.target || '') === comparableText;
-    const isTaskMirror = candidate.bucket === 'tasks' || candidate.type === 'task' || candidate.action_type === 'idea_to_task';
-
-    if (!isTaskMirror || (!sameAction && !mirrorsSource && !sameText)) return;
-
-    candidate.status = 'done';
-    candidate.checked = true;
-    candidate.checked_at = candidate.checked_at || nowIso();
-    candidate.completed_at = candidate.completed_at || nowIso();
-    candidate.archived_at = candidate.archived_at || nowIso();
-    candidate.previous_bucket = candidate.previous_bucket || candidate.bucket || 'tasks';
-    candidate.memory_category = candidate.memory_category || 'tasks';
-    candidate.bucket = 'memory';
-    candidate.memory_hidden = true;
-    candidate.duplicated_by_memory_item_id = item.id;
-    candidate.updated_at = nowIso();
-
-    hidden.push(candidate);
-  });
-
-  return hidden;
 }
 
 function updateActionStatusInStore({ store, userId, actionId, status, reason, metadata, source }) {
@@ -2009,7 +1863,6 @@ function detectAction(message, userId, analysis) {
     return buildStructuredAction({
       userId,
       message,
-      targetOverride: extractReminderTarget(message),
       actionType: 'create_reminder',
       label: 'Créer un rappel',
       status: 'draft',
@@ -2204,38 +2057,13 @@ function getStoredItemStatusForAction(action) {
   return action?.status || 'captured';
 }
 
-function getStoredItemTypeForAction(action, analysis) {
-  const actionType = normalizeText(action?.action_type || action?.type || '');
-
-  if (actionType === 'add_to_today' || actionType === 'idea_to_task') return 'task';
-  if (actionType === 'create_reminder') return 'reminder';
-  if (actionType === 'add_to_shopping_list') return 'shopping_item';
-  if (analysis?.is_task) return 'task';
-
-  return action ? 'action_result' : analysis?.type || 'note';
-}
-
-function getStoredItemMemoryTypeForAction(action, analysis) {
-  const actionType = normalizeText(action?.action_type || action?.type || '');
-
-  if (actionType === 'add_to_today' || actionType === 'idea_to_task') return 'task';
-  if (actionType === 'create_reminder') return 'reminder';
-  if (actionType === 'add_to_shopping_list') return 'shopping_item';
-  if (analysis?.is_task) return 'task';
-
-  return null;
-}
-
 function createStoredItem({ userId, message, analysis, action }) {
   const bucket = action ? actionToBucket(action.action_type) : analysis.suggested_bucket;
-  const storedType = action ? getStoredItemTypeForAction(action, analysis) : analysis.type;
-  const memoryType = action ? getStoredItemMemoryTypeForAction(action, analysis) : (analysis.is_task ? 'task' : null);
 
   return {
     id: crypto.randomUUID(),
     user_id: userId,
-    type: storedType,
-    memory_type: memoryType,
+    type: action ? 'action_result' : analysis.type,
     bucket,
     title: action ? action.title : cleanActionTitle(message),
     content: action ? action.target : message,
@@ -2252,8 +2080,6 @@ function createStoredItem({ userId, message, analysis, action }) {
           'action',
           action.action_type,
           action.provider,
-          memoryType === 'task' ? 'tâche' : null,
-          memoryType === 'reminder' ? 'rappel' : null,
           analysis.project_name ? normalizeKey(analysis.project_name) : null,
         ])
       : analysis.tags,
@@ -7981,29 +7807,13 @@ function syncActionFromUpdatedItem(store, item) {
 }
 
 function moveItemToMemory(item, category = null) {
-  if (!item) return item;
+  if (!item || item.bucket === 'memory') return item;
 
-  const originalBucket = item.previous_bucket || item.bucket || null;
-  const rawCategory = category || item.memory_category || originalBucket || item.type || 'item';
-  const finalCategory = rawCategory === 'today' ? 'tasks' : rawCategory;
-
-  item.previous_bucket = originalBucket;
-  item.memory_category = finalCategory;
+  item.previous_bucket = item.previous_bucket || item.bucket || null;
+  item.memory_category = category || item.previous_bucket || item.bucket || item.type || 'item';
   item.bucket = 'memory';
   item.archived_at = item.archived_at || nowIso();
   item.updated_at = nowIso();
-
-  if (['tasks', 'today'].includes(finalCategory) || item.action_type === 'add_to_today' || item.action_type === 'idea_to_task') {
-    item.type = 'task';
-    item.memory_type = 'task';
-    item.memory_category = 'tasks';
-  }
-
-  if (finalCategory === 'reminders' || item.action_type === 'create_reminder') {
-    item.type = 'reminder';
-    item.memory_type = 'reminder';
-    item.memory_category = 'reminders';
-  }
 
   return item;
 }
@@ -8015,9 +7825,8 @@ function shouldArchiveCompletedItem(item) {
   const type = normalizeText(item.type || '');
 
   if (bucket === 'memory') return false;
-  if (bucket === 'routines' || type === 'routine') return false;
 
-  return ['tasks', 'today', 'reminders'].includes(bucket);
+  return ['tasks', 'today', 'reminders', 'routines', 'routine'].includes(bucket) || type === 'routine';
 }
 
 function archiveCompletedOrganizationItem(store, item) {
@@ -8044,245 +7853,48 @@ function archiveShoppingListIfFullyChecked(store, userId) {
 
   if (!allChecked) return null;
 
-  const completedItems = shoppingItems.map(item => {
+  const archivedItems = shoppingItems.map(item => {
     item.checked = true;
     item.checked_at = item.checked_at || nowIso();
     item.status = 'done';
     item.completed_at = item.completed_at || nowIso();
-    item.updated_at = nowIso();
-    return item;
+    return moveItemToMemory(item, 'shopping_list');
   });
 
   return {
-    archived: false,
-    completed: true,
-    completed_count: completedItems.length,
-    completed_items: completedItems,
-    completed_at: nowIso(),
+    archived: true,
+    archived_count: archivedItems.length,
+    archived_items: archivedItems,
+    archived_at: nowIso(),
   };
-}
-
-
-function getMemoryDisplayBucket(item) {
-  const bucket = normalizeText(item?.bucket || '').toLowerCase();
-  const previousBucket = normalizeText(item?.previous_bucket || '').toLowerCase();
-  const memoryCategory = normalizeText(item?.memory_category || '').toLowerCase();
-  const actionType = normalizeText(item?.action_type || item?.type || '').toLowerCase();
-  const itemType = normalizeText(item?.type || '').toLowerCase();
-  const actionLabel = normalizeText(item?.action_label || '').toLowerCase();
-  const tags = Array.isArray(item?.tags) ? item.tags.map(tag => normalizeText(tag).toLowerCase()) : [];
-  const combinedText = normalizeText(`${item?.title || ''} ${item?.content || ''} ${item?.target || ''}`);
-
-  const isShoppingHistory =
-    bucket === 'shopping_list' ||
-    previousBucket === 'shopping_list' ||
-    memoryCategory === 'shopping_list' ||
-    actionType === 'add_to_shopping_list';
-
-  if (isShoppingHistory) return null;
-
-  const isReminder =
-    bucket === 'reminders' ||
-    previousBucket === 'reminders' ||
-    memoryCategory === 'reminders' ||
-    actionType === 'create_reminder';
-
-  if (isReminder) return 'reminders';
-
-  const isTask =
-    bucket === 'tasks' ||
-    bucket === 'today' ||
-    previousBucket === 'tasks' ||
-    previousBucket === 'today' ||
-    memoryCategory === 'tasks' ||
-    memoryCategory === 'today' ||
-    itemType === 'task' ||
-    actionType === 'add_to_today' ||
-    actionType === 'idea_to_task' ||
-    actionLabel.includes('tâche') ||
-    actionLabel.includes('aujourd') ||
-    tags.includes('tâche') ||
-    tags.includes('tache') ||
-    looksLikeBareTask(combinedText);
-
-  if (isTask) return 'tasks';
-
-  if (memoryCategory && memoryCategory !== 'memory') return memoryCategory;
-  if (previousBucket && previousBucket !== 'memory') return previousBucket;
-  if (bucket && bucket !== 'memory') return bucket;
-
-  return 'captures';
-}
-
-function getMemoryComparableText(item) {
-  const raw = normalizeText(item?.title || item?.content || item?.target || item?.label || '');
-  const cleaned = cleanActionTitle(raw)
-    .replace(/\b(?:aujourd['’]?hui|demain)\b/gi, '')
-    .replace(/\b(?:à|a)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\b/gi, '')
-    .trim();
-
-  return normalizeKey(cleaned || raw);
-}
-
-function getMemoryItemQualityScore(item) {
-  let score = 0;
-
-  if (item?.archived_at) score += 50;
-  if (item?.completed_at) score += 40;
-  if (isCompletedStatus(item?.status)) score += 35;
-  if (item?.type === 'task' || item?.memory_type === 'task') score += 35;
-  if (item?.type === 'reminder' || item?.memory_type === 'reminder') score += 30;
-  if (item?.previous_bucket === 'tasks' || item?.previous_bucket === 'today') score += 25;
-  if (item?.memory_category === 'tasks' || item?.memory_category === 'today') score += 25;
-  if (item?.action_type) score += 10;
-  if (item?.bucket === 'memory') score += 5;
-
-  return score;
-}
-
-function buildMemoryItemsFromCompletedActions(store, userId) {
-  const safeActions = Array.isArray(store.actions) ? store.actions : [];
-
-  return safeActions
-    .filter(action => {
-      const actionType = normalizeText(action?.action_type || action?.type || '').toLowerCase();
-      const isSupportedMemoryAction = [
-        'add_to_today',
-        'idea_to_task',
-        'create_reminder',
-      ].includes(actionType);
-
-      return (
-        actionBelongsToUser(action, userId) &&
-        isSupportedMemoryAction &&
-        isCompletedStatus(action.status)
-      );
-    })
-    .map(action => {
-      const actionType = normalizeText(action.action_type || action.type || '').toLowerCase();
-      const isReminder = actionType === 'create_reminder';
-      const memoryCategory = isReminder ? 'reminders' : 'tasks';
-      const memoryType = isReminder ? 'reminder' : 'task';
-
-      return {
-        id: `memory-action-${action.id}`,
-        user_id: action.user_id || userId,
-        type: memoryType,
-        memory_type: memoryType,
-        bucket: 'memory',
-        previous_bucket: memoryCategory,
-        memory_category: memoryCategory,
-        title: action.title || cleanActionTitle(action.target || action.source_message || 'Action Nyra'),
-        content: action.target || action.title || action.source_message || '',
-        target: action.target || action.title || '',
-        urgency: action.urgency || 'normal',
-        priority: action.priority || 'normal',
-        datetime_hint: action.datetime_hint || null,
-        scheduled_at: action.scheduled_at || null,
-        remind_at: action.remind_at || action.scheduled_at || null,
-        reminder_at: action.reminder_at || action.scheduled_at || null,
-        schedule_precision: action.schedule_precision || null,
-        has_exact_date: Boolean(action.has_exact_date),
-        tags: uniqueArray([
-          'memory',
-          memoryType,
-          memoryCategory,
-          actionType,
-        ]),
-        status: normalizeActionStatus(action.status || 'done'),
-        action_type: action.action_type || action.type || null,
-        action_label: action.label || null,
-        action_id: action.id || null,
-        provider: action.provider || 'local',
-        sync_status: action.sync_status || 'local_only',
-        external_id: action.external_id || null,
-        requires_connection: Boolean(action.requires_connection),
-        connection_type: action.connection_type || null,
-        checked: true,
-        checked_at: action.completed_at || action.updated_at || nowIso(),
-        completed_at: action.completed_at || action.updated_at || nowIso(),
-        archived_at: action.completed_at || action.updated_at || nowIso(),
-        updated_at: action.updated_at || action.completed_at || nowIso(),
-        created_at: action.created_at || action.completed_at || nowIso(),
-        source: 'completed_action_memory_projection',
-      };
-    });
-}
-
-function deduplicateMemoryItems(items) {
-  const byKey = new Map();
-
-  items.forEach(item => {
-    const displayBucket = getMemoryDisplayBucket(item);
-    if (!displayBucket) return;
-
-    const textKey = getMemoryComparableText(item);
-    const fallbackKey = normalizeText(item?.id || crypto.randomUUID());
-    const key = `${displayBucket}:${textKey || fallbackKey}`;
-    const decorated = {
-      ...item,
-      memory_bucket: item.bucket,
-      original_bucket: item.bucket,
-      bucket: displayBucket,
-      type: displayBucket === 'tasks'
-        ? 'task'
-        : displayBucket === 'reminders'
-          ? 'reminder'
-          : item.type,
-      memory_type: displayBucket === 'tasks'
-        ? 'task'
-        : displayBucket === 'reminders'
-          ? 'reminder'
-          : item.memory_type || item.type || displayBucket,
-    };
-
-    const existing = byKey.get(key);
-    if (!existing || getMemoryItemQualityScore(decorated) > getMemoryItemQualityScore(existing)) {
-      byKey.set(key, decorated);
-    }
-  });
-
-  return Array.from(byKey.values());
 }
 
 app.get('/store/memory', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const itemCandidates = (Array.isArray(store.items) ? store.items : [])
+  const items = (Array.isArray(store.items) ? store.items : [])
     .filter(item => {
-      const displayBucket = getMemoryDisplayBucket(item);
-      const isStoredInMemory = item.bucket === 'memory' || Boolean(item.archived_at) || isCompletedStatus(item.status);
-
       return (
         itemBelongsToUser(item, userId) &&
-        !item.memory_hidden &&
-        Boolean(displayBucket) &&
-        isStoredInMemory
+        (
+          item.bucket === 'memory' ||
+          Boolean(item.archived_at) ||
+          isCompletedStatus(item.status)
+        )
       );
+    })
+    .sort((a, b) => {
+      return new Date(b.archived_at || b.completed_at || b.updated_at || b.created_at || 0).getTime() -
+        new Date(a.archived_at || a.completed_at || a.updated_at || a.created_at || 0).getTime();
     });
-
-  const actionMemoryCandidates = buildMemoryItemsFromCompletedActions(store, userId);
-
-  const candidates = [
-    ...itemCandidates,
-    ...actionMemoryCandidates,
-  ].sort((a, b) => {
-    return new Date(b.archived_at || b.completed_at || b.updated_at || b.created_at || 0).getTime() -
-      new Date(a.archived_at || a.completed_at || a.updated_at || a.created_at || 0).getTime();
-  });
-
-  const decoratedItems = deduplicateMemoryItems(candidates).sort((a, b) => {
-    return new Date(b.archived_at || b.completed_at || b.updated_at || b.created_at || 0).getTime() -
-      new Date(a.archived_at || a.completed_at || a.updated_at || a.created_at || 0).getTime();
-  });
 
   return res.json({
     ok: true,
     userId,
-    count: decoratedItems.length,
-    items: decoratedItems,
-    memory_items: decoratedItems,
+    count: items.length,
+    items,
+    memory_items: items,
   });
 });
 
@@ -8479,14 +8091,9 @@ app.get('/store/tasks', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const tasks = (Array.isArray(store.items) ? store.items : []).filter(item => {
-    return (
-      itemBelongsToUser(item, userId) &&
-      item.bucket === 'tasks' &&
-      !item.archived_at &&
-      !isCompletedStatus(item.status)
-    );
-  });
+  const tasks = store.items.filter(
+    item => item.user_id === userId && item.bucket === 'tasks'
+  );
 
   res.json({
     ok: true,
@@ -8512,62 +8119,13 @@ app.get('/store/ideas', (req, res) => {
   });
 });
 
-
-function shouldReminderAppearInToday(item) {
-  if (!item || item.bucket !== 'reminders') return false;
-  if (item.archived_at || isCompletedStatus(item.status)) return false;
-
-  const text = normalizeText(`${item.title || ''} ${item.content || ''} ${item.target || ''}`).toLowerCase();
-  const datetimeHint = normalizeText(item.datetime_hint || '').toLowerCase();
-  const priority = normalizeText(item.priority || '').toLowerCase();
-  const urgency = normalizeText(item.urgency || '').toLowerCase();
-  const schedulePrecision = normalizeText(item.schedule_precision || '').toLowerCase();
-
-  // Les rappels minute/seconde servent à déclencher une notification rapide,
-  // pas à encombrer la vue Aujourd'hui.
-  if (schedulePrecision === 'relative_exact_seconds' || schedulePrecision === 'relative_exact_minutes') {
-    return false;
-  }
-
-  const hasExactDate = Boolean(item.has_exact_date && item.scheduled_at);
-  const hasExactDateToday = Boolean(
-    hasExactDate &&
-    (() => {
-      const scheduledParts = getLocalDateParts(new Date(item.scheduled_at), 'Europe/Paris');
-      const todayParts = getLocalDateParts(new Date(), 'Europe/Paris');
-      return scheduledParts.year === todayParts.year &&
-        scheduledParts.month === todayParts.month &&
-        scheduledParts.day === todayParts.day;
-    })()
-  );
-
-  if (hasExactDate) {
-    return hasExactDateToday;
-  }
-
-  return Boolean(
-    datetimeHint === 'today' ||
-    priority === 'high' ||
-    urgency === 'high' ||
-    includesAny(text, ['urgent', 'important', 'aujourd’hui', "aujourd'hui", 'maintenant', 'ce soir'])
-  );
-}
-
 app.get('/store/today', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const today = (Array.isArray(store.items) ? store.items : []).filter(item => {
-    return (
-      itemBelongsToUser(item, userId) &&
-      !item.archived_at &&
-      !isCompletedStatus(item.status) &&
-      (
-        item.bucket === 'today' ||
-        shouldReminderAppearInToday(item)
-      )
-    );
-  });
+  const today = store.items.filter(
+    item => item.user_id === userId && item.bucket === 'today'
+  );
 
   res.json({
     ok: true,
@@ -8581,14 +8139,9 @@ app.get('/store/reminders', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const reminders = (Array.isArray(store.items) ? store.items : []).filter(item => {
-    return (
-      itemBelongsToUser(item, userId) &&
-      item.bucket === 'reminders' &&
-      !item.archived_at &&
-      !isCompletedStatus(item.status)
-    );
-  });
+  const reminders = store.items.filter(
+    item => item.user_id === userId && item.bucket === 'reminders'
+  );
 
   res.json({
     ok: true,
@@ -8602,21 +8155,15 @@ app.get('/store/shopping-list', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const items = (Array.isArray(store.items) ? store.items : []).filter(item => {
-    return (
-      itemBelongsToUser(item, userId) &&
-      item.bucket === 'shopping_list' &&
-      !item.archived_at &&
-      !isCompletedStatus(item.status)
-    );
-  });
+  const items = store.items.filter(
+    item => item.user_id === userId && item.bucket === 'shopping_list'
+  );
 
   res.json({
     ok: true,
     userId,
     count: items.length,
     items,
-    shopping_list: items,
   });
 });
 
