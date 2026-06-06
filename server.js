@@ -676,6 +676,33 @@ function cleanActionTitle(text) {
   return title.length > 80 ? `${title.slice(0, 80)}…` : title;
 }
 
+
+function cleanReminderTitle(text) {
+  const clean = normalizeText(text)
+    .replace(/^contexte\s*:\s*/i, '')
+    .replace(/^aide-moi à créer un rappel\s*(?:pour|de)?\s*/i, '')
+    .replace(/^aide moi à créer un rappel\s*(?:pour|de)?\s*/i, '')
+    .replace(/^crée un rappel\s*(?:pour|de)?\s*/i, '')
+    .replace(/^créer un rappel\s*(?:pour|de)?\s*/i, '')
+    .replace(/^rappelle-moi\s*(?:de|d’|d')?\s*/i, '')
+    .replace(/^rappelle moi\s*(?:de|d’|d')?\s*/i, '')
+    .replace(/^rappel-moi\s*(?:de|d’|d')?\s*/i, '')
+    .replace(/^rappel moi\s*(?:de|d’|d')?\s*/i, '')
+    .replace(/^rappelle\s*(?:de|d’|d')?\s*/i, '')
+    .replace(/^de\s+/i, '')
+    .replace(/^d[’']\s*/i, '')
+    .replace(/\s+dans\s+\d{1,3}\s*(?:minutes?|mins?|mn)\b.*$/i, '')
+    .replace(/\s+(?:aujourd’hui|aujourd'hui|demain|ce soir|demain matin|demain soir|demain après-midi|demain apres-midi)\b.*$/i, '')
+    .replace(/\s+(?:à|a|vers)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}.*$/i, '')
+    .replace(/[.!?;:]+$/g, '')
+    .trim();
+
+  if (!clean) return cleanActionTitle(text);
+
+  const title = clean.charAt(0).toUpperCase() + clean.slice(1);
+  return title.length > 80 ? `${title.slice(0, 80)}…` : title;
+}
+
 function detectDatetimeHint(text) {
   const lower = normalizeText(text).toLowerCase();
 
@@ -937,11 +964,14 @@ function buildNextStep(actionType, datetimeHint) {
 }
 
 function buildStructuredAction({ userId, message, actionType, label, status, analysis, targetOverride }) {
-  const target = normalizeText(targetOverride || extractContext(message));
-  const datetimeHint = detectDatetimeHint(target || message);
-  const priority = detectPriority(target || message, analysis);
+  const rawTarget = normalizeText(targetOverride || extractContext(message));
+  const target = actionType === 'create_reminder'
+    ? cleanReminderTitle(rawTarget || message)
+    : rawTarget;
+  const datetimeHint = detectDatetimeHint(rawTarget || message);
+  const priority = detectPriority(rawTarget || message, analysis);
   const reminderSchedule = actionType === 'create_reminder'
-    ? resolveReminderSchedule(`${message} ${target}`, datetimeHint)
+    ? resolveReminderSchedule(`${message} ${rawTarget}`, datetimeHint)
     : null;
   const provider = actionToProvider(actionType);
   const connectionType = actionToConnectionType(actionType);
@@ -953,7 +983,7 @@ function buildStructuredAction({ userId, message, actionType, label, status, ana
     action_type: actionType,
     type: actionType,
     label,
-    title: cleanActionTitle(target),
+    title: actionType === 'create_reminder' ? cleanReminderTitle(target) : cleanActionTitle(target),
     target,
     status,
     priority,
@@ -1295,7 +1325,9 @@ function syncLinkedItemWithAction(store, action) {
 
       return (
         existingItem.mirrored_from_today_id === item.id ||
-        item.mirrored_from_today_id === existingItem.id
+        item.mirrored_from_today_id === existingItem.id ||
+        existingItem.action_id === action.id ||
+        existingItem.item_id === item.id
       );
     });
 
