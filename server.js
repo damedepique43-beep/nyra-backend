@@ -758,7 +758,7 @@ function resolveReminderSchedule(text, datetimeHint) {
     };
   }
 
-  const relativeMinutesMatch = lower.match(/dans\s+(\d{1,3})\s+minutes?/i);
+  const relativeMinutesMatch = lower.match(/dans\s+(\d{1,3})\s*(?:minutes?|mins?|mn)/i);
   if (relativeMinutesMatch?.[1]) {
     const minutes = Number(relativeMinutesMatch[1]);
     if (minutes > 0 && minutes <= 720) {
@@ -1279,7 +1279,9 @@ function syncLinkedItemWithAction(store, action) {
   item.action_id = action.id;
   item.updated_at = nowIso();
 
-  if (isCompletedStatus(action.status)) {
+  const completed = isCompletedStatus(action.status);
+
+  if (completed) {
     item.completed_at = item.completed_at || nowIso();
     item.checked = true;
     item.checked_at = item.checked_at || nowIso();
@@ -1303,12 +1305,17 @@ function syncLinkedItemWithAction(store, action) {
       linkedItem.action_id = action.id;
       linkedItem.updated_at = nowIso();
 
-      if (isCompletedStatus(action.status)) {
+      if (completed) {
         linkedItem.completed_at = linkedItem.completed_at || nowIso();
         linkedItem.checked = true;
         linkedItem.checked_at = linkedItem.checked_at || nowIso();
+        archiveCompletedOrganizationItem(store, linkedItem);
       }
     });
+  }
+
+  if (completed) {
+    archiveCompletedOrganizationItem(store, item);
   }
 
   return item;
