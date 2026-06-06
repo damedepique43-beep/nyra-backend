@@ -676,33 +676,6 @@ function cleanActionTitle(text) {
   return title.length > 80 ? `${title.slice(0, 80)}…` : title;
 }
 
-
-function cleanReminderTitle(text) {
-  const clean = normalizeText(text)
-    .replace(/^contexte\s*:\s*/i, '')
-    .replace(/^aide-moi à créer un rappel\s*(?:pour|de)?\s*/i, '')
-    .replace(/^aide moi à créer un rappel\s*(?:pour|de)?\s*/i, '')
-    .replace(/^crée un rappel\s*(?:pour|de)?\s*/i, '')
-    .replace(/^créer un rappel\s*(?:pour|de)?\s*/i, '')
-    .replace(/^rappelle-moi\s*(?:de|d’|d')?\s*/i, '')
-    .replace(/^rappelle moi\s*(?:de|d’|d')?\s*/i, '')
-    .replace(/^rappel-moi\s*(?:de|d’|d')?\s*/i, '')
-    .replace(/^rappel moi\s*(?:de|d’|d')?\s*/i, '')
-    .replace(/^rappelle\s*(?:de|d’|d')?\s*/i, '')
-    .replace(/^de\s+/i, '')
-    .replace(/^d[’']\s*/i, '')
-    .replace(/\s+dans\s+\d{1,3}\s*(?:minutes?|mins?|mn)\b.*$/i, '')
-    .replace(/\s+(?:aujourd’hui|aujourd'hui|demain|ce soir|demain matin|demain soir|demain après-midi|demain apres-midi)\b.*$/i, '')
-    .replace(/\s+(?:à|a|vers)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}.*$/i, '')
-    .replace(/[.!?;:]+$/g, '')
-    .trim();
-
-  if (!clean) return cleanActionTitle(text);
-
-  const title = clean.charAt(0).toUpperCase() + clean.slice(1);
-  return title.length > 80 ? `${title.slice(0, 80)}…` : title;
-}
-
 function detectDatetimeHint(text) {
   const lower = normalizeText(text).toLowerCase();
 
@@ -964,14 +937,11 @@ function buildNextStep(actionType, datetimeHint) {
 }
 
 function buildStructuredAction({ userId, message, actionType, label, status, analysis, targetOverride }) {
-  const rawTarget = normalizeText(targetOverride || extractContext(message));
-  const target = actionType === 'create_reminder'
-    ? cleanReminderTitle(rawTarget || message)
-    : rawTarget;
-  const datetimeHint = detectDatetimeHint(rawTarget || message);
-  const priority = detectPriority(rawTarget || message, analysis);
+  const target = normalizeText(targetOverride || extractContext(message));
+  const datetimeHint = detectDatetimeHint(target || message);
+  const priority = detectPriority(target || message, analysis);
   const reminderSchedule = actionType === 'create_reminder'
-    ? resolveReminderSchedule(`${message} ${rawTarget}`, datetimeHint)
+    ? resolveReminderSchedule(`${message} ${target}`, datetimeHint)
     : null;
   const provider = actionToProvider(actionType);
   const connectionType = actionToConnectionType(actionType);
@@ -983,7 +953,7 @@ function buildStructuredAction({ userId, message, actionType, label, status, ana
     action_type: actionType,
     type: actionType,
     label,
-    title: actionType === 'create_reminder' ? cleanReminderTitle(target) : cleanActionTitle(target),
+    title: cleanActionTitle(target),
     target,
     status,
     priority,
@@ -1325,9 +1295,7 @@ function syncLinkedItemWithAction(store, action) {
 
       return (
         existingItem.mirrored_from_today_id === item.id ||
-        item.mirrored_from_today_id === existingItem.id ||
-        existingItem.action_id === action.id ||
-        existingItem.item_id === item.id
+        item.mirrored_from_today_id === existingItem.id
       );
     });
 
@@ -7898,7 +7866,7 @@ function shouldArchiveCompletedItem(item) {
   if (bucket === 'memory') return false;
   if (bucket === 'routines' || type === 'routine') return false;
 
-  return ['tasks', 'today', 'reminders', 'shopping_list'].includes(bucket);
+  return ['tasks', 'today', 'reminders'].includes(bucket);
 }
 
 function archiveCompletedOrganizationItem(store, item) {
@@ -7925,19 +7893,21 @@ function archiveShoppingListIfFullyChecked(store, userId) {
 
   if (!allChecked) return null;
 
-  const archivedItems = shoppingItems.map(item => {
+  const completedItems = shoppingItems.map(item => {
     item.checked = true;
     item.checked_at = item.checked_at || nowIso();
     item.status = 'done';
     item.completed_at = item.completed_at || nowIso();
-    return moveItemToMemory(item, 'shopping_list');
+    item.updated_at = nowIso();
+    return item;
   });
 
   return {
-    archived: true,
-    archived_count: archivedItems.length,
-    archived_items: archivedItems,
-    archived_at: nowIso(),
+    archived: false,
+    completed: true,
+    completed_count: completedItems.length,
+    completed_items: completedItems,
+    completed_at: nowIso(),
   };
 }
 
@@ -7947,8 +7917,14 @@ app.get('/store/memory', (req, res) => {
 
   const items = (Array.isArray(store.items) ? store.items : [])
     .filter(item => {
+      const bucket = normalizeText(item.bucket || '');
+      const previousBucket = normalizeText(item.previous_bucket || '');
+      const memoryCategory = normalizeText(item.memory_category || '');
+      const isShoppingHistory = bucket === 'shopping_list' || previousBucket === 'shopping_list' || memoryCategory === 'shopping_list';
+
       return (
         itemBelongsToUser(item, userId) &&
+        !isShoppingHistory &&
         (
           item.bucket === 'memory' ||
           Boolean(item.archived_at) ||
