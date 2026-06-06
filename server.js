@@ -8140,6 +8140,75 @@ function getMemoryItemQualityScore(item) {
   return score;
 }
 
+function buildMemoryItemsFromCompletedActions(store, userId) {
+  const safeActions = Array.isArray(store.actions) ? store.actions : [];
+
+  return safeActions
+    .filter(action => {
+      const actionType = normalizeText(action?.action_type || action?.type || '').toLowerCase();
+      const isSupportedMemoryAction = [
+        'add_to_today',
+        'idea_to_task',
+        'create_reminder',
+      ].includes(actionType);
+
+      return (
+        actionBelongsToUser(action, userId) &&
+        isSupportedMemoryAction &&
+        isCompletedStatus(action.status)
+      );
+    })
+    .map(action => {
+      const actionType = normalizeText(action.action_type || action.type || '').toLowerCase();
+      const isReminder = actionType === 'create_reminder';
+      const memoryCategory = isReminder ? 'reminders' : 'tasks';
+      const memoryType = isReminder ? 'reminder' : 'task';
+
+      return {
+        id: `memory-action-${action.id}`,
+        user_id: action.user_id || userId,
+        type: memoryType,
+        memory_type: memoryType,
+        bucket: 'memory',
+        previous_bucket: memoryCategory,
+        memory_category: memoryCategory,
+        title: action.title || cleanActionTitle(action.target || action.source_message || 'Action Nyra'),
+        content: action.target || action.title || action.source_message || '',
+        target: action.target || action.title || '',
+        urgency: action.urgency || 'normal',
+        priority: action.priority || 'normal',
+        datetime_hint: action.datetime_hint || null,
+        scheduled_at: action.scheduled_at || null,
+        remind_at: action.remind_at || action.scheduled_at || null,
+        reminder_at: action.reminder_at || action.scheduled_at || null,
+        schedule_precision: action.schedule_precision || null,
+        has_exact_date: Boolean(action.has_exact_date),
+        tags: uniqueArray([
+          'memory',
+          memoryType,
+          memoryCategory,
+          actionType,
+        ]),
+        status: normalizeActionStatus(action.status || 'done'),
+        action_type: action.action_type || action.type || null,
+        action_label: action.label || null,
+        action_id: action.id || null,
+        provider: action.provider || 'local',
+        sync_status: action.sync_status || 'local_only',
+        external_id: action.external_id || null,
+        requires_connection: Boolean(action.requires_connection),
+        connection_type: action.connection_type || null,
+        checked: true,
+        checked_at: action.completed_at || action.updated_at || nowIso(),
+        completed_at: action.completed_at || action.updated_at || nowIso(),
+        archived_at: action.completed_at || action.updated_at || nowIso(),
+        updated_at: action.updated_at || action.completed_at || nowIso(),
+        created_at: action.created_at || action.completed_at || nowIso(),
+        source: 'completed_action_memory_projection',
+      };
+    });
+}
+
 function deduplicateMemoryItems(items) {
   const byKey = new Map();
 
@@ -8180,7 +8249,7 @@ app.get('/store/memory', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const candidates = (Array.isArray(store.items) ? store.items : [])
+  const itemCandidates = (Array.isArray(store.items) ? store.items : [])
     .filter(item => {
       const displayBucket = getMemoryDisplayBucket(item);
       const isStoredInMemory = item.bucket === 'memory' || Boolean(item.archived_at) || isCompletedStatus(item.status);
@@ -8191,11 +8260,17 @@ app.get('/store/memory', (req, res) => {
         Boolean(displayBucket) &&
         isStoredInMemory
       );
-    })
-    .sort((a, b) => {
-      return new Date(b.archived_at || b.completed_at || b.updated_at || b.created_at || 0).getTime() -
-        new Date(a.archived_at || a.completed_at || a.updated_at || a.created_at || 0).getTime();
     });
+
+  const actionMemoryCandidates = buildMemoryItemsFromCompletedActions(store, userId);
+
+  const candidates = [
+    ...itemCandidates,
+    ...actionMemoryCandidates,
+  ].sort((a, b) => {
+    return new Date(b.archived_at || b.completed_at || b.updated_at || b.created_at || 0).getTime() -
+      new Date(a.archived_at || a.completed_at || a.updated_at || a.created_at || 0).getTime();
+  });
 
   const decoratedItems = deduplicateMemoryItems(candidates).sort((a, b) => {
     return new Date(b.archived_at || b.completed_at || b.updated_at || b.created_at || 0).getTime() -
