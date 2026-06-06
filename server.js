@@ -660,14 +660,30 @@ function cleanActionTitle(text) {
     .replace(/^créer un rappel pour\s+/i, '')
     .replace(/^rappelle-moi\s+/i, '')
     .replace(/^rappelle moi\s+/i, '')
+    .replace(/^rappel-moi\s+/i, '')
+    .replace(/^rappel moi\s+/i, '')
     .replace(/^rappelle\s+/i, '')
+    .replace(/^rappel\s+/i, '')
     .replace(/^de\s+/i, '')
     .replace(/\s+dans\s+\d{1,3}\s*(?:secondes?|secs?|sec|s|minutes?|mins?|mn)\b.*$/i, '')
+    .replace(/^demain\s+(?:à|a)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\s+d['’]?/i, '')
+    .replace(/^demain\s+(?:à|a)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\s+/i, '')
+    .replace(/^demain\s+d['’]?/i, '')
+    .replace(/^demain\s+/i, '')
+    .replace(/^aujourd['’]?hui\s+(?:à|a)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\s+d['’]?/i, '')
+    .replace(/^aujourd['’]?hui\s+d['’]?/i, '')
+    .replace(/^aujourd['’]?hui\s+/i, '')
+    .replace(/^à\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\s+d['’]?/i, '')
+    .replace(/^a\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\s+d['’]?/i, '')
+    .replace(/^à\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\s+/i, '')
+    .replace(/^a\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\s+/i, '')
+    .replace(/^d['’]\s*/i, '')
+    .replace(/^d['’]/i, '')
     .replace(/^ajoute\s+/i, '')
     .replace(/^rajoute\s+/i, '')
     .replace(/^mets\s+/i, '')
     .replace(/^note\s+/i, '')
-    .replace(/\s+(à|a|dans)\s+(ma\s+|la\s+)?liste\s+de\s+courses.*$/i, '')
+    .replace(/\s+(à|a|dans|sur)\s+(ma\s+|la\s+)?liste\s+de\s+courses.*$/i, '')
     .replace(/^transforme cette idée en tâche\s*/i, '')
     .trim();
 
@@ -676,6 +692,20 @@ function cleanActionTitle(text) {
   const title = clean.charAt(0).toUpperCase() + clean.slice(1);
 
   return title.length > 80 ? `${title.slice(0, 80)}…` : title;
+}
+
+
+function extractReminderTarget(message) {
+  const text = normalizeText(message);
+  const lower = text.toLowerCase();
+
+  const afterDeMatch = text.match(/(?:^|\s)d['’]([^.!?]+)$/i);
+  if (afterDeMatch?.[1] && includesAny(lower, ['rappelle', 'rappel'])) {
+    return cleanActionTitle(afterDeMatch[1]);
+  }
+
+  const cleaned = cleanActionTitle(text);
+  return cleaned === 'Action Nyra' ? cleanActionTitle(message) : cleaned;
 }
 
 function detectDatetimeHint(text) {
@@ -1978,6 +2008,7 @@ function detectAction(message, userId, analysis) {
     return buildStructuredAction({
       userId,
       message,
+      targetOverride: extractReminderTarget(message),
       actionType: 'create_reminder',
       label: 'Créer un rappel',
       status: 'draft',
@@ -7922,13 +7953,26 @@ function syncActionFromUpdatedItem(store, item) {
 }
 
 function moveItemToMemory(item, category = null) {
-  if (!item || item.bucket === 'memory') return item;
+  if (!item) return item;
 
-  item.previous_bucket = item.previous_bucket || item.bucket || null;
-  item.memory_category = category || item.previous_bucket || item.bucket || item.type || 'item';
+  const originalBucket = item.previous_bucket || item.bucket || null;
+  const finalCategory = category || originalBucket || item.type || 'item';
+
+  item.previous_bucket = originalBucket;
+  item.memory_category = finalCategory;
   item.bucket = 'memory';
   item.archived_at = item.archived_at || nowIso();
   item.updated_at = nowIso();
+
+  if (['tasks', 'today'].includes(finalCategory)) {
+    item.type = 'task';
+    item.memory_type = 'task';
+  }
+
+  if (finalCategory === 'reminders') {
+    item.type = 'reminder';
+    item.memory_type = 'reminder';
+  }
 
   return item;
 }
@@ -8040,7 +8084,13 @@ function getMemoryDisplayBucket(item) {
 }
 
 function getMemoryComparableText(item) {
-  return normalizeKey(item?.title || item?.content || item?.target || item?.label || '');
+  const raw = normalizeText(item?.title || item?.content || item?.target || item?.label || '');
+  const cleaned = cleanActionTitle(raw)
+    .replace(/\b(?:aujourd['’]?hui|demain)\b/gi, '')
+    .replace(/\b(?:à|a)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\b/gi, '')
+    .trim();
+
+  return normalizeKey(cleaned || raw);
 }
 
 function getMemoryItemQualityScore(item) {
@@ -8049,8 +8099,10 @@ function getMemoryItemQualityScore(item) {
   if (item?.archived_at) score += 50;
   if (item?.completed_at) score += 40;
   if (isCompletedStatus(item?.status)) score += 35;
-  if (item?.previous_bucket === 'tasks' || item?.previous_bucket === 'today') score += 20;
-  if (item?.memory_category === 'tasks') score += 20;
+  if (item?.type === 'task' || item?.memory_type === 'task') score += 35;
+  if (item?.type === 'reminder' || item?.memory_type === 'reminder') score += 30;
+  if (item?.previous_bucket === 'tasks' || item?.previous_bucket === 'today') score += 25;
+  if (item?.memory_category === 'tasks' || item?.memory_category === 'today') score += 25;
   if (item?.action_type) score += 10;
   if (item?.bucket === 'memory') score += 5;
 
@@ -8072,6 +8124,16 @@ function deduplicateMemoryItems(items) {
       memory_bucket: item.bucket,
       original_bucket: item.bucket,
       bucket: displayBucket,
+      type: displayBucket === 'tasks'
+        ? 'task'
+        : displayBucket === 'reminders'
+          ? 'reminder'
+          : item.type,
+      memory_type: displayBucket === 'tasks'
+        ? 'task'
+        : displayBucket === 'reminders'
+          ? 'reminder'
+          : item.memory_type || item.type || displayBucket,
     };
 
     const existing = byKey.get(key);
