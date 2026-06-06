@@ -8291,6 +8291,14 @@ function shouldReminderAppearInToday(item) {
     })()
   );
 
+  const schedulePrecision = normalizeText(item.schedule_precision || '').toLowerCase();
+
+  // Les rappels très courts (dans 30s, dans 2mn, etc.) doivent déclencher une
+  // notification, mais ne doivent pas polluer l'écran Aujourd'hui.
+  if (schedulePrecision === 'relative_exact_seconds' || schedulePrecision === 'relative_exact_minutes') {
+    return false;
+  }
+
   if (hasExactDate) {
     return hasExactDateToday;
   }
