@@ -927,10 +927,10 @@ function resolveReminderSchedule(text, datetimeHint) {
 function extractShoppingListItem(message) {
   const text = normalizeText(message);
   const patterns = [
-    /ajoute\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
-    /mets\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
-    /note\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
-    /rajoute\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+    /ajoute\s+(.+?)\s+(?:à|a|dans|sur)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+    /mets\s+(.+?)\s+(?:à|a|dans|sur)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+    /note\s+(.+?)\s+(?:à|a|dans|sur)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+    /rajoute\s+(.+?)\s+(?:à|a|dans|sur)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
   ];
 
   for (const pattern of patterns) {
@@ -1032,10 +1032,11 @@ function buildNextStep(actionType, datetimeHint) {
 
 function buildStructuredAction({ userId, message, actionType, label, status, analysis, targetOverride }) {
   const target = normalizeText(targetOverride || extractContext(message));
-  const datetimeHint = detectDatetimeHint(target || message);
-  const priority = detectPriority(target || message, analysis);
+  const actionContextText = normalizeText(`${message} ${target}`);
+  const datetimeHint = detectDatetimeHint(actionContextText);
+  const priority = detectPriority(actionContextText, analysis);
   const reminderSchedule = actionType === 'create_reminder'
-    ? resolveReminderSchedule(`${message} ${target}`, datetimeHint)
+    ? resolveReminderSchedule(actionContextText, datetimeHint)
     : null;
   const provider = actionToProvider(actionType);
   const connectionType = actionToConnectionType(actionType);
@@ -2203,13 +2204,38 @@ function getStoredItemStatusForAction(action) {
   return action?.status || 'captured';
 }
 
+function getStoredItemTypeForAction(action, analysis) {
+  const actionType = normalizeText(action?.action_type || action?.type || '');
+
+  if (actionType === 'add_to_today' || actionType === 'idea_to_task') return 'task';
+  if (actionType === 'create_reminder') return 'reminder';
+  if (actionType === 'add_to_shopping_list') return 'shopping_item';
+  if (analysis?.is_task) return 'task';
+
+  return action ? 'action_result' : analysis?.type || 'note';
+}
+
+function getStoredItemMemoryTypeForAction(action, analysis) {
+  const actionType = normalizeText(action?.action_type || action?.type || '');
+
+  if (actionType === 'add_to_today' || actionType === 'idea_to_task') return 'task';
+  if (actionType === 'create_reminder') return 'reminder';
+  if (actionType === 'add_to_shopping_list') return 'shopping_item';
+  if (analysis?.is_task) return 'task';
+
+  return null;
+}
+
 function createStoredItem({ userId, message, analysis, action }) {
   const bucket = action ? actionToBucket(action.action_type) : analysis.suggested_bucket;
+  const storedType = action ? getStoredItemTypeForAction(action, analysis) : analysis.type;
+  const memoryType = action ? getStoredItemMemoryTypeForAction(action, analysis) : (analysis.is_task ? 'task' : null);
 
   return {
     id: crypto.randomUUID(),
     user_id: userId,
-    type: action ? 'action_result' : analysis.type,
+    type: storedType,
+    memory_type: memoryType,
     bucket,
     title: action ? action.title : cleanActionTitle(message),
     content: action ? action.target : message,
@@ -2226,6 +2252,8 @@ function createStoredItem({ userId, message, analysis, action }) {
           'action',
           action.action_type,
           action.provider,
+          memoryType === 'task' ? 'tâche' : null,
+          memoryType === 'reminder' ? 'rappel' : null,
           analysis.project_name ? normalizeKey(analysis.project_name) : null,
         ])
       : analysis.tags,
@@ -7956,7 +7984,8 @@ function moveItemToMemory(item, category = null) {
   if (!item) return item;
 
   const originalBucket = item.previous_bucket || item.bucket || null;
-  const finalCategory = category || originalBucket || item.type || 'item';
+  const rawCategory = category || item.memory_category || originalBucket || item.type || 'item';
+  const finalCategory = rawCategory === 'today' ? 'tasks' : rawCategory;
 
   item.previous_bucket = originalBucket;
   item.memory_category = finalCategory;
@@ -7964,14 +7993,16 @@ function moveItemToMemory(item, category = null) {
   item.archived_at = item.archived_at || nowIso();
   item.updated_at = nowIso();
 
-  if (['tasks', 'today'].includes(finalCategory)) {
+  if (['tasks', 'today'].includes(finalCategory) || item.action_type === 'add_to_today' || item.action_type === 'idea_to_task') {
     item.type = 'task';
     item.memory_type = 'task';
+    item.memory_category = 'tasks';
   }
 
-  if (finalCategory === 'reminders') {
+  if (finalCategory === 'reminders' || item.action_type === 'create_reminder') {
     item.type = 'reminder';
     item.memory_type = 'reminder';
+    item.memory_category = 'reminders';
   }
 
   return item;
