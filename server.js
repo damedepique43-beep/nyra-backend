@@ -661,6 +661,8 @@ function cleanActionTitle(text) {
     .replace(/^rappelle-moi\s+/i, '')
     .replace(/^rappelle moi\s+/i, '')
     .replace(/^rappelle\s+/i, '')
+    .replace(/^de\s+/i, '')
+    .replace(/\s+dans\s+\d{1,3}\s*(?:secondes?|secs?|sec|s|minutes?|mins?|mn)\b.*$/i, '')
     .replace(/^ajoute\s+/i, '')
     .replace(/^rajoute\s+/i, '')
     .replace(/^mets\s+/i, '')
@@ -750,21 +752,25 @@ function resolveReminderSchedule(text, datetimeHint) {
   const lower = normalizeText(text).toLowerCase();
   const explicitTime = extractExplicitTime(lower);
 
-  if (includesAny(lower, ['dans 5 minutes'])) {
-    return {
-      scheduled_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-      precision: 'relative_exact',
-      has_exact_date: true,
-    };
+  const relativeSecondsMatch = lower.match(/dans\s+(\d{1,3})\s*(?:secondes?|secs?|sec|s)\b/i);
+  if (relativeSecondsMatch?.[1]) {
+    const seconds = Number(relativeSecondsMatch[1]);
+    if (seconds > 0 && seconds <= 86400) {
+      return {
+        scheduled_at: new Date(Date.now() + seconds * 1000).toISOString(),
+        precision: 'relative_exact_seconds',
+        has_exact_date: true,
+      };
+    }
   }
 
-  const relativeMinutesMatch = lower.match(/dans\s+(\d{1,3})\s*(?:minutes?|mins?|mn)/i);
+  const relativeMinutesMatch = lower.match(/dans\s+(\d{1,3})\s*(?:minutes?|mins?|mn)\b/i);
   if (relativeMinutesMatch?.[1]) {
     const minutes = Number(relativeMinutesMatch[1]);
     if (minutes > 0 && minutes <= 720) {
       return {
         scheduled_at: new Date(Date.now() + minutes * 60 * 1000).toISOString(),
-        precision: 'relative_exact',
+        precision: 'relative_exact_minutes',
         has_exact_date: true,
       };
     }
@@ -7937,12 +7943,34 @@ app.get('/store/memory', (req, res) => {
         new Date(a.archived_at || a.completed_at || a.updated_at || a.created_at || 0).getTime();
     });
 
+  const decoratedItems = items.map(item => {
+    const previousBucket = normalizeText(item.previous_bucket || '').toLowerCase();
+    const memoryCategory = normalizeText(item.memory_category || '').toLowerCase();
+    const actionType = normalizeText(item.action_type || '').toLowerCase();
+    let displayBucket = memoryCategory || previousBucket || normalizeText(item.bucket || '').toLowerCase();
+
+    if (displayBucket === 'today' && (actionType === 'add_to_today' || item.type === 'task' || item.action_label === 'Ajouter à aujourd’hui')) {
+      displayBucket = 'tasks';
+    }
+
+    if (!displayBucket || displayBucket === 'memory') {
+      displayBucket = item.type === 'task' ? 'tasks' : 'captures';
+    }
+
+    return {
+      ...item,
+      memory_bucket: item.bucket,
+      original_bucket: item.bucket,
+      bucket: displayBucket,
+    };
+  });
+
   return res.json({
     ok: true,
     userId,
-    count: items.length,
-    items,
-    memory_items: items,
+    count: decoratedItems.length,
+    items: decoratedItems,
+    memory_items: decoratedItems,
   });
 });
 
@@ -8172,6 +8200,35 @@ app.get('/store/ideas', (req, res) => {
   });
 });
 
+function shouldReminderAppearInToday(item) {
+  if (!item || item.bucket !== 'reminders') return false;
+  if (item.archived_at || isCompletedStatus(item.status)) return false;
+
+  const text = normalizeText(`${item.title || ''} ${item.content || ''} ${item.target || ''}`).toLowerCase();
+  const datetimeHint = normalizeText(item.datetime_hint || '').toLowerCase();
+  const priority = normalizeText(item.priority || '').toLowerCase();
+  const urgency = normalizeText(item.urgency || '').toLowerCase();
+  const hasExactDateToday = Boolean(
+    item.has_exact_date &&
+    item.scheduled_at &&
+    (() => {
+      const scheduledParts = getLocalDateParts(new Date(item.scheduled_at), 'Europe/Paris');
+      const todayParts = getLocalDateParts(new Date(), 'Europe/Paris');
+      return scheduledParts.year === todayParts.year &&
+        scheduledParts.month === todayParts.month &&
+        scheduledParts.day === todayParts.day;
+    })()
+  );
+
+  return Boolean(
+    hasExactDateToday ||
+    datetimeHint === 'today' ||
+    priority === 'high' ||
+    urgency === 'high' ||
+    includesAny(text, ['urgent', 'important', 'aujourd’hui', "aujourd'hui", 'maintenant', 'ce soir'])
+  );
+}
+
 app.get('/store/today', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
@@ -8179,9 +8236,12 @@ app.get('/store/today', (req, res) => {
   const today = (Array.isArray(store.items) ? store.items : []).filter(item => {
     return (
       itemBelongsToUser(item, userId) &&
-      item.bucket === 'today' &&
       !item.archived_at &&
-      !isCompletedStatus(item.status)
+      !isCompletedStatus(item.status) &&
+      (
+        item.bucket === 'today' ||
+        shouldReminderAppearInToday(item)
+      )
     );
   });
 
