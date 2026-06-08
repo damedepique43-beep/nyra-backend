@@ -7598,7 +7598,17 @@ app.patch('/store/actions/:actionId/status', (req, res) => {
     });
   }
 
-  const archivedItems = archiveActionLinkedItems(store, result.action, normalizedStatus);
+  let archivedItems = [];
+
+  if (normalizedStatus === 'done') {
+    const linkedItem = result.item || (Array.isArray(store.items)
+      ? store.items.find(item => item.id === result.action?.item_id || item.action_id === result.action?.id)
+      : null);
+
+    if (linkedItem) {
+      archivedItems = completeMatchingOrganizationItems(store, userId, linkedItem);
+    }
+  }
 
   writeStore(store);
 
@@ -7781,6 +7791,71 @@ function isCompletedStatus(status) {
   return ['done', 'completed', 'complete', 'cancelled', 'canceled'].includes(normalized);
 }
 
+
+function getItemUserFacingKey(item) {
+  return normalizeKey(
+    item?.title ||
+    item?.content ||
+    item?.target ||
+    item?.label ||
+    ''
+  );
+}
+
+function completeAndArchiveItem(store, item, category = null) {
+  if (!item) return null;
+
+  item.status = 'done';
+  item.checked = true;
+  item.checked_at = item.checked_at || nowIso();
+  item.completed_at = item.completed_at || nowIso();
+  item.updated_at = nowIso();
+
+  return archiveCompletedOrganizationItem(store, item) || item;
+}
+
+function completeMatchingOrganizationItems(store, userId, sourceItem) {
+  if (!sourceItem) return [];
+
+  const sourceKey = getItemUserFacingKey(sourceItem);
+  const sourceActionId = normalizeText(sourceItem.action_id || '');
+  const sourceItemId = normalizeText(sourceItem.id || '');
+
+  if (!sourceKey && !sourceActionId && !sourceItemId) return [];
+
+  const items = Array.isArray(store.items) ? store.items : [];
+  const completed = [];
+
+  items.forEach(item => {
+    if (!itemBelongsToUser(item, userId)) return;
+    if (item.bucket === 'memory') return;
+    if (isCompletedStatus(item.status) || item.checked || item.archived_at) return;
+
+    const bucket = normalizeText(item.bucket || '');
+    const actionType = normalizeText(item.action_type || item.type || '');
+    const isOrganizationItem =
+      bucket === 'tasks' ||
+      bucket === 'today' ||
+      bucket === 'reminders' ||
+      actionType === 'idea_to_task' ||
+      actionType === 'add_to_today' ||
+      actionType === 'create_reminder';
+
+    if (!isOrganizationItem) return;
+
+    const itemKey = getItemUserFacingKey(item);
+    const sameText = Boolean(sourceKey && itemKey && itemKey === sourceKey);
+    const sameAction = Boolean(sourceActionId && item.action_id === sourceActionId);
+    const sameItem = Boolean(sourceItemId && item.id === sourceItemId);
+
+    if (!sameText && !sameAction && !sameItem) return;
+
+    completed.push(completeAndArchiveItem(store, item, bucket));
+  });
+
+  return completed;
+}
+
 function syncActionFromUpdatedItem(store, item) {
   if (!item?.action_id) return null;
 
@@ -7870,88 +7945,6 @@ function archiveShoppingListIfFullyChecked(store, userId) {
     archived_items: archivedItems,
     archived_at: nowIso(),
   };
-}
-
-
-function getActionMemoryCategory(action, item) {
-  const actionType = normalizeText(action?.action_type || action?.type || item?.action_type || '');
-  const itemBucket = normalizeText(item?.bucket || item?.previous_bucket || '');
-
-  if (actionType === 'add_to_today' || actionType === 'idea_to_task') return 'tasks';
-  if (actionType === 'create_reminder') return 'reminders';
-  if (itemBucket === 'today') return 'tasks';
-  if (itemBucket === 'tasks') return 'tasks';
-  if (itemBucket === 'reminders') return 'reminders';
-  if (itemBucket === 'routines' || itemBucket === 'routine') return 'routines';
-
-  return itemBucket || 'tasks';
-}
-
-function archiveActionLinkedItems(store, action, status) {
-  if (!action || !isCompletedStatus(status)) {
-    return [];
-  }
-
-  const actionId = normalizeText(action.id || '');
-  const itemId = normalizeText(action.item_id || '');
-  const actionType = normalizeText(action.action_type || action.type || '');
-
-  const archivedItems = [];
-
-  (Array.isArray(store.items) ? store.items : []).forEach(item => {
-    const matchesDirectItem = itemId && item.id === itemId;
-    const matchesAction = actionId && item.action_id === actionId;
-    const matchesMirror = itemId && item.mirrored_from_today_id === itemId;
-    const matchesTodayTaskTwin =
-      actionType === 'add_to_today' &&
-      itemBelongsToUser(item, action.user_id) &&
-      !item.archived_at &&
-      ['today', 'tasks'].includes(normalizeText(item.bucket || '')) &&
-      normalizeText(item.action_type || '') === 'idea_to_task' &&
-      normalizeText(item.content || item.title || '') === normalizeText(action.target || action.title || '');
-
-    if (!matchesDirectItem && !matchesAction && !matchesMirror && !matchesTodayTaskTwin) {
-      return;
-    }
-
-    item.status = 'done';
-    item.checked = true;
-    item.checked_at = item.checked_at || nowIso();
-    item.completed_at = item.completed_at || nowIso();
-
-    const category = getActionMemoryCategory(action, item);
-    moveItemToMemory(item, category);
-    item.memory_category = category;
-
-    archivedItems.push(item);
-  });
-
-  return archivedItems;
-}
-
-function isActiveOrganizationItem(item) {
-  return (
-    item &&
-    !item.archived_at &&
-    !item.checked &&
-    !isCompletedStatus(item.status)
-  );
-}
-
-function isTodayTaskLikeItem(item) {
-  const bucket = normalizeText(item?.bucket || '');
-  const actionType = normalizeText(item?.action_type || '');
-  const type = normalizeText(item?.type || '');
-
-  return (
-    bucket === 'today' &&
-    (
-      actionType === 'add_to_today' ||
-      actionType === 'idea_to_task' ||
-      type === 'task' ||
-      (Array.isArray(item?.tags) && item.tags.includes('tâche'))
-    )
-  );
 }
 
 app.get('/store/memory', (req, res) => {
@@ -8176,16 +8169,27 @@ app.get('/store/tasks', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const tasks = (Array.isArray(store.items) ? store.items : []).filter(item => {
-    return (
-      itemBelongsToUser(item, userId) &&
-      isActiveOrganizationItem(item) &&
-      (
-        item.bucket === 'tasks' ||
-        isTodayTaskLikeItem(item)
-      )
-    );
-  });
+  const tasks = (Array.isArray(store.items) ? store.items : [])
+    .filter(item => {
+      if (!itemBelongsToUser(item, userId)) return false;
+      if (item.archived_at || item.bucket === 'memory') return false;
+      if (item.checked || isCompletedStatus(item.status)) return false;
+
+      const bucket = normalizeText(item.bucket || '');
+      const type = normalizeText(item.type || '');
+      const actionType = normalizeText(item.action_type || '');
+
+      return (
+        bucket === 'tasks' ||
+        type === 'task' ||
+        actionType === 'idea_to_task' ||
+        actionType === 'add_to_today'
+      );
+    })
+    .sort((a, b) => {
+      return new Date(b.updated_at || b.created_at || 0).getTime() -
+        new Date(a.updated_at || a.created_at || 0).getTime();
+    });
 
   res.json({
     ok: true,
@@ -8215,13 +8219,16 @@ app.get('/store/today', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
   const store = readStore();
 
-  const today = (Array.isArray(store.items) ? store.items : []).filter(item => {
-    return (
-      itemBelongsToUser(item, userId) &&
-      item.bucket === 'today' &&
-      isActiveOrganizationItem(item)
-    );
-  });
+  const today = (Array.isArray(store.items) ? store.items : [])
+    .filter(item => {
+      return (
+        itemBelongsToUser(item, userId) &&
+        item.bucket === 'today' &&
+        !item.archived_at &&
+        !item.checked &&
+        !isCompletedStatus(item.status)
+      );
+    });
 
   res.json({
     ok: true,
