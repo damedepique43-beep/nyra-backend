@@ -8109,10 +8109,20 @@ app.get('/store/memory', (req, res) => {
 
   const items = (Array.isArray(store.items) ? store.items : [])
     .filter(item => {
+      const bucket = normalizeText(item?.bucket || '');
+      const type = normalizeText(item?.type || '');
+      const tags = Array.isArray(item?.tags) ? item.tags : [];
+      const isJournalItem =
+        bucket === 'journal' ||
+        type === 'emotion' ||
+        tags.includes('émotion') ||
+        tags.includes('emotion');
+
       return (
         itemBelongsToUser(item, userId) &&
         (
-          item.bucket === 'memory' ||
+          bucket === 'memory' ||
+          isJournalItem ||
           Boolean(item.archived_at) ||
           isCompletedStatus(item.status)
         )
@@ -8129,6 +8139,41 @@ app.get('/store/memory', (req, res) => {
     count: items.length,
     items,
     memory_items: items,
+  });
+});
+
+
+app.get('/store/journal', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  const items = (Array.isArray(store.items) ? store.items : [])
+    .filter(item => {
+      const bucket = normalizeText(item?.bucket || '');
+      const type = normalizeText(item?.type || '');
+      const tags = Array.isArray(item?.tags) ? item.tags : [];
+
+      return (
+        itemBelongsToUser(item, userId) &&
+        (
+          bucket === 'journal' ||
+          type === 'emotion' ||
+          tags.includes('émotion') ||
+          tags.includes('emotion')
+        )
+      );
+    })
+    .sort((a, b) => {
+      return new Date(b.updated_at || b.created_at || 0).getTime() -
+        new Date(a.updated_at || a.created_at || 0).getTime();
+    });
+
+  return res.json({
+    ok: true,
+    userId,
+    count: items.length,
+    items,
+    journal_items: items,
   });
 });
 
