@@ -9058,6 +9058,94 @@ app.patch('/store/items/:itemId', (req, res) => {
   });
 });
 
+
+app.patch('/store/reflections/:itemId/title', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const itemId = normalizeText(req.params.itemId);
+  const title = normalizeText(req.body?.title || req.body?.newTitle || req.body?.new_title || '').slice(0, 120);
+
+  if (!title) {
+    return res.status(400).json({
+      ok: false,
+      error: 'TITLE_REQUIRED',
+      message: 'Titre obligatoire.',
+    });
+  }
+
+  const store = readStore();
+  const found = findUserStoreItem(store, userId, itemId);
+
+  if (!found) {
+    return res.status(404).json({
+      ok: false,
+      error: 'REFLECTION_NOT_FOUND',
+      message: 'Réflexion introuvable.',
+    });
+  }
+
+  const item = found.item;
+  const itemType = normalizeText(item.type || '');
+  const bucket = normalizeText(item.bucket || '');
+  const isReflectionSubject = itemType === 'reflection_subject' && bucket === 'journal';
+  const isReflectionEntry = itemType === 'reflection_entry' && bucket === 'journal';
+
+  if (!isReflectionSubject && !isReflectionEntry) {
+    return res.status(400).json({
+      ok: false,
+      error: 'NOT_A_REFLECTION_ITEM',
+      message: 'Cet élément n’est pas une réflexion.',
+    });
+  }
+
+  const updatedAt = nowIso();
+  item.title = title;
+  item.updated_at = updatedAt;
+
+  let subject = null;
+  let entries = [];
+
+  if (isReflectionSubject) {
+    const subjectId = item.reflection_subject_id || item.id;
+    item.reflection_subject_id = subjectId;
+    item.reflection_subject_title = title;
+    item.journal_topic_title = title;
+    item.content_summary = item.content_summary || item.content || '';
+
+    entries = getReflectionEntriesForSubject(store, item.user_id || userId, subjectId);
+    entries.forEach(entry => {
+      entry.reflection_subject_title = title;
+      entry.journal_topic_title = title;
+      entry.updated_at = entry.updated_at || updatedAt;
+    });
+
+    subject = syncReflectionSubjectMetadata(store, item);
+  }
+
+  if (isReflectionEntry) {
+    const subjectId = item.reflection_subject_id || item.parent_id || null;
+
+    if (subjectId) {
+      const subjectFound = findUserStoreItem(store, userId, subjectId);
+      subject = subjectFound?.item || null;
+
+      if (subject && normalizeText(subject.type || '') === 'reflection_subject') {
+        subject = syncReflectionSubjectMetadata(store, subject);
+      }
+    }
+  }
+
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    item,
+    subject,
+    entries,
+    message: 'Titre de réflexion mis à jour.',
+  });
+});
+
 app.delete('/store/items/:itemId', (req, res) => {
   const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
   const itemId = normalizeText(req.params.itemId);
