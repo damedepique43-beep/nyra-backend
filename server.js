@@ -170,7 +170,7 @@ function readStore() {
       updated_at: parsed.updated_at || null,
     }
 
-    return cleanupReservedAutoProjects(normalizedStore);  } catch (error) {
+    return migrateLegacyReflectionReprises(cleanupReservedAutoProjects(normalizedStore));  } catch (error) {
     console.error('❌ readStore error:', error.message);
     return createEmptyStore();
   }
@@ -198,7 +198,7 @@ function writeStore(store) {
       updated_at: nowIso(),
     };
 
-    const cleanedStore = cleanupReservedAutoProjects(safeStore);
+    const cleanedStore = migrateLegacyReflectionReprises(cleanupReservedAutoProjects(safeStore));
 
     fs.writeFileSync(STORE_FILE, JSON.stringify(cleanedStore, null, 2), 'utf8');
   } catch (error) {
@@ -2548,28 +2548,290 @@ function buildJournalTurnText(message, reply) {
   ].join('\n'));
 }
 
-function appendJournalRepriseToSubject(item, message, reply) {
-  const existingContent = normalizeMultilineText(item.content || '');
-  const existingReprises = Array.isArray(item.reflection_reprises)
-    ? item.reflection_reprises
-    : [];
-  const repriseIndex = existingReprises.length + 1;
-  const createdAt = nowIso();
-  const repriseTitle = buildJournalRepriseTitle(repriseIndex, new Date(createdAt));
-  const repriseContent = buildJournalTurnText(message, reply);
-  const section = normalizeMultilineText(`## ${repriseTitle}\n\n${repriseContent}`);
+function buildReflectionEntryStableId(subjectId, entryId, index, createdAt) {
+  const source = normalizeText(`${subjectId || 'reflection'}:${entryId || ''}:${index ?? ''}:${createdAt || ''}`);
+  const digest = crypto
+    .createHash('sha256')
+    .update(source || crypto.randomUUID())
+    .digest('hex')
+    .slice(0, 28);
 
-  item.type = item.type === 'journal_conversation' ? 'reflection_subject' : item.type || 'reflection_subject';
+  return `reflection-entry-${digest}`;
+}
+
+function buildReflectionEntryTitle(entryType, index, createdAt = new Date()) {
+  const dateLabel = new Intl.DateTimeFormat('fr-FR', {
+    timeZone: 'Europe/Paris',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(createdAt);
+
+  if (entryType === 'initial') return `${dateLabel} — Entrée initiale`;
+  return `${dateLabel} — Reprise ${index}`;
+}
+
+function getReflectionEntrySortTime(entry) {
+  return new Date(entry?.updated_at || entry?.created_at || 0).getTime();
+}
+
+function getReflectionEntriesForSubject(store, userId, subjectId) {
+  return (Array.isArray(store.items) ? store.items : [])
+    .filter(item => {
+      return (
+        itemBelongsToUser(item, userId) &&
+        item.bucket === 'journal' &&
+        item.type === 'reflection_entry' &&
+        item.reflection_subject_id === subjectId
+      );
+    })
+    .sort((a, b) => getReflectionEntrySortTime(b) - getReflectionEntrySortTime(a));
+}
+
+function syncReflectionSubjectMetadata(store, subject) {
+  if (!subject || typeof subject !== 'object') return subject;
+
+  const subjectId = subject.reflection_subject_id || subject.id;
+  const entries = getReflectionEntriesForSubject(store, subject.user_id, subjectId);
+  const latestEntry = entries[0] || null;
+  const repriseEntries = entries.filter(entry => entry.reflection_entry_type === 'reprise');
+
+  subject.type = 'reflection_subject';
+  subject.bucket = 'journal';
+  subject.reflection_subject_id = subjectId;
+  subject.reflection_subject_title = subject.reflection_subject_title || subject.title || 'Réflexion';
+  subject.journal_topic_title = subject.journal_topic_title || subject.reflection_subject_title;
+  subject.reflection_entry_ids = entries.map(entry => entry.id);
+  subject.reflection_entries_count = entries.length;
+  subject.reprise_count = repriseEntries.length;
+  subject.last_reprise_at = repriseEntries[0]?.created_at || subject.last_reprise_at || null;
+  subject.last_reprise_title = repriseEntries[0]?.title || subject.last_reprise_title || null;
+  subject.last_entry_id = latestEntry?.id || subject.last_entry_id || null;
+  subject.last_user_message = latestEntry?.user_message || subject.last_user_message || null;
+  subject.last_nyra_reply = latestEntry?.nyra_reply || subject.last_nyra_reply || null;
+  subject.content = subject.content_summary || subject.content || latestEntry?.content || '';
+  subject.updated_at = latestEntry?.updated_at || subject.updated_at || nowIso();
+  subject.tags = uniqueArray([
+    ...(Array.isArray(subject.tags) ? subject.tags : []),
+    'journal',
+    'réflexion',
+    'reflection',
+    'subject',
+  ]);
+
+  // Compatibilité : l'ancien champ reste disponible, mais ne contient plus de gros bloc.
+  subject.reflection_reprises = entries.map(entry => ({
+    id: entry.id,
+    index: entry.reflection_entry_index,
+    title: entry.title,
+    content: entry.content,
+    user_message: entry.user_message,
+    nyra_reply: entry.nyra_reply,
+    created_at: entry.created_at,
+    updated_at: entry.updated_at,
+    reflection_entry_type: entry.reflection_entry_type,
+  }));
+
+  return subject;
+}
+
+function createReflectionEntryItem({ subject, userId, entryType, index, title, content, message, reply, createdAt }) {
+  const safeCreatedAt = createdAt || nowIso();
+  const subjectId = subject.reflection_subject_id || subject.id;
+  const generatedEntryId = crypto.randomUUID();
+
+  return {
+    id: generatedEntryId,
+    user_id: userId,
+    type: 'reflection_entry',
+    bucket: 'journal',
+    title: title || buildReflectionEntryTitle(entryType, index, new Date(safeCreatedAt)),
+    content: normalizeMultilineText(content || buildJournalTurnText(message, reply)),
+    urgency: subject.urgency || 'normal',
+    priority: subject.priority || 'normal',
+    datetime_hint: subject.datetime_hint || null,
+    scheduled_at: null,
+    remind_at: null,
+    reminder_at: null,
+    schedule_precision: null,
+    has_exact_date: false,
+    tags: uniqueArray([
+      'journal',
+      'réflexion',
+      'reflection',
+      'reflection-entry',
+      entryType === 'initial' ? 'entrée-initiale' : 'reprise',
+    ]),
+    status: 'captured',
+    project_name: null,
+    project_id: null,
+    action_type: null,
+    action_label: null,
+    action_id: null,
+    provider: 'local',
+    sync_status: 'local_only',
+    external_id: null,
+    requires_connection: false,
+    connection_type: null,
+    parent_id: subjectId,
+    reflection_subject_id: subjectId,
+    reflection_subject_title: subject.reflection_subject_title || subject.title || 'Réflexion',
+    journal_topic_title: subject.journal_topic_title || subject.reflection_subject_title || subject.title || 'Réflexion',
+    reflection_entry_type: entryType,
+    reflection_entry_index: index,
+    user_message: normalizeText(message),
+    nyra_reply: normalizeText(reply),
+    created_at: safeCreatedAt,
+    updated_at: safeCreatedAt,
+  };
+}
+
+function ensureReflectionEntryInStore(store, entry) {
+  if (!entry?.id) return null;
+
+  store.items = Array.isArray(store.items) ? store.items : [];
+
+  const existingIndex = store.items.findIndex(item => item.id === entry.id);
+
+  if (existingIndex >= 0) {
+    store.items[existingIndex] = {
+      ...store.items[existingIndex],
+      ...entry,
+      updated_at: entry.updated_at || nowIso(),
+    };
+    return store.items[existingIndex];
+  }
+
+  store.items.push(entry);
+  return entry;
+}
+
+function migrateLegacyReflectionReprises(store) {
+  if (!store || typeof store !== 'object') return store;
+
+  store.items = Array.isArray(store.items) ? store.items : [];
+
+  const subjects = store.items.filter(item => {
+    return (
+      item &&
+      item.bucket === 'journal' &&
+      (
+        item.type === 'reflection_subject' ||
+        item.type === 'journal_conversation' ||
+        item.reflection_subject_id
+      ) &&
+      item.type !== 'reflection_entry'
+    );
+  });
+
+  subjects.forEach(subject => {
+    const subjectId = subject.reflection_subject_id || subject.id;
+    subject.type = 'reflection_subject';
+    subject.reflection_subject_id = subjectId;
+    subject.reflection_subject_title = subject.reflection_subject_title || subject.title || 'Réflexion';
+    subject.journal_topic_title = subject.journal_topic_title || subject.reflection_subject_title;
+
+    const legacyReprises = Array.isArray(subject.reflection_reprises) ? subject.reflection_reprises : [];
+
+    legacyReprises.forEach((legacyEntry, legacyIndex) => {
+      const entryType = Number(legacyEntry?.index || 0) === 0 || legacyEntry?.title === 'Entrée initiale'
+        ? 'initial'
+        : 'reprise';
+      const entryIndex = entryType === 'initial' ? 0 : Number(legacyEntry?.index || legacyIndex);
+      const createdAt = legacyEntry?.created_at || subject.created_at || nowIso();
+      const stableId = buildReflectionEntryStableId(
+        subjectId,
+        legacyEntry?.id || legacyEntry?.title || '',
+        entryIndex,
+        createdAt
+      );
+
+      const alreadyExists = store.items.some(item => {
+        return item.id === stableId || item.legacy_reflection_reprise_id === legacyEntry?.id;
+      });
+
+      if (alreadyExists) return;
+
+      const entry = {
+        ...createReflectionEntryItem({
+          subject,
+          userId: subject.user_id,
+          entryType,
+          index: entryIndex,
+          title: entryType === 'initial'
+            ? buildReflectionEntryTitle('initial', 0, new Date(createdAt))
+            : legacyEntry?.title || buildReflectionEntryTitle('reprise', entryIndex, new Date(createdAt)),
+          content: legacyEntry?.content || '',
+          message: legacyEntry?.user_message || '',
+          reply: legacyEntry?.nyra_reply || '',
+          createdAt,
+        }),
+        id: stableId,
+        legacy_reflection_reprise_id: legacyEntry?.id || null,
+      };
+
+      store.items.push(entry);
+    });
+
+    const hasInitialEntry = store.items.some(item => {
+      return (
+        item.type === 'reflection_entry' &&
+        item.reflection_subject_id === subjectId &&
+        item.reflection_entry_type === 'initial'
+      );
+    });
+
+    if (!hasInitialEntry && normalizeMultilineText(subject.content || '')) {
+      const createdAt = subject.created_at || nowIso();
+      const stableId = buildReflectionEntryStableId(subjectId, 'initial-content', 0, createdAt);
+
+      if (!store.items.some(item => item.id === stableId)) {
+        store.items.push({
+          ...createReflectionEntryItem({
+            subject,
+            userId: subject.user_id,
+            entryType: 'initial',
+            index: 0,
+            title: buildReflectionEntryTitle('initial', 0, new Date(createdAt)),
+            content: subject.content,
+            message: subject.last_user_message || '',
+            reply: subject.last_nyra_reply || '',
+            createdAt,
+          }),
+          id: stableId,
+        });
+      }
+    }
+
+    syncReflectionSubjectMetadata(store, subject);
+  });
+
+  return store;
+}
+
+function appendJournalRepriseToSubject(store, item, message, reply) {
+  const existingEntries = getReflectionEntriesForSubject(store, item.user_id, item.reflection_subject_id || item.id);
+  const repriseIndex = existingEntries.filter(entry => entry.reflection_entry_type === 'reprise').length + 1;
+  const createdAt = nowIso();
+  const entry = createReflectionEntryItem({
+    subject: item,
+    userId: item.user_id,
+    entryType: 'reprise',
+    index: repriseIndex,
+    message,
+    reply,
+    createdAt,
+  });
+
+  ensureReflectionEntryInStore(store, entry);
+
+  item.type = 'reflection_subject';
   item.reflection_subject_id = item.reflection_subject_id || item.id;
   item.reflection_subject_title = item.reflection_subject_title || item.title || 'Réflexion';
   item.journal_topic_title = item.journal_topic_title || item.reflection_subject_title;
-  item.content = normalizeMultilineText(existingContent ? `${existingContent}\n\n${section}` : section);
-  item.last_user_message = normalizeText(message);
-  item.last_nyra_reply = normalizeText(reply);
-  item.turn_count = Number(item.turn_count || 0) + 1;
-  item.reprise_count = repriseIndex;
-  item.last_reprise_title = repriseTitle;
-  item.last_reprise_at = createdAt;
+  item.content_summary = item.content_summary || item.content || '';
   item.journal_session_status = 'active';
   item.updated_at = createdAt;
   item.tags = uniqueArray([
@@ -2577,23 +2839,10 @@ function appendJournalRepriseToSubject(item, message, reply) {
     'journal',
     'réflexion',
     'reflection',
-    'reprise',
+    'subject',
   ]);
-  item.reflection_reprises = [
-    ...existingReprises,
-    {
-      id: crypto.randomUUID(),
-      index: repriseIndex,
-      title: repriseTitle,
-      content: repriseContent,
-      user_message: normalizeText(message),
-      nyra_reply: normalizeText(reply),
-      created_at: createdAt,
-      updated_at: createdAt,
-    },
-  ];
 
-  return item;
+  return syncReflectionSubjectMetadata(store, item);
 }
 
 function upsertJournalConversationItem({ store, userId, message, reply, analysis }) {
@@ -2604,15 +2853,41 @@ function upsertJournalConversationItem({ store, userId, message, reply, analysis
 
   if (existing) {
     const updatedExisting = isResume
-      ? appendJournalRepriseToSubject(existing, message, reply)
+      ? appendJournalRepriseToSubject(store, existing, message, reply)
       : existing;
 
     if (!isResume) {
-      updatedExisting.content = appendJournalConversationTurn(updatedExisting.content, message, reply);
+      const subjectId = updatedExisting.reflection_subject_id || updatedExisting.id;
+      const entries = getReflectionEntriesForSubject(store, userId, subjectId);
+      const initialEntry = entries.find(entry => entry.reflection_entry_type === 'initial') || entries[entries.length - 1] || null;
+      const updatedAt = nowIso();
+      const nextContent = appendJournalConversationTurn(initialEntry?.content || updatedExisting.content || '', message, reply);
+
+      if (initialEntry) {
+        initialEntry.content = nextContent;
+        initialEntry.user_message = normalizeText(message);
+        initialEntry.nyra_reply = normalizeText(reply);
+        initialEntry.updated_at = updatedAt;
+      } else {
+        ensureReflectionEntryInStore(store, createReflectionEntryItem({
+          subject: updatedExisting,
+          userId,
+          entryType: 'initial',
+          index: 0,
+          title: buildReflectionEntryTitle('initial', 0, new Date(updatedExisting.created_at || updatedAt)),
+          content: nextContent,
+          message,
+          reply,
+          createdAt: updatedExisting.created_at || updatedAt,
+        }));
+      }
+
+      updatedExisting.content = nextContent;
+      updatedExisting.content_summary = updatedExisting.content_summary || nextContent;
       updatedExisting.last_user_message = normalizeText(message);
       updatedExisting.last_nyra_reply = normalizeText(reply);
       updatedExisting.turn_count = Number(updatedExisting.turn_count || 1) + 1;
-      updatedExisting.updated_at = nowIso();
+      updatedExisting.updated_at = updatedAt;
     }
 
     updatedExisting.type = updatedExisting.reflection_subject_id
@@ -2630,7 +2905,7 @@ function upsertJournalConversationItem({ store, userId, message, reply, analysis
       isResume ? 'reprise' : 'conversation',
     ]);
 
-    return updatedExisting;
+    return syncReflectionSubjectMetadata(store, updatedExisting);
   }
 
   const createdAt = nowIso();
@@ -2638,13 +2913,14 @@ function upsertJournalConversationItem({ store, userId, message, reply, analysis
   const initialContent = appendJournalConversationTurn('', message, reply);
   const subjectId = crypto.randomUUID();
 
-  return {
+  const subject = {
     id: subjectId,
     user_id: userId,
     type: 'reflection_subject',
     bucket: 'journal',
     title,
     content: initialContent,
+    content_summary: initialContent,
     urgency: analysis?.urgency || 'normal',
     priority: detectPriority(message, analysis),
     datetime_hint: analysis?.datetime_hint || null,
@@ -2658,7 +2934,7 @@ function upsertJournalConversationItem({ store, userId, message, reply, analysis
       'journal',
       'réflexion',
       'reflection',
-      'conversation',
+      'subject',
     ]),
     status: 'captured',
     project_name: analysis?.project_name || null,
@@ -2677,23 +2953,29 @@ function upsertJournalConversationItem({ store, userId, message, reply, analysis
     journal_session_status: 'active',
     turn_count: 1,
     reprise_count: 0,
-    reflection_reprises: [
-      {
-        id: crypto.randomUUID(),
-        index: 0,
-        title: 'Entrée initiale',
-        content: initialContent,
-        user_message: normalizeText(message),
-        nyra_reply: normalizeText(reply),
-        created_at: createdAt,
-        updated_at: createdAt,
-      },
-    ],
+    reflection_entry_ids: [],
+    reflection_reprises: [],
     last_user_message: normalizeText(message),
     last_nyra_reply: normalizeText(reply),
     created_at: createdAt,
     updated_at: createdAt,
   };
+
+  const initialEntry = createReflectionEntryItem({
+    subject,
+    userId,
+    entryType: 'initial',
+    index: 0,
+    title: buildReflectionEntryTitle('initial', 0, new Date(createdAt)),
+    content: initialContent,
+    message,
+    reply,
+    createdAt,
+  });
+
+  ensureReflectionEntryInStore(store, initialEntry);
+
+  return syncReflectionSubjectMetadata(store, subject);
 }
 
 function saveCapture({ userId, message, reply, analysis, action }) {
