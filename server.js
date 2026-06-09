@@ -1841,6 +1841,14 @@ function analyzeMessage(message) {
     datetime_hint: detectDatetimeHint(text),
   };
 
+  if (isReflectionResumeRequest(text)) {
+    analysis.type = 'emotion';
+    analysis.is_emotion = true;
+    analysis.suggested_bucket = 'journal';
+    analysis.response_level = 'reflection';
+    analysis.tags.push('journal', 'réflexion', 'reprise');
+  }
+
   if (
     includesAny(lower, [
       'je dois',
@@ -2340,32 +2348,211 @@ function appendJournalConversationTurn(content, message, reply) {
 ${turn}` : turn);
 }
 
-function upsertJournalConversationItem({ store, userId, message, reply, analysis }) {
-  const existing = findActiveJournalConversationItem(store, userId);
 
-  if (existing) {
-    existing.content = appendJournalConversationTurn(existing.content, message, reply);
-    existing.last_user_message = normalizeText(message);
-    existing.last_nyra_reply = normalizeText(reply);
-    existing.turn_count = Number(existing.turn_count || 1) + 1;
-    existing.updated_at = nowIso();
-    existing.tags = uniqueArray([
-      ...(Array.isArray(existing.tags) ? existing.tags : []),
-      ...(Array.isArray(analysis?.tags) ? analysis.tags : []),
-      'journal',
-      'conversation',
-    ]);
+function isReflectionResumeRequest(message) {
+  const lower = normalizeText(message).toLowerCase();
 
-    return existing;
+  return includesAny(lower, [
+    'reprends cette réflexion',
+    'reprends cette reflexion',
+    'reprendre cette réflexion',
+    'reprendre cette reflexion',
+    'continuer cette réflexion',
+    'continuer cette reflexion',
+  ]);
+}
+
+function extractReflectionResumeTitle(message) {
+  const raw = String(message || '');
+  const patterns = [
+    /titre\s+du\s+journal\s*:\s*([^\n]+)/i,
+    /titre\s+de\s+la\s+réflexion\s*:\s*([^\n]+)/i,
+    /titre\s+de\s+la\s+reflexion\s*:\s*([^\n]+)/i,
+    /sujet\s*:\s*([^\n]+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+
+    if (match?.[1]) {
+      return normalizeText(match[1]).replace(/[.!?;:]+$/g, '').trim();
+    }
   }
 
+  return '';
+}
+
+function normalizeReflectionTitleKey(value) {
+  return normalizeKey(value || '').slice(0, 120);
+}
+
+function findJournalReflectionSubjectForResume(store, userId, message) {
+  const requestedTitle = extractReflectionResumeTitle(message);
+  const requestedKey = normalizeReflectionTitleKey(requestedTitle);
+  const safeItems = Array.isArray(store.items) ? store.items : [];
+  const journalItems = safeItems
+    .filter(item => {
+      return (
+        itemBelongsToUser(item, userId) &&
+        item.bucket === 'journal' &&
+        (
+          item.type === 'journal_conversation' ||
+          item.type === 'reflection_subject' ||
+          item.reflection_subject_id ||
+          item.journal_session_status === 'active'
+        )
+      );
+    })
+    .sort((a, b) => {
+      return new Date(b.updated_at || b.created_at || 0).getTime() -
+        new Date(a.updated_at || a.created_at || 0).getTime();
+    });
+
+  if (requestedKey) {
+    const exactMatch = journalItems.find(item => {
+      const itemKeys = [
+        item.title,
+        item.journal_topic_title,
+        item.reflection_subject_title,
+      ].map(normalizeReflectionTitleKey).filter(Boolean);
+
+      return itemKeys.includes(requestedKey);
+    });
+
+    if (exactMatch) return exactMatch;
+  }
+
+  const itemIdMatch = String(message || '').match(/(?:item_id|journal_id|reflection_id)\s*:\s*([a-z0-9-]{16,})/i);
+  const requestedItemId = normalizeText(itemIdMatch?.[1] || '');
+
+  if (requestedItemId) {
+    const byId = journalItems.find(item => {
+      return item.id === requestedItemId || item.reflection_subject_id === requestedItemId;
+    });
+
+    if (byId) return byId;
+  }
+
+  return journalItems[0] || null;
+}
+
+function buildJournalRepriseTitle(index, createdAt = new Date()) {
+  const dateLabel = new Intl.DateTimeFormat('fr-FR', {
+    timeZone: 'Europe/Paris',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(createdAt);
+
+  return `Reprise ${index} — ${dateLabel}`;
+}
+
+function buildJournalTurnText(message, reply) {
+  return normalizeMultilineText([
+    `Moi : ${normalizeText(message)}`,
+    `Nyra : ${normalizeText(reply)}`,
+  ].join('\n'));
+}
+
+function appendJournalRepriseToSubject(item, message, reply) {
+  const existingContent = normalizeMultilineText(item.content || '');
+  const existingReprises = Array.isArray(item.reflection_reprises)
+    ? item.reflection_reprises
+    : [];
+  const repriseIndex = existingReprises.length + 1;
+  const createdAt = nowIso();
+  const repriseTitle = buildJournalRepriseTitle(repriseIndex, new Date(createdAt));
+  const repriseContent = buildJournalTurnText(message, reply);
+  const section = normalizeMultilineText(`## ${repriseTitle}\n\n${repriseContent}`);
+
+  item.type = item.type === 'journal_conversation' ? 'reflection_subject' : item.type || 'reflection_subject';
+  item.reflection_subject_id = item.reflection_subject_id || item.id;
+  item.reflection_subject_title = item.reflection_subject_title || item.title || 'Réflexion';
+  item.journal_topic_title = item.journal_topic_title || item.reflection_subject_title;
+  item.content = normalizeMultilineText(existingContent ? `${existingContent}\n\n${section}` : section);
+  item.last_user_message = normalizeText(message);
+  item.last_nyra_reply = normalizeText(reply);
+  item.turn_count = Number(item.turn_count || 0) + 1;
+  item.reprise_count = repriseIndex;
+  item.last_reprise_title = repriseTitle;
+  item.last_reprise_at = createdAt;
+  item.journal_session_status = 'active';
+  item.updated_at = createdAt;
+  item.tags = uniqueArray([
+    ...(Array.isArray(item.tags) ? item.tags : []),
+    'journal',
+    'réflexion',
+    'reflection',
+    'reprise',
+  ]);
+  item.reflection_reprises = [
+    ...existingReprises,
+    {
+      id: crypto.randomUUID(),
+      index: repriseIndex,
+      title: repriseTitle,
+      content: repriseContent,
+      user_message: normalizeText(message),
+      nyra_reply: normalizeText(reply),
+      created_at: createdAt,
+      updated_at: createdAt,
+    },
+  ];
+
+  return item;
+}
+
+function upsertJournalConversationItem({ store, userId, message, reply, analysis }) {
+  const isResume = isReflectionResumeRequest(message);
+  const existing = isResume
+    ? findJournalReflectionSubjectForResume(store, userId, message)
+    : findActiveJournalConversationItem(store, userId);
+
+  if (existing) {
+    const updatedExisting = isResume
+      ? appendJournalRepriseToSubject(existing, message, reply)
+      : existing;
+
+    if (!isResume) {
+      updatedExisting.content = appendJournalConversationTurn(updatedExisting.content, message, reply);
+      updatedExisting.last_user_message = normalizeText(message);
+      updatedExisting.last_nyra_reply = normalizeText(reply);
+      updatedExisting.turn_count = Number(updatedExisting.turn_count || 1) + 1;
+      updatedExisting.updated_at = nowIso();
+    }
+
+    updatedExisting.type = updatedExisting.reflection_subject_id
+      ? 'reflection_subject'
+      : updatedExisting.type || 'journal_conversation';
+    updatedExisting.reflection_subject_id = updatedExisting.reflection_subject_id || updatedExisting.id;
+    updatedExisting.reflection_subject_title = updatedExisting.reflection_subject_title || updatedExisting.title || 'Réflexion';
+    updatedExisting.journal_topic_title = updatedExisting.journal_topic_title || updatedExisting.reflection_subject_title;
+    updatedExisting.tags = uniqueArray([
+      ...(Array.isArray(updatedExisting.tags) ? updatedExisting.tags : []),
+      ...(Array.isArray(analysis?.tags) ? analysis.tags : []),
+      'journal',
+      'réflexion',
+      'reflection',
+      isResume ? 'reprise' : 'conversation',
+    ]);
+
+    return updatedExisting;
+  }
+
+  const createdAt = nowIso();
+  const title = buildJournalConversationTitle(message, analysis);
+  const initialContent = appendJournalConversationTurn('', message, reply);
+  const subjectId = crypto.randomUUID();
+
   return {
-    id: crypto.randomUUID(),
+    id: subjectId,
     user_id: userId,
-    type: 'journal_conversation',
+    type: 'reflection_subject',
     bucket: 'journal',
-    title: buildJournalConversationTitle(message, analysis),
-    content: appendJournalConversationTurn('', message, reply),
+    title,
+    content: initialContent,
     urgency: analysis?.urgency || 'normal',
     priority: detectPriority(message, analysis),
     datetime_hint: analysis?.datetime_hint || null,
@@ -2377,6 +2564,8 @@ function upsertJournalConversationItem({ store, userId, message, reply, analysis
     tags: uniqueArray([
       ...(Array.isArray(analysis?.tags) ? analysis.tags : []),
       'journal',
+      'réflexion',
+      'reflection',
       'conversation',
     ]),
     status: 'captured',
@@ -2390,12 +2579,28 @@ function upsertJournalConversationItem({ store, userId, message, reply, analysis
     external_id: null,
     requires_connection: false,
     connection_type: null,
+    reflection_subject_id: subjectId,
+    reflection_subject_title: title,
+    journal_topic_title: title,
     journal_session_status: 'active',
     turn_count: 1,
+    reprise_count: 0,
+    reflection_reprises: [
+      {
+        id: crypto.randomUUID(),
+        index: 0,
+        title: 'Entrée initiale',
+        content: initialContent,
+        user_message: normalizeText(message),
+        nyra_reply: normalizeText(reply),
+        created_at: createdAt,
+        updated_at: createdAt,
+      },
+    ],
     last_user_message: normalizeText(message),
     last_nyra_reply: normalizeText(reply),
-    created_at: nowIso(),
-    updated_at: nowIso(),
+    created_at: createdAt,
+    updated_at: createdAt,
   };
 }
 
