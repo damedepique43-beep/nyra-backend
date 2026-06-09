@@ -758,7 +758,19 @@ function resolveReminderSchedule(text, datetimeHint) {
     };
   }
 
-  const relativeMinutesMatch = lower.match(/dans\s+(\d{1,3})\s+minutes?/i);
+  const relativeSecondsMatch = lower.match(/dans\s+(\d{1,4})\s*(?:secondes?|sec|secs|s)\b/i);
+  if (relativeSecondsMatch?.[1]) {
+    const seconds = Number(relativeSecondsMatch[1]);
+    if (seconds > 0 && seconds <= 86400) {
+      return {
+        scheduled_at: new Date(Date.now() + seconds * 1000).toISOString(),
+        precision: 'relative_exact',
+        has_exact_date: true,
+      };
+    }
+  }
+
+  const relativeMinutesMatch = lower.match(/dans\s+(\d{1,3})\s*(?:minutes?|min|mins)\b/i);
   if (relativeMinutesMatch?.[1]) {
     const minutes = Number(relativeMinutesMatch[1]);
     if (minutes > 0 && minutes <= 720) {
@@ -1663,6 +1675,151 @@ function cloneStoredItemAsTaskFromToday({ sourceItem, userId }) {
     updated_at: nowIso(),
     mirrored_from_today_id: sourceItem.id,
   };
+}
+
+
+function safeParseJsonObject(value) {
+  const raw = String(value || '').trim();
+
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const match = raw.match(/\{[\s\S]*\}/);
+
+    if (!match) return null;
+
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function normalizeAIUnderstanding(localAnalysis, aiUnderstanding) {
+  if (!aiUnderstanding || typeof aiUnderstanding !== 'object') {
+    return localAnalysis;
+  }
+
+  const allowedTypes = ['note', 'task', 'idea', 'emotion', 'project_note', 'mixed'];
+  const allowedBuckets = ['inbox', 'tasks', 'ideas', 'journal', 'projects', 'today', 'plans', 'reminders'];
+
+  const type = allowedTypes.includes(aiUnderstanding.type)
+    ? aiUnderstanding.type
+    : localAnalysis.type;
+
+  const suggestedBucket = allowedBuckets.includes(aiUnderstanding.suggested_bucket)
+    ? aiUnderstanding.suggested_bucket
+    : localAnalysis.suggested_bucket;
+
+  const projectNameFromAI = normalizeText(aiUnderstanding.project_name || '');
+  const localProjectName = normalizeText(localAnalysis.project_name || '');
+  const projectName = projectNameFromAI || localProjectName || null;
+
+  const tags = uniqueArray([
+    ...(Array.isArray(localAnalysis.tags) ? localAnalysis.tags : []),
+    ...(Array.isArray(aiUnderstanding.tags)
+      ? aiUnderstanding.tags.map(tag => normalizeText(tag)).filter(Boolean)
+      : []),
+    projectName ? normalizeKey(projectName) : null,
+  ]);
+
+  return {
+    ...localAnalysis,
+    type,
+    is_task: Boolean(aiUnderstanding.is_task ?? localAnalysis.is_task),
+    is_idea: Boolean(aiUnderstanding.is_idea ?? localAnalysis.is_idea),
+    is_emotion: Boolean(aiUnderstanding.is_emotion ?? localAnalysis.is_emotion),
+    is_project: Boolean(aiUnderstanding.is_project ?? localAnalysis.is_project ?? projectName),
+    project_name: projectName,
+    urgency: ['low', 'normal', 'high'].includes(aiUnderstanding.urgency)
+      ? aiUnderstanding.urgency
+      : localAnalysis.urgency,
+    suggested_bucket: suggestedBucket,
+    datetime_hint: normalizeText(aiUnderstanding.datetime_hint || '') || localAnalysis.datetime_hint || null,
+    response_level: ['capture', 'reflection', 'project'].includes(aiUnderstanding.response_level)
+      ? aiUnderstanding.response_level
+      : (
+          localAnalysis.is_emotion
+            ? 'reflection'
+            : localAnalysis.is_project
+              ? 'project'
+              : 'capture'
+        ),
+    user_intent: normalizeText(aiUnderstanding.user_intent || ''),
+    ai_understanding_applied: true,
+    tags,
+  };
+}
+
+function buildAIUnderstandingPrompt(message, localAnalysis, memorySummary) {
+  return `
+Tu es le moteur de compréhension de Nyra.
+
+Nyra n'est pas un chatbot : c'est un cerveau externe TDAH.
+Ta tâche est de comprendre l'intention réelle du message, pas seulement les mots-clés.
+
+Message utilisateur :
+${message}
+
+Analyse locale actuelle :
+${JSON.stringify(localAnalysis)}
+
+Résumé mémoire :
+${JSON.stringify(memorySummary)}
+
+Retourne uniquement un JSON valide, sans texte autour, avec ces clés :
+{
+  "type": "note|task|idea|emotion|project_note|mixed",
+  "is_task": boolean,
+  "is_idea": boolean,
+  "is_emotion": boolean,
+  "is_project": boolean,
+  "project_name": string|null,
+  "urgency": "low|normal|high",
+  "suggested_bucket": "inbox|tasks|ideas|journal|projects|today|plans|reminders",
+  "datetime_hint": string|null,
+  "response_level": "capture|reflection|project",
+  "user_intent": string,
+  "tags": string[]
+}
+
+Règles importantes :
+- Si l'utilisateur exprime une émotion ou demande à comprendre ce qu'il ressent, response_level = "reflection" et suggested_bucket = "journal".
+- Si l'utilisateur dit "j'ai une idée pour Nyra/NovaCall/etc", c'est une idée liée à un projet : is_idea=true, is_project=true, project_name doit être rempli.
+- Si l'utilisateur demande un rappel avec une durée relative, garde datetime_hint tel quel si utile, mais ne calcule pas la date ici.
+- Ne transforme pas une discussion émotionnelle en simple capture.
+`.trim();
+}
+
+async function analyzeMessageWithAI(message, localAnalysis, memorySummary) {
+  try {
+    const completion = await openai.chat.completions.create({
+      model: OPENAI_MODEL,
+      temperature: 0.1,
+      max_tokens: 280,
+      messages: [
+        {
+          role: 'system',
+          content: buildAIUnderstandingPrompt(message, localAnalysis, memorySummary),
+        },
+        {
+          role: 'user',
+          content: message,
+        },
+      ],
+    });
+
+    const raw = normalizeText(completion.choices?.[0]?.message?.content || '');
+    const parsed = safeParseJsonObject(raw);
+
+    return normalizeAIUnderstanding(localAnalysis, parsed);
+  } catch (error) {
+    console.error('⚠️ analyzeMessageWithAI fallback:', error.message);
+    return localAnalysis;
+  }
 }
 
 function analyzeMessage(message) {
@@ -3626,12 +3783,11 @@ Règles de réponse :
 - sois directe, humaine, chaleureuse
 - maximum 90 mots
 - pas de long pavé
-- si c’est une tâche : reformule clairement l’action
-- si c’est une idée : dis que l’idée est capturée et propose où la ranger
-- si c’est une émotion : valide brièvement et aide à poser le poids
-- si c’est un projet : dis que c’est relié au projet concerné si un projet est détecté
-- si c’est mixte : trie mentalement pour l’utilisateur
-- tu peux dire que c’est capturé dans Nyra
+- si response_level = capture : réponds très court, comme une confirmation utile
+- si response_level = reflection : fais 1 observation courte + 1 question utile
+- si response_level = project : relie clairement au projet concerné et propose la prochaine clarification utile
+- si l’utilisateur demande à comprendre une émotion, ne dis pas "c’est capturé" comme réponse principale
+- évite les phrases génériques comme "prends un moment pour respirer" sauf si la personne semble en crise
 - ne parle pas de fichier JSON
 - ne parle pas de tes mécanismes internes
 `.trim();
@@ -8538,10 +8694,11 @@ app.post('/chat', async (req, res) => {
   }
 
   try {
-    const analysis = analyzeMessage(userMessage);
+    const memorySummary = getStoreSummary(userId);
+    const localAnalysis = analyzeMessage(userMessage);
+    const analysis = await analyzeMessageWithAI(userMessage, localAnalysis, memorySummary);
     const action = detectAction(userMessage, userId, analysis);
     const suggestions = buildSuggestions(analysis, action);
-    const memorySummary = getStoreSummary(userId);
 
     let reply = buildActionReply(action);
 
