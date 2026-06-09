@@ -2256,15 +2256,161 @@ function createStoredItem({ userId, message, analysis, action }) {
   };
 }
 
+
+function isJournalConversationCapture(analysis, action) {
+  if (action) return false;
+
+  const bucket = normalizeText(analysis?.suggested_bucket || '');
+  const type = normalizeText(analysis?.type || '');
+  const responseLevel = normalizeText(analysis?.response_level || '');
+  const tags = Array.isArray(analysis?.tags) ? analysis.tags : [];
+
+  return (
+    bucket === 'journal' ||
+    type === 'emotion' ||
+    responseLevel === 'reflection' ||
+    tags.includes('émotion') ||
+    tags.includes('emotion')
+  );
+}
+
+function buildJournalConversationTitle(message, analysis) {
+  const text = normalizeText(message);
+  const lower = text.toLowerCase();
+  const intent = normalizeText(analysis?.user_intent || '');
+
+  if (includesAny(lower, ['vidée', 'videe', 'épuisée', 'epuisee', 'fatiguée', 'fatiguee', 'crevée', 'crevee'])) {
+    return 'Fatigue et besoin de comprendre';
+  }
+
+  if (includesAny(lower, ['angoisse', 'stress', 'panique', 'peur'])) {
+    return 'Stress, peur ou surcharge émotionnelle';
+  }
+
+  if (includesAny(lower, ['triste', 'pleurer', 'pleure', 'mal au cœur', 'mal au coeur'])) {
+    return 'Tristesse et besoin de déposer';
+  }
+
+  const source = intent || cleanActionTitle(text);
+  const cleaned = normalizeText(source)
+    .replace(/^je me sens\s+/i, '')
+    .replace(/^j['’]ai besoin de\s+/i, '')
+    .replace(/^besoin de\s+/i, '')
+    .replace(/[.!?;:]+$/g, '')
+    .trim();
+
+  if (!cleaned) return 'Journal de réflexion';
+
+  const title = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+  return title.length > 70 ? `${title.slice(0, 70)}…` : title;
+}
+
+function findActiveJournalConversationItem(store, userId) {
+  const now = Date.now();
+  const maxGapMs = 45 * 60 * 1000;
+
+  return (Array.isArray(store.items) ? store.items : [])
+    .filter(item => {
+      const updatedAt = new Date(item.updated_at || item.created_at || 0).getTime();
+
+      return (
+        itemBelongsToUser(item, userId) &&
+        item.bucket === 'journal' &&
+        item.type === 'journal_conversation' &&
+        item.journal_session_status === 'active' &&
+        Number.isFinite(updatedAt) &&
+        now - updatedAt <= maxGapMs
+      );
+    })
+    .sort((a, b) => {
+      return new Date(b.updated_at || b.created_at || 0).getTime() -
+        new Date(a.updated_at || a.created_at || 0).getTime();
+    })[0] || null;
+}
+
+function appendJournalConversationTurn(content, message, reply) {
+  const existing = normalizeMultilineText(content || '');
+  const turn = normalizeMultilineText([
+    `Moi : ${normalizeText(message)}`,
+    `Nyra : ${normalizeText(reply)}`,
+  ].join('\n'));
+
+  return normalizeMultilineText(existing ? `${existing}
+
+${turn}` : turn);
+}
+
+function upsertJournalConversationItem({ store, userId, message, reply, analysis }) {
+  const existing = findActiveJournalConversationItem(store, userId);
+
+  if (existing) {
+    existing.content = appendJournalConversationTurn(existing.content, message, reply);
+    existing.last_user_message = normalizeText(message);
+    existing.last_nyra_reply = normalizeText(reply);
+    existing.turn_count = Number(existing.turn_count || 1) + 1;
+    existing.updated_at = nowIso();
+    existing.tags = uniqueArray([
+      ...(Array.isArray(existing.tags) ? existing.tags : []),
+      ...(Array.isArray(analysis?.tags) ? analysis.tags : []),
+      'journal',
+      'conversation',
+    ]);
+
+    return existing;
+  }
+
+  return {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    type: 'journal_conversation',
+    bucket: 'journal',
+    title: buildJournalConversationTitle(message, analysis),
+    content: appendJournalConversationTurn('', message, reply),
+    urgency: analysis?.urgency || 'normal',
+    priority: detectPriority(message, analysis),
+    datetime_hint: analysis?.datetime_hint || null,
+    scheduled_at: null,
+    remind_at: null,
+    reminder_at: null,
+    schedule_precision: null,
+    has_exact_date: false,
+    tags: uniqueArray([
+      ...(Array.isArray(analysis?.tags) ? analysis.tags : []),
+      'journal',
+      'conversation',
+    ]),
+    status: 'captured',
+    project_name: analysis?.project_name || null,
+    project_id: null,
+    action_type: null,
+    action_label: null,
+    action_id: null,
+    provider: 'local',
+    sync_status: 'local_only',
+    external_id: null,
+    requires_connection: false,
+    connection_type: null,
+    journal_session_status: 'active',
+    turn_count: 1,
+    last_user_message: normalizeText(message),
+    last_nyra_reply: normalizeText(reply),
+    created_at: nowIso(),
+    updated_at: nowIso(),
+  };
+}
+
 function saveCapture({ userId, message, reply, analysis, action }) {
   const store = readStore();
 
-  const item = createStoredItem({
-    userId,
-    message,
-    analysis,
-    action,
-  });
+  const shouldUseJournalConversation = isJournalConversationCapture(analysis, action);
+  const item = shouldUseJournalConversation
+    ? upsertJournalConversationItem({ store, userId, message, reply, analysis })
+    : createStoredItem({
+        userId,
+        message,
+        analysis,
+        action,
+      });
 
   let linkedProject = null;
   let createdRelation = null;
@@ -2276,7 +2422,17 @@ function saveCapture({ userId, message, reply, analysis, action }) {
     item.project_name = linkedProject.name;
   }
 
-  store.items.push(item);
+  if (shouldUseJournalConversation) {
+    const existingItemIndex = store.items.findIndex(existingItem => existingItem.id === item.id);
+
+    if (existingItemIndex >= 0) {
+      store.items.splice(existingItemIndex, 1);
+    }
+
+    store.items.push(item);
+  } else {
+    store.items.push(item);
+  }
 
   const mirroredTaskItem = action?.action_type === 'add_to_today' && analysis?.is_task
     ? cloneStoredItemAsTaskFromToday({ sourceItem: item, userId })
