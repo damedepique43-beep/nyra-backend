@@ -124,7 +124,7 @@ function readStore() {
 
     const parsed = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8'));
 
-    return {
+    const normalizedStore = {
       version: parsed.version || STORE_VERSION,
       users: Array.isArray(parsed.users) ? parsed.users : [],
       items: Array.isArray(parsed.items) ? parsed.items : [],
@@ -168,8 +168,9 @@ function readStore() {
         ? parsed.proactive_assistant_v2_events
         : [],
       updated_at: parsed.updated_at || null,
-    };
-  } catch (error) {
+    }
+
+    return cleanupReservedAutoProjects(normalizedStore);  } catch (error) {
     console.error('❌ readStore error:', error.message);
     return createEmptyStore();
   }
@@ -197,7 +198,9 @@ function writeStore(store) {
       updated_at: nowIso(),
     };
 
-    fs.writeFileSync(STORE_FILE, JSON.stringify(safeStore, null, 2), 'utf8');
+    const cleanedStore = cleanupReservedAutoProjects(safeStore);
+
+    fs.writeFileSync(STORE_FILE, JSON.stringify(cleanedStore, null, 2), 'utf8');
   } catch (error) {
     console.error('❌ writeStore error:', error.message);
   }
@@ -223,6 +226,115 @@ function normalizeKey(value) {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
+}
+
+
+const RESERVED_AUTO_PROJECT_KEYS = new Set([
+  'nyra',
+  'novacall',
+  'nova-call',
+  'dame-de-pique',
+  'brumeardente',
+  'brume-ardente',
+]);
+
+function isReservedAutoProjectName(value) {
+  const key = normalizeKey(value || '');
+  return Boolean(key && RESERVED_AUTO_PROJECT_KEYS.has(key));
+}
+
+function removeReservedProjectTags(tags) {
+  if (!Array.isArray(tags)) return [];
+
+  return tags.filter(tag => {
+    return !isReservedAutoProjectName(tag);
+  });
+}
+
+function cleanReservedProjectFields(entity) {
+  if (!entity || typeof entity !== 'object') return entity;
+
+  if (isReservedAutoProjectName(entity.project_name)) {
+    entity.project_name = null;
+  }
+
+  entity.tags = removeReservedProjectTags(entity.tags);
+
+  return entity;
+}
+
+function cleanupReservedAutoProjects(store) {
+  if (!store || typeof store !== 'object') return store;
+
+  const projects = Array.isArray(store.projects) ? store.projects : [];
+  const reservedProjectIds = new Set(
+    projects
+      .filter(project => isReservedAutoProjectName(project.name || project.project_name || project.key))
+      .map(project => project.id)
+      .filter(Boolean)
+  );
+
+  store.projects = projects.filter(project => {
+    return !isReservedAutoProjectName(project.name || project.project_name || project.key);
+  });
+
+  store.items = (Array.isArray(store.items) ? store.items : []).map(item => {
+    cleanReservedProjectFields(item);
+
+    if (reservedProjectIds.has(item.project_id) || isReservedAutoProjectName(item.project_name)) {
+      item.project_id = null;
+      item.project_name = null;
+      item.tags = removeReservedProjectTags(item.tags);
+      item.updated_at = item.updated_at || nowIso();
+    }
+
+    return item;
+  });
+
+  store.actions = (Array.isArray(store.actions) ? store.actions : []).map(action => {
+    cleanReservedProjectFields(action);
+
+    if (reservedProjectIds.has(action.project_id) || isReservedAutoProjectName(action.project_name)) {
+      action.project_id = null;
+      action.project_name = null;
+      action.tags = removeReservedProjectTags(action.tags);
+      action.updated_at = action.updated_at || nowIso();
+    }
+
+    return action;
+  });
+
+  store.conversations = (Array.isArray(store.conversations) ? store.conversations : []).map(conversation => {
+    cleanReservedProjectFields(conversation);
+
+    if (reservedProjectIds.has(conversation.project_id) || isReservedAutoProjectName(conversation.project_name)) {
+      conversation.project_id = null;
+      conversation.project_name = null;
+      conversation.relation_id = null;
+    }
+
+    return conversation;
+  });
+
+  store.relations = (Array.isArray(store.relations) ? store.relations : []).filter(relation => {
+    const metadataProjectName = relation?.metadata?.project_name || '';
+
+    return !(
+      reservedProjectIds.has(relation.target_id) ||
+      reservedProjectIds.has(relation.source_id) ||
+      isReservedAutoProjectName(metadataProjectName)
+    );
+  });
+
+  store.contexts = (Array.isArray(store.contexts) ? store.contexts : []).filter(context => {
+    return !(
+      reservedProjectIds.has(context.project_id) ||
+      isReservedAutoProjectName(context.name) ||
+      isReservedAutoProjectName(context.project_name)
+    );
+  });
+
+  return store;
 }
 
 function buildGoogleNyraUserId(googleUserId, googleEmail) {
@@ -1406,27 +1518,8 @@ function retryActionInStore({ store, userId, actionId, reason, metadata }) {
   });
 }
 
-const RESERVED_AUTO_PROJECT_KEYS = new Set([
-  'nyra',
-  'novacall',
-  'nova-call',
-  'dame-de-pique',
-  'brumeardente',
-  'brume-ardente',
-]);
-
-function isReservedAutoProjectName(projectName) {
-  const key = normalizeKey(projectName || '');
-  return RESERVED_AUTO_PROJECT_KEYS.has(key);
-}
-
 function detectKnownProjectName(text) {
   const lower = normalizeText(text).toLowerCase();
-
-  // Règle produit validée :
-  // Nyra, NovaCall, Dame de Pique et BrumeArdente ne doivent plus être
-  // transformés automatiquement en projets à partir d'une discussion normale.
-  // On ne garde donc que la détection explicite "projet X" pour les vrais projets.
   const explicitProjectMatch = lower.match(/projet\s+([a-z0-9àâçéèêëîïôûùüÿñæœ' -]{2,40})/i);
 
   if (explicitProjectMatch && explicitProjectMatch[1]) {
@@ -1982,7 +2075,7 @@ function detectAction(message, userId, analysis) {
       actionType: 'add_to_shopping_list',
       label: 'Ajouter à la liste de courses',
       status: 'done',
-      analysis: captureAnalysis,
+      analysis,
     });
   }
 
@@ -2221,25 +2314,6 @@ function getStoredItemStatusForAction(action) {
   return action?.status || 'captured';
 }
 
-function sanitizeAnalysisProjectLinking(analysis) {
-  const projectName = normalizeText(analysis?.project_name || '');
-
-  if (!projectName || !isReservedAutoProjectName(projectName)) {
-    return analysis || {};
-  }
-
-  const tags = Array.isArray(analysis?.tags)
-    ? analysis.tags.filter(tag => normalizeKey(tag) !== normalizeKey(projectName))
-    : [];
-
-  return {
-    ...(analysis || {}),
-    is_project: false,
-    project_name: null,
-    tags: uniqueArray(tags.filter(tag => !['projet', 'project'].includes(normalizeKey(tag)))),
-  };
-}
-
 function createStoredItem({ userId, message, analysis, action }) {
   const bucket = action ? actionToBucket(action.action_type) : analysis.suggested_bucket;
 
@@ -2263,7 +2337,7 @@ function createStoredItem({ userId, message, analysis, action }) {
           'action',
           action.action_type,
           action.provider,
-          captureAnalysis.project_name ? normalizeKey(captureAnalysis.project_name) : null,
+          analysis.project_name ? normalizeKey(analysis.project_name) : null,
         ])
       : analysis.tags,
     status: action ? getStoredItemStatusForAction(action) : analysis.is_task ? 'todo' : 'captured',
@@ -2624,15 +2698,14 @@ function upsertJournalConversationItem({ store, userId, message, reply, analysis
 
 function saveCapture({ userId, message, reply, analysis, action }) {
   const store = readStore();
-  const captureAnalysis = sanitizeAnalysisProjectLinking(analysis);
 
-  const shouldUseJournalConversation = isJournalConversationCapture(captureAnalysis, action);
+  const shouldUseJournalConversation = isJournalConversationCapture(analysis, action);
   const item = shouldUseJournalConversation
-    ? upsertJournalConversationItem({ store, userId, message, reply, analysis: captureAnalysis })
+    ? upsertJournalConversationItem({ store, userId, message, reply, analysis })
     : createStoredItem({
         userId,
         message,
-        analysis: captureAnalysis,
+        analysis,
         action,
       });
 
@@ -2640,10 +2713,15 @@ function saveCapture({ userId, message, reply, analysis, action }) {
   let createdRelation = null;
   let updatedContext = null;
 
-  if (captureAnalysis.project_name) {
-    linkedProject = ensureProject(store, userId, captureAnalysis.project_name, message);
+  if (analysis.project_name && !isReservedAutoProjectName(analysis.project_name)) {
+    linkedProject = ensureProject(store, userId, analysis.project_name, message);
     item.project_id = linkedProject.id;
     item.project_name = linkedProject.name;
+  } else if (isReservedAutoProjectName(analysis.project_name)) {
+    analysis.project_name = null;
+    item.project_id = null;
+    item.project_name = null;
+    item.tags = removeReservedProjectTags(item.tags);
   }
 
   if (shouldUseJournalConversation) {
@@ -2658,7 +2736,7 @@ function saveCapture({ userId, message, reply, analysis, action }) {
     store.items.push(item);
   }
 
-  const mirroredTaskItem = action?.action_type === 'add_to_today' && captureAnalysis?.is_task
+  const mirroredTaskItem = action?.action_type === 'add_to_today' && analysis?.is_task
     ? cloneStoredItemAsTaskFromToday({ sourceItem: item, userId })
     : null;
 
@@ -2743,7 +2821,7 @@ function saveCapture({ userId, message, reply, analysis, action }) {
     user_id: userId,
     user_message: message,
     nyra_reply: reply,
-    analysis: captureAnalysis,
+    analysis,
     action,
     stored_item_id: item.id,
     action_id: actionRecord ? actionRecord.id : null,
