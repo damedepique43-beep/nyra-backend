@@ -1406,40 +1406,39 @@ function retryActionInStore({ store, userId, actionId, reason, metadata }) {
   });
 }
 
+const RESERVED_AUTO_PROJECT_KEYS = new Set([
+  'nyra',
+  'novacall',
+  'nova-call',
+  'dame-de-pique',
+  'brumeardente',
+  'brume-ardente',
+]);
+
+function isReservedAutoProjectName(projectName) {
+  const key = normalizeKey(projectName || '');
+  return RESERVED_AUTO_PROJECT_KEYS.has(key);
+}
+
 function detectKnownProjectName(text) {
   const lower = normalizeText(text).toLowerCase();
 
-  const knownProjects = [
-    {
-      name: 'Nyra',
-      keywords: ['nyra', 'ok nyra', 'cerveau externe', 'mémoire intelligente', 'react native', 'app mobile'],
-    },
-    {
-      name: 'NovaCall',
-      keywords: ['novacall', 'nova call', 'agent vocal', 'voiceflow', 'make', 'clinique', 'cliniques'],
-    },
-    {
-      name: 'Dame de Pique',
-      keywords: ['dame de pique', 'tiktok spirituel', 'spiritualité', 'méditation', 'numérologie'],
-    },
-    {
-      name: 'BrumeArdente',
-      keywords: ['brumeardente', 'brume ardente', 'payhip', 'ebook', 'e-book', 'carnet'],
-    },
-  ];
-
-  const found = knownProjects.find(project =>
-    project.keywords.some(keyword => lower.includes(keyword))
-  );
-
-  if (found) return found.name;
-
+  // Règle produit validée :
+  // Nyra, NovaCall, Dame de Pique et BrumeArdente ne doivent plus être
+  // transformés automatiquement en projets à partir d'une discussion normale.
+  // On ne garde donc que la détection explicite "projet X" pour les vrais projets.
   const explicitProjectMatch = lower.match(/projet\s+([a-z0-9àâçéèêëîïôûùüÿñæœ' -]{2,40})/i);
 
   if (explicitProjectMatch && explicitProjectMatch[1]) {
-    return normalizeText(explicitProjectMatch[1])
+    const explicitProjectName = normalizeText(explicitProjectMatch[1])
       .replace(/[.,!?;:]+$/g, '')
       .trim();
+
+    if (isReservedAutoProjectName(explicitProjectName)) {
+      return null;
+    }
+
+    return explicitProjectName;
   }
 
   return null;
@@ -1983,7 +1982,7 @@ function detectAction(message, userId, analysis) {
       actionType: 'add_to_shopping_list',
       label: 'Ajouter à la liste de courses',
       status: 'done',
-      analysis,
+      analysis: captureAnalysis,
     });
   }
 
@@ -2222,6 +2221,25 @@ function getStoredItemStatusForAction(action) {
   return action?.status || 'captured';
 }
 
+function sanitizeAnalysisProjectLinking(analysis) {
+  const projectName = normalizeText(analysis?.project_name || '');
+
+  if (!projectName || !isReservedAutoProjectName(projectName)) {
+    return analysis || {};
+  }
+
+  const tags = Array.isArray(analysis?.tags)
+    ? analysis.tags.filter(tag => normalizeKey(tag) !== normalizeKey(projectName))
+    : [];
+
+  return {
+    ...(analysis || {}),
+    is_project: false,
+    project_name: null,
+    tags: uniqueArray(tags.filter(tag => !['projet', 'project'].includes(normalizeKey(tag)))),
+  };
+}
+
 function createStoredItem({ userId, message, analysis, action }) {
   const bucket = action ? actionToBucket(action.action_type) : analysis.suggested_bucket;
 
@@ -2245,7 +2263,7 @@ function createStoredItem({ userId, message, analysis, action }) {
           'action',
           action.action_type,
           action.provider,
-          analysis.project_name ? normalizeKey(analysis.project_name) : null,
+          captureAnalysis.project_name ? normalizeKey(captureAnalysis.project_name) : null,
         ])
       : analysis.tags,
     status: action ? getStoredItemStatusForAction(action) : analysis.is_task ? 'todo' : 'captured',
@@ -2606,14 +2624,15 @@ function upsertJournalConversationItem({ store, userId, message, reply, analysis
 
 function saveCapture({ userId, message, reply, analysis, action }) {
   const store = readStore();
+  const captureAnalysis = sanitizeAnalysisProjectLinking(analysis);
 
-  const shouldUseJournalConversation = isJournalConversationCapture(analysis, action);
+  const shouldUseJournalConversation = isJournalConversationCapture(captureAnalysis, action);
   const item = shouldUseJournalConversation
-    ? upsertJournalConversationItem({ store, userId, message, reply, analysis })
+    ? upsertJournalConversationItem({ store, userId, message, reply, analysis: captureAnalysis })
     : createStoredItem({
         userId,
         message,
-        analysis,
+        analysis: captureAnalysis,
         action,
       });
 
@@ -2621,8 +2640,8 @@ function saveCapture({ userId, message, reply, analysis, action }) {
   let createdRelation = null;
   let updatedContext = null;
 
-  if (analysis.project_name) {
-    linkedProject = ensureProject(store, userId, analysis.project_name, message);
+  if (captureAnalysis.project_name) {
+    linkedProject = ensureProject(store, userId, captureAnalysis.project_name, message);
     item.project_id = linkedProject.id;
     item.project_name = linkedProject.name;
   }
@@ -2639,7 +2658,7 @@ function saveCapture({ userId, message, reply, analysis, action }) {
     store.items.push(item);
   }
 
-  const mirroredTaskItem = action?.action_type === 'add_to_today' && analysis?.is_task
+  const mirroredTaskItem = action?.action_type === 'add_to_today' && captureAnalysis?.is_task
     ? cloneStoredItemAsTaskFromToday({ sourceItem: item, userId })
     : null;
 
@@ -2724,7 +2743,7 @@ function saveCapture({ userId, message, reply, analysis, action }) {
     user_id: userId,
     user_message: message,
     nyra_reply: reply,
-    analysis,
+    analysis: captureAnalysis,
     action,
     stored_item_id: item.id,
     action_id: actionRecord ? actionRecord.id : null,
