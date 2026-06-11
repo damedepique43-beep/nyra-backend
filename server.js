@@ -9146,6 +9146,113 @@ app.patch('/store/reflections/:itemId/title', (req, res) => {
   });
 });
 
+function isReflectionSubjectItem(item) {
+  return normalizeText(item?.type || '') === 'reflection_subject' &&
+    normalizeText(item?.bucket || '') === 'journal';
+}
+
+function isReflectionEntryItem(item) {
+  return normalizeText(item?.type || '') === 'reflection_entry' &&
+    normalizeText(item?.bucket || '') === 'journal';
+}
+
+function removeRelationsForDeletedItem(store, deletedItem) {
+  if (!deletedItem || !Array.isArray(store.relations)) return;
+
+  store.relations = store.relations.filter(relation => {
+    return relation.source_id !== deletedItem.id &&
+      relation.target_id !== deletedItem.id &&
+      relation.source_id !== deletedItem.action_id &&
+      relation.target_id !== deletedItem.action_id;
+  });
+}
+
+function removeActionForDeletedItem(store, deletedItem) {
+  if (!deletedItem?.action_id || !Array.isArray(store.actions)) return null;
+
+  const actionIndex = store.actions.findIndex(action => {
+    return action.id === deletedItem.action_id || action.item_id === deletedItem.id;
+  });
+
+  if (actionIndex < 0) return null;
+
+  const [deletedAction] = store.actions.splice(actionIndex, 1);
+  removeRelationsForDeletedItem(store, deletedAction);
+
+  return deletedAction;
+}
+
+function removeStoreItemById(store, itemId) {
+  const index = (Array.isArray(store.items) ? store.items : []).findIndex(item => {
+    return item.id === itemId;
+  });
+
+  if (index < 0) return null;
+
+  const [deletedItem] = store.items.splice(index, 1);
+  const deletedAction = removeActionForDeletedItem(store, deletedItem);
+  removeRelationsForDeletedItem(store, deletedItem);
+
+  return {
+    item: deletedItem,
+    action: deletedAction,
+  };
+}
+
+function deleteReflectionSubjectFromStore(store, subject) {
+  const subjectId = subject?.reflection_subject_id || subject?.id;
+  const entries = getReflectionEntriesForSubject(store, subject?.user_id, subjectId);
+  const idsToDelete = uniqueArray([
+    subject?.id,
+    subjectId,
+    ...entries.map(entry => entry.id),
+  ]);
+
+  const deletedItems = [];
+  const deletedActions = [];
+
+  idsToDelete.forEach(id => {
+    const deleted = removeStoreItemById(store, id);
+
+    if (!deleted?.item) return;
+
+    deletedItems.push(deleted.item);
+    if (deleted.action) deletedActions.push(deleted.action);
+  });
+
+  return {
+    deleted_subject: subject,
+    deleted_entries: entries,
+    deleted_items: deletedItems,
+    deleted_actions: deletedActions,
+  };
+}
+
+function deleteReflectionEntryFromStore(store, userId, entry) {
+  const subjectId = entry?.reflection_subject_id || entry?.parent_id || null;
+  const deleted = removeStoreItemById(store, entry?.id);
+  let subject = null;
+  let entries = [];
+
+  if (subjectId) {
+    const subjectFound = findUserStoreItem(store, userId, subjectId);
+    subject = subjectFound?.item || null;
+
+    if (subject && isReflectionSubjectItem(subject)) {
+      subject.updated_at = nowIso();
+      subject = syncReflectionSubjectMetadata(store, subject);
+      entries = getReflectionEntriesForSubject(store, subject.user_id || userId, subject.reflection_subject_id || subject.id);
+    }
+  }
+
+  return {
+    deleted_item: deleted?.item || entry,
+    deleted_action: deleted?.action || null,
+    subject,
+    entries,
+  };
+}
+
 app.delete('/store/items/:itemId', (req, res) => {
   const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
   const itemId = normalizeText(req.params.itemId);
@@ -9160,35 +9267,50 @@ app.delete('/store/items/:itemId', (req, res) => {
     });
   }
 
-  const [deletedItem] = store.items.splice(found.index, 1);
+  const item = found.item;
 
-  let deletedAction = null;
-  if (deletedItem?.action_id && Array.isArray(store.actions)) {
-    const actionIndex = store.actions.findIndex(action => {
-      return action.id === deletedItem.action_id || action.item_id === deletedItem.id;
-    });
+  if (isReflectionSubjectItem(item)) {
+    const deletedReflection = deleteReflectionSubjectFromStore(store, item);
 
-    if (actionIndex >= 0) {
-      [deletedAction] = store.actions.splice(actionIndex, 1);
-    }
-  }
+    writeStore(store);
 
-  if (Array.isArray(store.relations)) {
-    store.relations = store.relations.filter(relation => {
-      return relation.source_id !== deletedItem.id &&
-        relation.target_id !== deletedItem.id &&
-        relation.source_id !== deletedItem.action_id &&
-        relation.target_id !== deletedItem.action_id;
+    return res.json({
+      ok: true,
+      userId,
+      deleted_item: item,
+      deleted_reflection_subject: deletedReflection.deleted_subject,
+      deleted_reflection_entries: deletedReflection.deleted_entries,
+      deleted_items: deletedReflection.deleted_items,
+      deleted_actions: deletedReflection.deleted_actions,
+      message: 'Sujet de réflexion supprimé avec ses reprises.',
     });
   }
+
+  if (isReflectionEntryItem(item)) {
+    const deletedReflectionEntry = deleteReflectionEntryFromStore(store, userId, item);
+
+    writeStore(store);
+
+    return res.json({
+      ok: true,
+      userId,
+      deleted_item: deletedReflectionEntry.deleted_item,
+      deleted_action: deletedReflectionEntry.deleted_action,
+      subject: deletedReflectionEntry.subject,
+      entries: deletedReflectionEntry.entries,
+      message: 'Reprise de réflexion supprimée.',
+    });
+  }
+
+  const deleted = removeStoreItemById(store, item.id);
 
   writeStore(store);
 
   return res.json({
     ok: true,
     userId,
-    deleted_item: deletedItem,
-    deleted_action: deletedAction,
+    deleted_item: deleted?.item || item,
+    deleted_action: deleted?.action || null,
     message: 'Élément supprimé.',
   });
 });
