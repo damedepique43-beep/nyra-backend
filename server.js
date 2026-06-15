@@ -1790,6 +1790,81 @@ function safeParseJsonObject(value) {
   }
 }
 
+
+function normalizeConversationIntent(value) {
+  const normalized = normalizeKey(value || '').replace(/-/g, '_');
+  const allowedConversationIntents = [
+    'none',
+    'continue',
+    'develop',
+    'agreement',
+    'disagreement',
+    'correction',
+    'answer_question',
+    'ask_advice',
+    'ask_action_plan',
+    'new_topic',
+    'emotional_resonance',
+    'clarification',
+  ];
+
+  if (allowedConversationIntents.includes(normalized)) return normalized;
+
+  return 'none';
+}
+
+function detectConversationIntent(message) {
+  const userMessage = extractActiveReflectionUserMessage(message) || normalizeText(message);
+  const lower = normalizeText(userMessage).toLowerCase();
+  const compact = lower
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[.!?;:…]+$/g, '')
+    .trim();
+
+  if (!compact) return 'none';
+
+  if (/^(continue|continues|continu|vas y|vas-y|poursuis|on continue|continue stp|continue s il te plait|continue s'il te plait)$/.test(compact)) {
+    return 'continue';
+  }
+
+  if (/^(developpe|developpes|approfondis|creuse|explique|explique moi|explique-moi|va plus loin|vas plus loin|detaille|detaille moi|precise)$/.test(compact)) {
+    return 'develop';
+  }
+
+  if (/^(oui|oui c est ca|oui c'est ca|oui exactement|exactement|c est ca|c'est ca|grave|totalement|clairement|je suis d accord|je suis d'accord)$/.test(compact)) {
+    return 'agreement';
+  }
+
+  if (/^(ca me parle|ça me parle|je comprends|je vois|je le sens|c est parlant|c'est parlant|c est exactement ca|c'est exactement ca)$/.test(compact)) {
+    return 'emotional_resonance';
+  }
+
+  if (/^(non|pas vraiment|non pas ca|non c est pas ca|non ce n est pas ca|je ne suis pas d accord|je suis pas d accord)$/.test(compact)) {
+    return 'disagreement';
+  }
+
+  if (includesAny(compact, ['je veux dire', 'ce que je veux dire', 'plutot', 'en fait non', 'correction'])) {
+    return 'correction';
+  }
+
+  if (includesAny(compact, ['que puis-je faire', 'qu est ce que je peux faire', "qu'est ce que je peux faire", 'tu me conseilles quoi', 'quoi faire'])) {
+    return 'ask_advice';
+  }
+
+  if (includesAny(compact, ['fais moi un plan', 'crée moi un plan', 'cree moi un plan', 'plan d action', 'étape par étape', 'etape par etape'])) {
+    return 'ask_action_plan';
+  }
+
+  if (includesAny(compact, ['nouveau sujet', 'autre sujet', 'changeons de sujet', 'je veux parler de'])) {
+    return 'new_topic';
+  }
+
+  if (compact.length > 8) return 'answer_question';
+
+  return 'none';
+}
+
 function normalizeAIUnderstanding(localAnalysis, aiUnderstanding) {
   if (!aiUnderstanding || typeof aiUnderstanding !== 'object') {
     return localAnalysis;
@@ -1797,6 +1872,9 @@ function normalizeAIUnderstanding(localAnalysis, aiUnderstanding) {
 
   const allowedTypes = ['note', 'task', 'idea', 'emotion', 'project_note', 'mixed'];
   const allowedBuckets = ['inbox', 'tasks', 'ideas', 'journal', 'projects', 'today', 'plans', 'reminders'];
+  const conversationIntent = normalizeConversationIntent(
+    aiUnderstanding.conversation_intent || localAnalysis.conversation_intent || 'none'
+  );
 
   const type = allowedTypes.includes(aiUnderstanding.type)
     ? aiUnderstanding.type
@@ -1841,6 +1919,7 @@ function normalizeAIUnderstanding(localAnalysis, aiUnderstanding) {
               : 'capture'
         ),
     user_intent: normalizeText(aiUnderstanding.user_intent || ''),
+    conversation_intent: conversationIntent,
     ai_understanding_applied: true,
     tags,
   };
@@ -1875,6 +1954,7 @@ Retourne uniquement un JSON valide, sans texte autour, avec ces clés :
   "datetime_hint": string|null,
   "response_level": "capture|reflection|project",
   "user_intent": string,
+  "conversation_intent": "none|continue|develop|agreement|disagreement|correction|answer_question|ask_advice|ask_action_plan|new_topic|emotional_resonance|clarification",
   "tags": string[]
 }
 
@@ -1883,6 +1963,10 @@ Règles importantes :
 - Si l'utilisateur dit "j'ai une idée pour Nyra/NovaCall/etc", c'est une idée liée à un projet : is_idea=true, is_project=true, project_name doit être rempli.
 - Si l'utilisateur demande un rappel avec une durée relative, garde datetime_hint tel quel si utile, mais ne calcule pas la date ici.
 - Ne transforme pas une discussion émotionnelle en simple capture.
+- Si le message contient "Contexte actif de réflexion Nyra", considère que l'utilisateur est dans une réflexion active : response_level = "reflection", suggested_bucket = "journal".
+- Si le message actuel de l'utilisateur est court comme "Continue", "Développe", "Oui", "Ça me parle", "Je comprends", classe surtout conversation_intent.
+- "Développe" ou "explique" signifie que l'utilisateur veut que Nyra approfondisse sa dernière analyse, pas qu'elle repose la même question.
+- "Oui", "Exactement", "Ça me parle" ou "Je comprends" signifie validation/résonance : Nyra doit continuer le fil et creuser ce qui vient d'être validé.
 `.trim();
 }
 
@@ -1931,6 +2015,7 @@ function analyzeMessage(message) {
     suggested_bucket: 'inbox',
     tags: [],
     datetime_hint: detectDatetimeHint(text),
+    conversation_intent: detectConversationIntent(text),
   };
 
   if (isReflectionResumeRequest(text)) {
@@ -4583,6 +4668,11 @@ Règles de réponse :
 - si response_level = reflection : fais 1 observation courte + 1 question utile
 - si response_level = project : relie clairement au projet concerné et propose la prochaine clarification utile
 - si l’utilisateur demande à comprendre une émotion, ne dis pas "c’est capturé" comme réponse principale
+- si conversation_intent = develop : développe l'analyse précédente, ne repose pas la même question, apporte une nuance concrète puis une seule ouverture utile
+- si conversation_intent = continue : poursuis le fil actif sans repartir de zéro
+- si conversation_intent = agreement ou emotional_resonance : considère que l'utilisateur valide ce qui vient d'être dit ; nomme ce qui semble résonner et approfondis doucement
+- si conversation_intent = disagreement ou correction : ajuste ton analyse sans te défendre
+- si le message contient "Contexte actif de réflexion Nyra" : réponds uniquement à partir du sujet actif et du message actuel de l'utilisateur ; ne crée pas de tâche, course, rappel ou projet sauf demande explicite
 - évite les phrases génériques comme "prends un moment pour respirer" sauf si la personne semble en crise
 - ne parle pas de fichier JSON
 - ne parle pas de tes mécanismes internes
