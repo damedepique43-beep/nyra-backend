@@ -2594,23 +2594,7 @@ function syncReflectionSubjectMetadata(store, subject) {
   if (!subject || typeof subject !== 'object') return subject;
 
   const subjectId = subject.reflection_subject_id || subject.id;
-  const deletedReflectionEntryIds = new Set(
-    Array.isArray(subject.deleted_reflection_entry_ids)
-      ? subject.deleted_reflection_entry_ids.map(id => normalizeText(id)).filter(Boolean)
-      : []
-  );
-
-  const entries = getReflectionEntriesForSubject(store, subject.user_id, subjectId)
-    .filter(entry => {
-      const entryId = normalizeText(entry?.id || '');
-      const legacyEntryId = normalizeText(entry?.legacy_reflection_reprise_id || '');
-
-      return !(
-        deletedReflectionEntryIds.has(entryId) ||
-        (legacyEntryId && deletedReflectionEntryIds.has(legacyEntryId))
-      );
-    });
-
+  const entries = getReflectionEntriesForSubject(store, subject.user_id, subjectId);
   const latestEntry = entries[0] || null;
   const repriseEntries = entries.filter(entry => entry.reflection_entry_type === 'reprise');
 
@@ -2621,13 +2605,12 @@ function syncReflectionSubjectMetadata(store, subject) {
   subject.journal_topic_title = subject.journal_topic_title || subject.reflection_subject_title;
   subject.reflection_entry_ids = entries.map(entry => entry.id);
   subject.reflection_entries_count = entries.length;
-  subject.deleted_reflection_entry_ids = [...deletedReflectionEntryIds];
   subject.reprise_count = repriseEntries.length;
-  subject.last_reprise_at = repriseEntries[0]?.created_at || null;
-  subject.last_reprise_title = repriseEntries[0]?.title || null;
-  subject.last_entry_id = latestEntry?.id || null;
-  subject.last_user_message = latestEntry?.user_message || null;
-  subject.last_nyra_reply = latestEntry?.nyra_reply || null;
+  subject.last_reprise_at = repriseEntries[0]?.created_at || subject.last_reprise_at || null;
+  subject.last_reprise_title = repriseEntries[0]?.title || subject.last_reprise_title || null;
+  subject.last_entry_id = latestEntry?.id || subject.last_entry_id || null;
+  subject.last_user_message = latestEntry?.user_message || subject.last_user_message || null;
+  subject.last_nyra_reply = latestEntry?.nyra_reply || subject.last_nyra_reply || null;
   subject.content = subject.content_summary || subject.content || latestEntry?.content || '';
   subject.updated_at = latestEntry?.updated_at || subject.updated_at || nowIso();
   subject.tags = uniqueArray([
@@ -2750,18 +2733,7 @@ function migrateLegacyReflectionReprises(store) {
     subject.reflection_subject_title = subject.reflection_subject_title || subject.title || 'Réflexion';
     subject.journal_topic_title = subject.journal_topic_title || subject.reflection_subject_title;
 
-    const deletedReflectionEntryIds = new Set(
-      Array.isArray(subject.deleted_reflection_entry_ids)
-        ? subject.deleted_reflection_entry_ids.map(id => normalizeText(id)).filter(Boolean)
-        : []
-    );
-
-    const legacyReprises = Array.isArray(subject.reflection_reprises)
-      ? subject.reflection_reprises.filter(legacyEntry => {
-          const legacyEntryId = normalizeText(legacyEntry?.id || '');
-          return !(legacyEntryId && deletedReflectionEntryIds.has(legacyEntryId));
-        })
-      : [];
+    const legacyReprises = Array.isArray(subject.reflection_reprises) ? subject.reflection_reprises : [];
 
     legacyReprises.forEach((legacyEntry, legacyIndex) => {
       const entryType = Number(legacyEntry?.index || 0) === 0 || legacyEntry?.title === 'Entrée initiale'
@@ -2777,13 +2749,6 @@ function migrateLegacyReflectionReprises(store) {
       );
 
       const legacyEntryId = normalizeText(legacyEntry?.id || '');
-
-      if (
-        deletedReflectionEntryIds.has(stableId) ||
-        (legacyEntryId && deletedReflectionEntryIds.has(legacyEntryId))
-      ) {
-        return;
-      }
 
       const alreadyExists = store.items.some(item => {
         return (
@@ -8696,17 +8661,11 @@ function itemMatchesId(item, itemId) {
 
   if (!normalizedItemId) return false;
 
-  const reflectionEntryIds = Array.isArray(item?.reflection_entry_ids)
-    ? item.reflection_entry_ids
-    : [];
-
   return (
     item.id === normalizedItemId ||
     item.item_id === normalizedItemId ||
     item.stored_item_id === normalizedItemId ||
-    item.action_id === normalizedItemId ||
-    item.legacy_reflection_reprise_id === normalizedItemId ||
-    reflectionEntryIds.includes(normalizedItemId)
+    item.action_id === normalizedItemId
   );
 }
 
@@ -9272,43 +9231,19 @@ app.delete('/store/items/:itemId', (req, res) => {
 
     if (isReflectionEntry) {
       const subjectId = deletedItem.reflection_subject_id || deletedItem.parent_id || null;
-      const deletedEntryIds = [
-        deletedItem.id,
-        deletedItem.legacy_reflection_reprise_id,
-      ].map(id => normalizeText(id)).filter(Boolean);
-
-      const subjectsToUpdate = subjectId
-        ? store.items.filter(item => {
-            const type = normalizeText(item.type || '');
+      const subject = subjectId
+        ? store.items.find(item => {
             return (
               item.id === subjectId ||
               item.reflection_subject_id === subjectId
-            ) && (
-              type === 'reflection_subject' ||
-              type === 'journal_conversation'
-            );
+            ) && normalizeText(item.type || '') === 'reflection_subject';
           })
-        : [];
+        : null;
 
-      subjectsToUpdate.forEach(subject => {
-        const previousDeletedIds = Array.isArray(subject.deleted_reflection_entry_ids)
-          ? subject.deleted_reflection_entry_ids
-          : [];
-
-        subject.deleted_reflection_entry_ids = uniqueArray([
-          ...previousDeletedIds,
-          ...deletedEntryIds,
-        ]);
-
-        if (Array.isArray(subject.reflection_reprises)) {
-          subject.reflection_reprises = subject.reflection_reprises.filter(reprise => {
-            const repriseId = normalizeText(reprise?.id || '');
-            return !(repriseId && subject.deleted_reflection_entry_ids.includes(repriseId));
-          });
-        }
-
+      if (subject) {
+        subject.reflection_reprises = [];
         updatedSubject = syncReflectionSubjectMetadata(store, subject);
-      });
+      }
     }
   }
 
