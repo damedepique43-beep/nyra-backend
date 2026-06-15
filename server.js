@@ -2451,6 +2451,10 @@ function isReflectionResumeRequest(message) {
     'reprendre cette reflexion',
     'continuer cette réflexion',
     'continuer cette reflexion',
+    'contexte actif de réflexion nyra',
+    'contexte actif de reflexion nyra',
+    'sujet actif :',
+    'sujet vivant :',
   ]);
 }
 
@@ -2460,6 +2464,8 @@ function extractReflectionResumeTitle(message) {
     /titre\s+du\s+journal\s*:\s*([^\n]+)/i,
     /titre\s+de\s+la\s+réflexion\s*:\s*([^\n]+)/i,
     /titre\s+de\s+la\s+reflexion\s*:\s*([^\n]+)/i,
+    /sujet\s+vivant\s*:\s*([^\n]+)/i,
+    /sujet\s+actif\s*:\s*([^\n]+)/i,
     /sujet\s*:\s*([^\n]+)/i,
   ];
 
@@ -2472,6 +2478,19 @@ function extractReflectionResumeTitle(message) {
   }
 
   return '';
+}
+
+function extractActiveReflectionUserMessage(message) {
+  const raw = String(message || '');
+  const match = raw.match(/Message\s+actuel\s+de\s+l['’]utilisateur\s*:\s*([\s\S]*?)(?:\n\s*Consigne\s+pour\s+Nyra\s*:|$)/i);
+
+  if (!match?.[1]) return '';
+
+  return normalizeText(match[1]);
+}
+
+function getReflectionUserMessageForStorage(message) {
+  return extractActiveReflectionUserMessage(message) || normalizeText(message);
 }
 
 function normalizeReflectionTitleKey(value) {
@@ -2633,6 +2652,7 @@ function createReflectionEntryItem({ subject, userId, entryType, index, title, c
   const safeCreatedAt = createdAt || nowIso();
   const subjectId = subject.reflection_subject_id || subject.id;
   const generatedEntryId = crypto.randomUUID();
+  const storedUserMessage = getReflectionUserMessageForStorage(message);
 
   return {
     id: generatedEntryId,
@@ -2640,7 +2660,7 @@ function createReflectionEntryItem({ subject, userId, entryType, index, title, c
     type: 'reflection_entry',
     bucket: 'journal',
     title: title || buildReflectionEntryTitle(entryType, index, new Date(safeCreatedAt)),
-    content: normalizeMultilineText(content || buildJournalTurnText(message, reply)),
+    content: normalizeMultilineText(content || buildJournalTurnText(storedUserMessage, reply)),
     urgency: subject.urgency || 'normal',
     priority: subject.priority || 'normal',
     datetime_hint: subject.datetime_hint || null,
@@ -2673,7 +2693,8 @@ function createReflectionEntryItem({ subject, userId, entryType, index, title, c
     journal_topic_title: subject.journal_topic_title || subject.reflection_subject_title || subject.title || 'Réflexion',
     reflection_entry_type: entryType,
     reflection_entry_index: index,
-    user_message: normalizeText(message),
+    user_message: storedUserMessage,
+    raw_user_message: storedUserMessage === normalizeText(message) ? null : normalizeText(message),
     nyra_reply: normalizeText(reply),
     created_at: safeCreatedAt,
     updated_at: safeCreatedAt,
