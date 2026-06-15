@@ -2621,18 +2621,10 @@ function syncReflectionSubjectMetadata(store, subject) {
     'subject',
   ]);
 
-  // Compatibilité : l'ancien champ reste disponible, mais ne contient plus de gros bloc.
-  subject.reflection_reprises = entries.map(entry => ({
-    id: entry.id,
-    index: entry.reflection_entry_index,
-    title: entry.title,
-    content: entry.content,
-    user_message: entry.user_message,
-    nyra_reply: entry.nyra_reply,
-    created_at: entry.created_at,
-    updated_at: entry.updated_at,
-    reflection_entry_type: entry.reflection_entry_type,
-  }));
+  // Compatibilité frontend historique : on garde le champ, mais vide.
+  // Les reprises canoniques sont uniquement les items type "reflection_entry".
+  // Ne jamais recopier les entrées ici, sinon une suppression peut être reconstruite au prochain read/write.
+  subject.reflection_reprises = [];
 
   return subject;
 }
@@ -2733,57 +2725,99 @@ function migrateLegacyReflectionReprises(store) {
     subject.reflection_subject_title = subject.reflection_subject_title || subject.title || 'Réflexion';
     subject.journal_topic_title = subject.journal_topic_title || subject.reflection_subject_title;
 
+    const existingCanonicalEntries = store.items.filter(item => {
+      return (
+        item &&
+        item.bucket === 'journal' &&
+        item.type === 'reflection_entry' &&
+        item.reflection_subject_id === subjectId
+      );
+    });
+
     const legacyReprises = Array.isArray(subject.reflection_reprises) ? subject.reflection_reprises : [];
 
-    legacyReprises.forEach((legacyEntry, legacyIndex) => {
-      const entryType = Number(legacyEntry?.index || 0) === 0 || legacyEntry?.title === 'Entrée initiale'
-        ? 'initial'
-        : 'reprise';
-      const entryIndex = entryType === 'initial' ? 0 : Number(legacyEntry?.index || legacyIndex);
-      const createdAt = legacyEntry?.created_at || subject.created_at || nowIso();
-      const stableId = buildReflectionEntryStableId(
-        subjectId,
-        legacyEntry?.id || legacyEntry?.title || '',
-        entryIndex,
-        createdAt
-      );
+    // Migration legacy strictement one-shot :
+    // si des reflection_entry existent déjà, on ne lit plus jamais reflection_reprises.
+    // Sinon une reprise supprimée depuis l'app peut être recréée au prochain readStore/writeStore.
+    if (existingCanonicalEntries.length === 0 && legacyReprises.length > 0) {
+      legacyReprises.forEach((legacyEntry, legacyIndex) => {
+        const entryType = Number(legacyEntry?.index || 0) === 0 || legacyEntry?.title === 'Entrée initiale'
+          ? 'initial'
+          : 'reprise';
+        const entryIndex = entryType === 'initial' ? 0 : Number(legacyEntry?.index || legacyIndex);
+        const createdAt = legacyEntry?.created_at || subject.created_at || nowIso();
+        const stableId = buildReflectionEntryStableId(
+          subjectId,
+          legacyEntry?.id || legacyEntry?.title || '',
+          entryIndex,
+          createdAt
+        );
 
-      const alreadyExists = store.items.some(item => {
-        return item.id === stableId || item.legacy_reflection_reprise_id === legacyEntry?.id;
+        const legacyEntryId = normalizeText(legacyEntry?.id || '');
+        const alreadyExists = store.items.some(item => {
+          return (
+            item.id === stableId ||
+            (legacyEntryId && item.id === legacyEntryId) ||
+            (legacyEntryId && item.legacy_reflection_reprise_id === legacyEntryId) ||
+            (
+              item.type === 'reflection_entry' &&
+              item.reflection_subject_id === subjectId &&
+              Number(item.reflection_entry_index || 0) === Number(entryIndex || 0) &&
+              normalizeText(item.created_at || '') === normalizeText(createdAt || '')
+            )
+          );
+        });
+
+        if (alreadyExists) return;
+
+        const entry = {
+          ...createReflectionEntryItem({
+            subject,
+            userId: subject.user_id,
+            entryType,
+            index: entryIndex,
+            title: entryType === 'initial'
+              ? buildReflectionEntryTitle('initial', 0, new Date(createdAt))
+              : legacyEntry?.title || buildReflectionEntryTitle('reprise', entryIndex, new Date(createdAt)),
+            content: legacyEntry?.content || '',
+            message: legacyEntry?.user_message || '',
+            reply: legacyEntry?.nyra_reply || '',
+            createdAt,
+          }),
+          id: stableId,
+          legacy_reflection_reprise_id: legacyEntry?.id || null,
+        };
+
+        store.items.push(entry);
       });
+    }
 
-      if (alreadyExists) return;
-
-      const entry = {
-        ...createReflectionEntryItem({
-          subject,
-          userId: subject.user_id,
-          entryType,
-          index: entryIndex,
-          title: entryType === 'initial'
-            ? buildReflectionEntryTitle('initial', 0, new Date(createdAt))
-            : legacyEntry?.title || buildReflectionEntryTitle('reprise', entryIndex, new Date(createdAt)),
-          content: legacyEntry?.content || '',
-          message: legacyEntry?.user_message || '',
-          reply: legacyEntry?.nyra_reply || '',
-          createdAt,
-        }),
-        id: stableId,
-        legacy_reflection_reprise_id: legacyEntry?.id || null,
-      };
-
-      store.items.push(entry);
-    });
-
-    const hasInitialEntry = store.items.some(item => {
+    const entriesAfterMigration = store.items.filter(item => {
       return (
+        item &&
+        item.bucket === 'journal' &&
         item.type === 'reflection_entry' &&
-        item.reflection_subject_id === subjectId &&
-        item.reflection_entry_type === 'initial'
+        item.reflection_subject_id === subjectId
       );
     });
 
-    if (!hasInitialEntry && normalizeMultilineText(subject.content || '')) {
+    const hasInitialEntry = entriesAfterMigration.some(item => {
+      return item.reflection_entry_type === 'initial';
+    });
+
+    // Fallback uniquement pour très vieux sujets sans aucune entrée canonique.
+    // Si une entrée a existé puis a été supprimée, reflection_entry_ids indique l'historique
+    // et on ne recrée rien depuis subject.content.
+    const hasKnownCanonicalHistory =
+      Array.isArray(subject.reflection_entry_ids) &&
+      subject.reflection_entry_ids.length > 0;
+
+    if (
+      entriesAfterMigration.length === 0 &&
+      !hasKnownCanonicalHistory &&
+      !hasInitialEntry &&
+      normalizeMultilineText(subject.content || '')
+    ) {
       const createdAt = subject.created_at || nowIso();
       const stableId = buildReflectionEntryStableId(subjectId, 'initial-content', 0, createdAt);
 
@@ -2805,6 +2839,7 @@ function migrateLegacyReflectionReprises(store) {
       }
     }
 
+    subject.reflection_reprises = [];
     syncReflectionSubjectMetadata(store, subject);
   });
 
@@ -9160,26 +9195,79 @@ app.delete('/store/items/:itemId', (req, res) => {
     });
   }
 
-  const [deletedItem] = store.items.splice(found.index, 1);
+  const itemToDelete = found.item;
+  const itemType = normalizeText(itemToDelete?.type || '');
+  const itemBucket = normalizeText(itemToDelete?.bucket || '');
+  const isReflectionSubject = itemType === 'reflection_subject' && itemBucket === 'journal';
+  const isReflectionEntry = itemType === 'reflection_entry' && itemBucket === 'journal';
 
+  let deletedItems = [];
   let deletedAction = null;
-  if (deletedItem?.action_id && Array.isArray(store.actions)) {
-    const actionIndex = store.actions.findIndex(action => {
-      return action.id === deletedItem.action_id || action.item_id === deletedItem.id;
-    });
+  let updatedSubject = null;
 
-    if (actionIndex >= 0) {
-      [deletedAction] = store.actions.splice(actionIndex, 1);
+  if (isReflectionSubject) {
+    const subjectId = itemToDelete.reflection_subject_id || itemToDelete.id;
+
+    const idsToDelete = new Set(
+      store.items
+        .filter(item => {
+          return (
+            item.id === itemToDelete.id ||
+            item.reflection_subject_id === subjectId ||
+            item.parent_id === subjectId
+          );
+        })
+        .map(item => item.id)
+        .filter(Boolean)
+    );
+
+    deletedItems = store.items.filter(item => idsToDelete.has(item.id));
+    store.items = store.items.filter(item => !idsToDelete.has(item.id));
+
+    if (Array.isArray(store.relations)) {
+      store.relations = store.relations.filter(relation => {
+        return !idsToDelete.has(relation.source_id) && !idsToDelete.has(relation.target_id);
+      });
     }
-  }
+  } else {
+    const [deletedItem] = store.items.splice(found.index, 1);
+    deletedItems = deletedItem ? [deletedItem] : [];
 
-  if (Array.isArray(store.relations)) {
-    store.relations = store.relations.filter(relation => {
-      return relation.source_id !== deletedItem.id &&
-        relation.target_id !== deletedItem.id &&
-        relation.source_id !== deletedItem.action_id &&
-        relation.target_id !== deletedItem.action_id;
-    });
+    if (deletedItem?.action_id && Array.isArray(store.actions)) {
+      const actionIndex = store.actions.findIndex(action => {
+        return action.id === deletedItem.action_id || action.item_id === deletedItem.id;
+      });
+
+      if (actionIndex >= 0) {
+        [deletedAction] = store.actions.splice(actionIndex, 1);
+      }
+    }
+
+    if (Array.isArray(store.relations)) {
+      store.relations = store.relations.filter(relation => {
+        return relation.source_id !== deletedItem.id &&
+          relation.target_id !== deletedItem.id &&
+          relation.source_id !== deletedItem.action_id &&
+          relation.target_id !== deletedItem.action_id;
+      });
+    }
+
+    if (isReflectionEntry) {
+      const subjectId = deletedItem.reflection_subject_id || deletedItem.parent_id || null;
+      const subject = subjectId
+        ? store.items.find(item => {
+            return (
+              item.id === subjectId ||
+              item.reflection_subject_id === subjectId
+            ) && normalizeText(item.type || '') === 'reflection_subject';
+          })
+        : null;
+
+      if (subject) {
+        subject.reflection_reprises = [];
+        updatedSubject = syncReflectionSubjectMetadata(store, subject);
+      }
+    }
   }
 
   writeStore(store);
@@ -9187,8 +9275,11 @@ app.delete('/store/items/:itemId', (req, res) => {
   return res.json({
     ok: true,
     userId,
-    deleted_item: deletedItem,
+    deleted_item: deletedItems[0] || null,
+    deleted_items: deletedItems,
+    deleted_count: deletedItems.length,
     deleted_action: deletedAction,
+    updated_subject: updatedSubject,
     message: 'Élément supprimé.',
   });
 });
