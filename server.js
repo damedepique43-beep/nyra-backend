@@ -2701,12 +2701,22 @@ function syncReflectionSubjectMetadata(store, subject) {
   const entries = getReflectionEntriesForSubject(store, subject.user_id, subjectId);
   const latestEntry = entries[0] || null;
   const repriseEntries = entries.filter(entry => entry.reflection_entry_type === 'reprise');
+  const protectedTitle = normalizeText(
+    subject.custom_reflection_title ||
+    subject.manual_reflection_title ||
+    subject.user_defined_title ||
+    subject.reflection_subject_title ||
+    subject.journal_topic_title ||
+    subject.title ||
+    'Réflexion'
+  );
 
   subject.type = 'reflection_subject';
   subject.bucket = 'journal';
   subject.reflection_subject_id = subjectId;
-  subject.reflection_subject_title = subject.reflection_subject_title || subject.title || 'Réflexion';
-  subject.journal_topic_title = subject.journal_topic_title || subject.reflection_subject_title;
+  subject.title = protectedTitle;
+  subject.reflection_subject_title = protectedTitle;
+  subject.journal_topic_title = protectedTitle;
   subject.reflection_entry_ids = entries.map(entry => entry.id);
   subject.reflection_entries_count = entries.length;
   subject.reprise_count = repriseEntries.length;
@@ -9253,8 +9263,14 @@ app.patch('/store/reflections/:itemId/title', (req, res) => {
   if (isReflectionSubject) {
     const subjectId = item.reflection_subject_id || item.id;
     item.reflection_subject_id = subjectId;
+    item.title = title;
     item.reflection_subject_title = title;
     item.journal_topic_title = title;
+    item.custom_reflection_title = title;
+    item.manual_reflection_title = title;
+    item.user_defined_title = title;
+    item.title_is_custom = true;
+    item.title_updated_at = updatedAt;
     item.content_summary = item.content_summary || item.content || '';
 
     entries = getReflectionEntriesForSubject(store, item.user_id || userId, subjectId);
