@@ -777,7 +777,7 @@ function cleanActionTitle(text) {
     .replace(/^rajoute\s+/i, '')
     .replace(/^mets\s+/i, '')
     .replace(/^note\s+/i, '')
-    .replace(/\s+(à|a|dans)\s+(ma\s+|la\s+)?liste\s+de\s+courses.*$/i, '')
+    .replace(/\s+(à|a|dans|sur)\s+(ma\s+|la\s+)?liste\s+de\s+courses.*$/i, '')
     .replace(/^transforme cette idée en tâche\s*/i, '')
     .trim();
 
@@ -993,10 +993,10 @@ function resolveReminderSchedule(text, datetimeHint) {
 function extractShoppingListItem(message) {
   const text = normalizeText(message);
   const patterns = [
-    /ajoute\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
-    /mets\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
-    /note\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
-    /rajoute\s+(.+?)\s+(?:à|a|dans)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+    /ajoute\s+(.+?)\s+(?:à|a|dans|sur)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+    /mets\s+(.+?)\s+(?:à|a|dans|sur)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+    /note\s+(.+?)\s+(?:à|a|dans|sur)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
+    /rajoute\s+(.+?)\s+(?:à|a|dans|sur)\s+(?:ma\s+|la\s+)?liste\s+de\s+courses/i,
   ];
 
   for (const pattern of patterns) {
