@@ -2733,6 +2733,238 @@ function getReflectionEntriesForSubject(store, userId, subjectId) {
     .sort((a, b) => getReflectionEntrySortTime(b) - getReflectionEntrySortTime(a));
 }
 
+function getReflectionEntryTextForAnalysis(entry) {
+  if (!entry || typeof entry !== 'object') return '';
+
+  return normalizeMultilineText([
+    entry.user_message || '',
+    entry.nyra_reply || '',
+    entry.content || '',
+  ].join('\n'));
+}
+
+function countReflectionKeywordMatches(text, keywords) {
+  const lower = normalizeText(text).toLowerCase();
+
+  return keywords.reduce((total, keyword) => {
+    return lower.includes(keyword) ? total + 1 : total;
+  }, 0);
+}
+
+function buildReflectionLivingSummary(subject, entries) {
+  const safeEntries = Array.isArray(entries) ? entries : [];
+  const orderedEntries = [...safeEntries].sort((a, b) => {
+    return new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime();
+  });
+
+  const combinedText = normalizeMultilineText(
+    orderedEntries
+      .map(entry => getReflectionEntryTextForAnalysis(entry))
+      .filter(Boolean)
+      .join('\n\n')
+  );
+
+  const previousSummary = normalizeMultilineText(
+    subject?.living_summary ||
+    subject?.reflection_living_summary ||
+    subject?.content_summary ||
+    ''
+  );
+
+  const latestUserMessages = orderedEntries
+    .map(entry => normalizeText(entry.user_message || ''))
+    .filter(Boolean)
+    .slice(-5);
+
+  const latestNyraReplies = orderedEntries
+    .map(entry => normalizeText(entry.nyra_reply || ''))
+    .filter(Boolean)
+    .slice(-3);
+
+  const emotionKeywords = [
+    'peur',
+    'triste',
+    'colère',
+    'colere',
+    'angoisse',
+    'stress',
+    'fatigue',
+    'fatiguée',
+    'fatiguee',
+    'surcharge',
+    'seule',
+    'seul',
+    'culpabilité',
+    'culpabilite',
+    'honte',
+    'mal',
+  ];
+
+  const patternKeywords = [
+    'toujours',
+    'jamais',
+    'souvent',
+    'à chaque fois',
+    'a chaque fois',
+    'schéma',
+    'schema',
+    'répète',
+    'repete',
+    'bloque',
+    'déclenche',
+    'declenche',
+    'je comprends',
+    'je réalise',
+    'je realise',
+  ];
+
+  const decisionKeywords = [
+    'je veux',
+    'je ne veux plus',
+    'je vais',
+    'j ai décidé',
+    "j'ai décidé",
+    'ma limite',
+    'mes conditions',
+    'je choisis',
+    'décision',
+    'decision',
+  ];
+
+  const unresolvedKeywords = [
+    'je ne sais pas',
+    'je sais pas',
+    'pourquoi',
+    'comment',
+    'peut-être',
+    'peut etre',
+    'j hésite',
+    "j'hésite",
+    'flou',
+    'bloquée',
+    'bloquee',
+    'pas clair',
+  ];
+
+  const detectedEmotions = emotionKeywords
+    .filter(keyword => normalizeText(combinedText).toLowerCase().includes(keyword))
+    .slice(0, 8);
+
+  const detectedPatterns = patternKeywords
+    .filter(keyword => normalizeText(combinedText).toLowerCase().includes(keyword))
+    .slice(0, 8);
+
+  const detectedDecisions = latestUserMessages
+    .filter(message => includesAny(message, decisionKeywords))
+    .slice(-5);
+
+  const unresolvedElements = latestUserMessages
+    .filter(message => includesAny(message, unresolvedKeywords))
+    .slice(-5);
+
+  const summaryParts = [];
+
+  if (previousSummary) {
+    summaryParts.push(previousSummary);
+  }
+
+  if (latestUserMessages.length) {
+    summaryParts.push(`Derniers éléments utilisateur : ${latestUserMessages.join(' / ')}`);
+  }
+
+  if (latestNyraReplies.length) {
+    summaryParts.push(`Dernières hypothèses Nyra : ${latestNyraReplies.join(' / ')}`);
+  }
+
+  const livingSummary = normalizeMultilineText(summaryParts.join('\n'));
+
+  return {
+    summary: livingSummary.length > 1800 ? `${livingSummary.slice(0, 1800).trim()}…` : livingSummary,
+    facts: latestUserMessages,
+    recurring_emotions: detectedEmotions,
+    detected_patterns: detectedPatterns,
+    decisions: detectedDecisions,
+    unresolved_elements: unresolvedElements,
+    source_entries_count: orderedEntries.length,
+    generated_at: nowIso(),
+  };
+}
+
+function calculateReflectionMaturity(subject, entries, livingSummaryPayload) {
+  const safeEntries = Array.isArray(entries) ? entries : [];
+  const combinedText = normalizeMultilineText(
+    safeEntries
+      .map(entry => getReflectionEntryTextForAnalysis(entry))
+      .filter(Boolean)
+      .join('\n\n')
+  );
+
+  const characterCount = combinedText.length;
+  const entriesCount = safeEntries.length;
+  const reprisesCount = safeEntries.filter(entry => entry.reflection_entry_type === 'reprise').length;
+  const emotionCount = Array.isArray(livingSummaryPayload?.recurring_emotions)
+    ? livingSummaryPayload.recurring_emotions.length
+    : 0;
+  const patternCount = Array.isArray(livingSummaryPayload?.detected_patterns)
+    ? livingSummaryPayload.detected_patterns.length
+    : 0;
+  const decisionCount = Array.isArray(livingSummaryPayload?.decisions)
+    ? livingSummaryPayload.decisions.length
+    : 0;
+  const unresolvedCount = Array.isArray(livingSummaryPayload?.unresolved_elements)
+    ? livingSummaryPayload.unresolved_elements.length
+    : 0;
+
+  let score = 0;
+
+  score += Math.min(25, entriesCount * 7);
+  score += Math.min(20, reprisesCount * 8);
+  score += Math.min(20, Math.floor(characterCount / 220));
+  score += Math.min(12, emotionCount * 3);
+  score += Math.min(14, patternCount * 4);
+  score += Math.min(12, decisionCount * 4);
+  score += Math.min(8, unresolvedCount * 2);
+
+  score = clampNumber(score, 0, 100);
+
+  let stage = 'EXPLORATION';
+
+  if (score >= 75 && decisionCount > 0) {
+    stage = 'RÉSOLUTION';
+  } else if (score >= 52 && patternCount > 0) {
+    stage = 'ANALYSE';
+  } else if (score >= 28 && (emotionCount > 0 || entriesCount >= 2)) {
+    stage = 'COMPRÉHENSION';
+  }
+
+  const confidenceScore = clampNumber(
+    Math.round(
+      Math.min(40, entriesCount * 10) +
+      Math.min(25, Math.floor(characterCount / 300)) +
+      Math.min(20, patternCount * 5) +
+      Math.min(15, decisionCount * 5)
+    ),
+    0,
+    100
+  );
+
+  return {
+    score,
+    stage,
+    confidence_score: confidenceScore,
+    signals: {
+      entries_count: entriesCount,
+      reprises_count: reprisesCount,
+      character_count: characterCount,
+      emotion_count: emotionCount,
+      pattern_count: patternCount,
+      decision_count: decisionCount,
+      unresolved_count: unresolvedCount,
+    },
+    updated_at: nowIso(),
+  };
+}
+
 function syncReflectionSubjectMetadata(store, subject) {
   if (!subject || typeof subject !== 'object') return subject;
 
@@ -2749,6 +2981,8 @@ function syncReflectionSubjectMetadata(store, subject) {
     subject.title ||
     'Réflexion'
   );
+  const livingSummaryPayload = buildReflectionLivingSummary(subject, entries);
+  const maturityPayload = calculateReflectionMaturity(subject, entries, livingSummaryPayload);
 
   subject.type = 'reflection_subject';
   subject.bucket = 'journal';
@@ -2764,7 +2998,17 @@ function syncReflectionSubjectMetadata(store, subject) {
   subject.last_entry_id = latestEntry?.id || subject.last_entry_id || null;
   subject.last_user_message = latestEntry?.user_message || subject.last_user_message || null;
   subject.last_nyra_reply = latestEntry?.nyra_reply || subject.last_nyra_reply || null;
-  subject.content = subject.content_summary || subject.content || latestEntry?.content || '';
+  subject.living_summary = livingSummaryPayload.summary;
+  subject.reflection_living_summary = livingSummaryPayload.summary;
+  subject.reflection_living_summary_payload = livingSummaryPayload;
+  subject.maturity_score = maturityPayload.score;
+  subject.reflection_maturity_score = maturityPayload.score;
+  subject.maturity_stage = maturityPayload.stage;
+  subject.reflection_maturity_stage = maturityPayload.stage;
+  subject.confidence_score = maturityPayload.confidence_score;
+  subject.reflection_confidence_score = maturityPayload.confidence_score;
+  subject.reflection_maturity_signals = maturityPayload.signals;
+  subject.content = subject.content_summary || subject.living_summary || subject.content || latestEntry?.content || '';
   subject.updated_at = latestEntry?.updated_at || subject.updated_at || nowIso();
   subject.tags = uniqueArray([
     ...(Array.isArray(subject.tags) ? subject.tags : []),
