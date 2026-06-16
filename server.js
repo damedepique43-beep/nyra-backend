@@ -788,6 +788,42 @@ function cleanActionTitle(text) {
   return title.length > 80 ? `${title.slice(0, 80)}…` : title;
 }
 
+function stripReminderScheduleFromText(text) {
+  return normalizeText(text)
+    .replace(/\s+dans\s+\d{1,4}\s*(?:secondes?|sec|secs|s|minutes?|mins?|mn|mns|heures?|heure|h)\b.*$/i, '')
+    .replace(/\s+(?:aujourd['’]hui|ce soir|demain|demain matin|demain après-midi|demain apres-midi|demain soir)\b.*$/i, '')
+    .replace(/\s+(?:à|a|vers)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}.*$/i, '')
+    .trim();
+}
+
+function cleanReminderActionTitle(text) {
+  const withoutSchedule = stripReminderScheduleFromText(text);
+  const clean = normalizeText(withoutSchedule)
+    .replace(/^contexte\s*:\s*/i, '')
+    .replace(/^aide-moi à créer un rappel pour\s+/i, '')
+    .replace(/^aide moi à créer un rappel pour\s+/i, '')
+    .replace(/^crée un rappel pour\s+/i, '')
+    .replace(/^créer un rappel pour\s+/i, '')
+    .replace(/^rappelle-moi de\s+/i, '')
+    .replace(/^rappelle moi de\s+/i, '')
+    .replace(/^rappelle-moi d['’]\s*/i, '')
+    .replace(/^rappelle moi d['’]\s*/i, '')
+    .replace(/^rappelle-moi\s+/i, '')
+    .replace(/^rappelle moi\s+/i, '')
+    .replace(/^rappel moi de\s+/i, '')
+    .replace(/^rappel-moi de\s+/i, '')
+    .replace(/^rappel moi\s+/i, '')
+    .replace(/^rappel-moi\s+/i, '')
+    .replace(/^rappel\s+/i, '')
+    .replace(/^de\s+/i, '')
+    .trim();
+
+  if (!clean) return 'Rappel Nyra';
+
+  const title = clean.charAt(0).toUpperCase() + clean.slice(1);
+  return title.length > 80 ? `${title.slice(0, 80)}…` : title;
+}
+
 function detectDatetimeHint(text) {
   const lower = normalizeText(text).toLowerCase();
 
@@ -882,7 +918,7 @@ function resolveReminderSchedule(text, datetimeHint) {
     }
   }
 
-  const relativeMinutesMatch = lower.match(/dans\s+(\d{1,3})\s*(?:minutes?|min|mins)\b/i);
+  const relativeMinutesMatch = lower.match(/dans\s+(\d{1,3})\s*(?:minutes?|min|mins|mn|mns)\b/i);
   if (relativeMinutesMatch?.[1]) {
     const minutes = Number(relativeMinutesMatch[1]);
     if (minutes > 0 && minutes <= 720) {
@@ -1061,11 +1097,14 @@ function buildNextStep(actionType, datetimeHint) {
 }
 
 function buildStructuredAction({ userId, message, actionType, label, status, analysis, targetOverride }) {
-  const target = normalizeText(targetOverride || extractContext(message));
-  const datetimeHint = detectDatetimeHint(target || message);
+  const rawTarget = normalizeText(targetOverride || extractContext(message));
+  const isReminderAction = actionType === 'create_reminder';
+  const target = isReminderAction ? cleanReminderActionTitle(rawTarget) : rawTarget;
+  const datetimeSource = isReminderAction ? `${message} ${rawTarget}` : (target || message);
+  const datetimeHint = detectDatetimeHint(datetimeSource);
   const priority = detectPriority(target || message, analysis);
-  const reminderSchedule = actionType === 'create_reminder'
-    ? resolveReminderSchedule(`${message} ${target}`, datetimeHint)
+  const reminderSchedule = isReminderAction
+    ? resolveReminderSchedule(datetimeSource, datetimeHint)
     : null;
   const provider = actionToProvider(actionType);
   const connectionType = actionToConnectionType(actionType);
@@ -1077,7 +1116,7 @@ function buildStructuredAction({ userId, message, actionType, label, status, ana
     action_type: actionType,
     type: actionType,
     label,
-    title: cleanActionTitle(target),
+    title: isReminderAction ? target : cleanActionTitle(target),
     target,
     status,
     priority,
