@@ -10086,7 +10086,7 @@ app.post('/chat', async (req, res) => {
       },
     });
 
-    const thoughtOrchestration = orchestrateThought({
+    const thoughtOrchestration = await orchestrateThought({
       thought,
       source: 'chat',
       metadata: {

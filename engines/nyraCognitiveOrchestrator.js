@@ -1,4 +1,6 @@
 const crypto = require('crypto');
+const { runPipelineStep } = require('./nyraPipelineRunner');
+const { understandThought } = require('./nyraUnderstandingEngine');
 
 function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
@@ -377,7 +379,7 @@ function buildPipelineContext({
 }
 
 
-function orchestrateThought({
+async function orchestrateThought({
   thought,
   userId,
   content,
@@ -420,11 +422,27 @@ function orchestrateThought({
     },
   });
 
+  const pipelineStep = await runPipelineStep({
+    thought: normalizedThought,
+    pipelineContext,
+    registry: {
+      understanding: ({ thought: thoughtForUnderstanding }) => {
+        return understandThought(thoughtForUnderstanding);
+      },
+    },
+    sharedContext: {
+      cognitive_context: cognitiveContext,
+      metadata: metadata && typeof metadata === 'object' ? metadata : {},
+    },
+  });
+
   return {
     ok: true,
     thought: normalizedThought,
     cognitive_context: cognitiveContext,
-    pipeline: pipelineContext,
+    pipeline: pipelineStep?.pipeline || pipelineContext,
+    understanding: pipelineStep?.engine_result || null,
+    pipeline_step: pipelineStep || null,
     generated_at: new Date().toISOString(),
   };
 }
