@@ -15,7 +15,11 @@ const { buildCognitiveMemoryGraph, buildMemoryGraphInsights } = require('./engin
 const { analyzePriorities } = require('./engines/cognitivePriorityEngine');
 const { compressTask } = require('./engines/actionCompressionEngine');
 const { analyzeMomentumRecovery } = require('./engines/momentumRecoveryEngine');
-const { buildNyraCognitiveOrchestration } = require('./engines/nyraCognitiveOrchestrator');
+const {
+  buildNyraCognitiveOrchestration,
+  createThought,
+  orchestrateThought,
+} = require('./engines/nyraCognitiveOrchestrator');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10072,10 +10076,29 @@ app.post('/chat', async (req, res) => {
   }
 
   try {
+    const thought = createThought({
+      userId,
+      content: userMessage,
+      source: 'chat',
+      metadata: {
+        route: '/chat',
+        interface: 'mobile',
+      },
+    });
+
+    const thoughtOrchestration = orchestrateThought({
+      thought,
+      source: 'chat',
+      metadata: {
+        route: '/chat',
+        interface: 'mobile',
+      },
+    });
+
     const memorySummary = getStoreSummary(userId);
-    const localAnalysis = analyzeMessage(userMessage);
-    const analysis = await analyzeMessageWithAI(userMessage, localAnalysis, memorySummary);
-    const action = detectAction(userMessage, userId, analysis);
+    const localAnalysis = analyzeMessage(thought.content);
+    const analysis = await analyzeMessageWithAI(thought.content, localAnalysis, memorySummary);
+    const action = detectAction(thought.content, userId, analysis);
     const suggestions = buildSuggestions(analysis, action);
 
     let reply = buildActionReply(action);
@@ -10092,7 +10115,7 @@ app.post('/chat', async (req, res) => {
           },
           {
             role: 'user',
-            content: userMessage,
+            content: thought.content,
           },
         ],
       });
@@ -10104,7 +10127,7 @@ app.post('/chat', async (req, res) => {
 
     const saved = saveCapture({
       userId,
-      message: userMessage,
+      message: thought.content,
       reply,
       analysis,
       action,
@@ -10117,6 +10140,8 @@ app.post('/chat', async (req, res) => {
       analysis,
       action,
       suggestions,
+      thought: thoughtOrchestration.thought,
+      cognitive_pipeline: thoughtOrchestration.pipeline,
       stored_item: saved.item,
       stored_action: saved.action,
       linked_project: saved.project,
