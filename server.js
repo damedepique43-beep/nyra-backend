@@ -800,14 +800,37 @@ function stripReminderScheduleFromText(text) {
     .trim();
 }
 
+function extractReminderTargetAfterSchedule(text) {
+  const normalized = normalizeText(text);
+
+  const patterns = [
+    /\bdans\s+\d{1,4}\s*(?:secondes?|sec|secs|s|minutes?|mins?|mn|mns|heures?|heure|h)\b\s+(?:de\s+|d['’]\s*|pour\s+|à\s+|a\s+)(.+)$/i,
+    /\b(?:demain matin|demain après-midi|demain apres-midi|demain soir|demain|aujourd['’]hui|ce soir)\b\s+(?:de\s+|d['’]\s*|pour\s+|à\s+|a\s+)(.+)$/i,
+    /\b(?:à|a|vers)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\s+(?:de\s+|d['’]\s*|pour\s+|à\s+|a\s+)(.+)$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (match?.[1]) {
+      return normalizeText(match[1]).replace(/[.!?;:]+$/g, '').trim();
+    }
+  }
+
+  return '';
+}
+
 function cleanReminderActionTitle(text) {
-  const withoutSchedule = stripReminderScheduleFromText(text);
-  const clean = normalizeText(withoutSchedule)
+  const targetAfterSchedule = extractReminderTargetAfterSchedule(text);
+  const source = targetAfterSchedule || stripReminderScheduleFromText(text);
+
+  const clean = normalizeText(source)
     .replace(/^contexte\s*:\s*/i, '')
     .replace(/^aide-moi à créer un rappel pour\s+/i, '')
     .replace(/^aide moi à créer un rappel pour\s+/i, '')
     .replace(/^crée un rappel pour\s+/i, '')
     .replace(/^créer un rappel pour\s+/i, '')
+    .replace(/^crée un rappel\s+/i, '')
+    .replace(/^créer un rappel\s+/i, '')
     .replace(/^rappelle-moi de\s+/i, '')
     .replace(/^rappelle moi de\s+/i, '')
     .replace(/^rappelle-moi d['’]\s*/i, '')
@@ -819,7 +842,7 @@ function cleanReminderActionTitle(text) {
     .replace(/^rappel moi\s+/i, '')
     .replace(/^rappel-moi\s+/i, '')
     .replace(/^rappel\s+/i, '')
-    .replace(/^de\s+/i, '')
+    .replace(/^(?:de\s+|d['’]\s*|pour\s+|à\s+|a\s+)/i, '')
     .trim();
 
   if (!clean) return 'Rappel Nyra';
