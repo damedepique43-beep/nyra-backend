@@ -1,3 +1,5 @@
+const crypto = require('crypto');
+
 function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
@@ -10,6 +12,50 @@ function normalizeSignalPriority(priority) {
   if (value === 'low') return 1;
 
   return 0;
+}
+
+function buildThoughtId() {
+  return crypto.randomUUID();
+}
+
+function createThought({
+  userId,
+  content,
+  source = 'chat',
+  metadata = {},
+  createdAt = null,
+}) {
+  const normalizedContent = normalizeText(content);
+  const normalizedUserId = normalizeText(userId || 'local-user') || 'local-user';
+  const normalizedSource = normalizeText(source || 'chat') || 'chat';
+
+  return {
+    id: buildThoughtId(),
+    user_id: normalizedUserId,
+    content: normalizedContent,
+    source: normalizedSource,
+    status: 'received',
+    metadata: metadata && typeof metadata === 'object' ? metadata : {},
+    created_at: createdAt || new Date().toISOString(),
+  };
+}
+
+function normalizeThoughtInput(thoughtInput) {
+  if (thoughtInput && typeof thoughtInput === 'object' && thoughtInput.content !== undefined) {
+    return createThought({
+      userId: thoughtInput.user_id || thoughtInput.userId,
+      content: thoughtInput.content,
+      source: thoughtInput.source || 'chat',
+      metadata: thoughtInput.metadata || {},
+      createdAt: thoughtInput.created_at || thoughtInput.createdAt || null,
+    });
+  }
+
+  return createThought({
+    userId: 'local-user',
+    content: thoughtInput,
+    source: 'chat',
+  });
 }
 
 function getLatestByDate(items, dateFields = ['updated_at', 'created_at']) {
@@ -291,6 +337,54 @@ function buildNyraCognitiveOrchestration({
   };
 }
 
+
+function orchestrateThought({
+  thought,
+  userId,
+  content,
+  source = 'chat',
+  latestUserState = null,
+  adaptiveProfile = null,
+  proactiveSignals = [],
+  focusSessions = [],
+  actions = [],
+  metadata = {},
+} = {}) {
+  const normalizedThought = thought
+    ? normalizeThoughtInput(thought)
+    : createThought({
+        userId,
+        content,
+        source,
+        metadata,
+      });
+
+  const cognitiveContext = buildNyraCognitiveOrchestration({
+    userId: normalizedThought.user_id,
+    latestUserState,
+    adaptiveProfile,
+    proactiveSignals,
+    focusSessions,
+    actions,
+    source: normalizedThought.source || source || 'backend',
+  });
+
+  return {
+    ok: true,
+    thought: normalizedThought,
+    cognitive_context: cognitiveContext,
+    pipeline: {
+      stage: 'received',
+      status: 'ready_for_understanding',
+      next_stage: 'understanding',
+      behavior_changed: false,
+    },
+    generated_at: new Date().toISOString(),
+  };
+}
+
 module.exports = {
   buildNyraCognitiveOrchestration,
+  createThought,
+  orchestrateThought,
 };
