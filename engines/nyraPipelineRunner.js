@@ -1,5 +1,3 @@
-const { normalizeEngineResult } = require('./nyraEngineResultContract');
-
 function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
@@ -136,15 +134,10 @@ async function runPipelineStep({
       });
     }
 
-    const rawEngineResult = await engineRunner({
+    const engineResult = await engineRunner({
       thought,
       pipeline: pipelineContext,
       context: sharedContext,
-    });
-
-    const engineResult = normalizeEngineResult({
-      engineResult: rawEngineResult,
-      fallbackEngine: resolved.current_engine,
     });
 
     return buildPipelineRunnerResult({
@@ -171,7 +164,58 @@ async function runPipelineStep({
   }
 }
 
+
+async function runPipeline({
+  thought,
+  pipelineContext,
+  registry = {},
+  sharedContext = {},
+  maxSteps = 6,
+} = {}) {
+  const steps = [];
+  const engineResults = {};
+  let currentPipelineContext = pipelineContext;
+  let lastStep = null;
+
+  for (let index = 0; index < maxSteps; index += 1) {
+    const step = await runPipelineStep({
+      thought,
+      pipelineContext: currentPipelineContext,
+      registry,
+      sharedContext: {
+        ...(sharedContext && typeof sharedContext === 'object' ? sharedContext : {}),
+        engine_results: engineResults,
+        pipeline_steps: steps,
+      },
+    });
+
+    steps.push(step);
+    lastStep = step;
+
+    if (step?.engine_result?.engine) {
+      engineResults[step.engine_result.engine] = step.engine_result;
+    }
+
+    currentPipelineContext = step?.pipeline || currentPipelineContext;
+
+    if (!step?.ok || !currentPipelineContext?.next_engine) {
+      break;
+    }
+  }
+
+  return {
+    ok: Boolean(lastStep?.ok ?? true),
+    thought,
+    pipeline: currentPipelineContext,
+    steps,
+    engine_results: engineResults,
+    last_step: lastStep,
+    generated_at: new Date().toISOString(),
+  };
+}
+
 module.exports = {
   createEngineRegistry,
   runPipelineStep,
+  runPipeline,
 };
