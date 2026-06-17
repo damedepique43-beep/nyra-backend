@@ -1,3 +1,5 @@
+const { normalizeEngineResult } = require('./nyraEngineResultContract');
+
 function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
@@ -134,10 +136,15 @@ async function runPipelineStep({
       });
     }
 
-    const engineResult = await engineRunner({
+    const rawEngineResult = await engineRunner({
       thought,
       pipeline: pipelineContext,
       context: sharedContext,
+    });
+
+    const engineResult = normalizeEngineResult({
+      engineResult: rawEngineResult,
+      fallbackEngine: resolved.current_engine,
     });
 
     return buildPipelineRunnerResult({

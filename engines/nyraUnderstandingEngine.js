@@ -1,3 +1,5 @@
+const { buildEngineResult } = require('./nyraEngineResultContract');
+
 function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
@@ -336,11 +338,7 @@ function understandThought(thoughtInput) {
   const emotionalSignals = detectEmotionalSignals(text);
   const understandingType = deriveUnderstandingType(intent, temporalHints, projectHints, emotionalSignals);
 
-  return {
-    ok: true,
-    engine: 'nyraUnderstandingEngine',
-    engine_version: 'understanding-v1',
-    generated_at: new Date().toISOString(),
+  const output = {
     thought_id: thought.id || null,
     user_id: thought.user_id,
     source: thought.source,
@@ -353,8 +351,24 @@ function understandThought(thoughtInput) {
     ambiguities: [],
     confidence: intent.confidence,
     requires_reasoning: true,
-    behavior_changed: false,
     raw_text: text,
+  };
+
+  return {
+    ...buildEngineResult({
+      engine: 'understanding',
+      engineVersion: 'understanding-v1',
+      output,
+      nextEngine: 'reasoning',
+      behaviorChanged: false,
+      metadata: {
+        legacy_engine_name: 'nyraUnderstandingEngine',
+      },
+    }),
+    ...output,
+    engine: 'understanding',
+    engine_version: 'understanding-v1',
+    behavior_changed: false,
   };
 }
 
