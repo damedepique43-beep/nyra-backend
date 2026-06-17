@@ -337,6 +337,45 @@ function buildNyraCognitiveOrchestration({
   };
 }
 
+function normalizePipelineEngineName(value, fallback = 'understanding') {
+  const normalized = normalizeText(value || fallback)
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  return normalized || fallback;
+}
+
+function buildPipelineContext({
+  thought,
+  currentEngine = 'understanding',
+  completedEngines = [],
+  nextEngine = 'understanding',
+  status = 'active',
+  metadata = {},
+} = {}) {
+  const normalizedCurrentEngine = normalizePipelineEngineName(currentEngine);
+  const normalizedNextEngine = nextEngine === null
+    ? null
+    : normalizePipelineEngineName(nextEngine, normalizedCurrentEngine);
+  const safeCompletedEngines = Array.isArray(completedEngines)
+    ? completedEngines
+        .map(engine => normalizePipelineEngineName(engine, ''))
+        .filter(Boolean)
+    : [];
+
+  return {
+    thought_id: thought?.id || null,
+    status: normalizeText(status || 'active') || 'active',
+    current_engine: normalizedCurrentEngine,
+    completed_engines: [...new Set(safeCompletedEngines)],
+    next_engine: normalizedNextEngine,
+    behavior_changed: false,
+    metadata: metadata && typeof metadata === 'object' ? metadata : {},
+    generated_at: new Date().toISOString(),
+  };
+}
+
 
 function orchestrateThought({
   thought,
@@ -369,22 +408,30 @@ function orchestrateThought({
     source: normalizedThought.source || source || 'backend',
   });
 
+  const pipelineContext = buildPipelineContext({
+    thought: normalizedThought,
+    currentEngine: 'understanding',
+    completedEngines: [],
+    nextEngine: 'understanding',
+    status: 'ready',
+    metadata: {
+      source: normalizedThought.source || source || 'backend',
+      cognitive_context_ready: Boolean(cognitiveContext?.ok),
+    },
+  });
+
   return {
     ok: true,
     thought: normalizedThought,
     cognitive_context: cognitiveContext,
-    pipeline: {
-      stage: 'received',
-      status: 'ready_for_understanding',
-      next_stage: 'understanding',
-      behavior_changed: false,
-    },
+    pipeline: pipelineContext,
     generated_at: new Date().toISOString(),
   };
 }
 
 module.exports = {
   buildNyraCognitiveOrchestration,
+  buildPipelineContext,
   createThought,
   orchestrateThought,
 };
