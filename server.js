@@ -849,6 +849,44 @@ function detectDatetimeHint(text) {
   return null;
 }
 
+function isTomorrowDatetimeHint(datetimeHint) {
+  return [
+    'tomorrow',
+    'tomorrow_morning',
+    'tomorrow_afternoon',
+    'tomorrow_evening',
+  ].includes(normalizeText(datetimeHint || '').toLowerCase());
+}
+
+function getParisDayKey(date = new Date()) {
+  const parts = getLocalDateParts(date, 'Europe/Paris');
+  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+}
+
+function isScheduledAfterTodayParis(dateValue) {
+  const normalizedDateValue = normalizeText(dateValue || '');
+  if (!normalizedDateValue) return false;
+
+  const parsedDate = new Date(normalizedDateValue);
+  if (Number.isNaN(parsedDate.getTime())) return false;
+
+  return getParisDayKey(parsedDate) > getParisDayKey(new Date());
+}
+
+function shouldExcludeFromToday(item) {
+  if (!item || typeof item !== 'object') return false;
+
+  if (isTomorrowDatetimeHint(item.datetime_hint)) return true;
+
+  return (
+    isScheduledAfterTodayParis(item.scheduled_at) ||
+    isScheduledAfterTodayParis(item.remind_at) ||
+    isScheduledAfterTodayParis(item.reminder_at) ||
+    isScheduledAfterTodayParis(item.task_due) ||
+    isScheduledAfterTodayParis(item.due)
+  );
+}
+
 function getLocalDateParts(date = new Date(), timeZone = 'Europe/Paris') {
   const formatter = new Intl.DateTimeFormat('fr-FR', {
     timeZone,
@@ -7885,6 +7923,7 @@ function getPrioritySourceItems(store, userId) {
           return (
             item.user_id === userId &&
             ['tasks', 'today', 'plans', 'reminders', 'inbox', 'projects'].includes(item.bucket || '') &&
+            !shouldExcludeFromToday(item) &&
             !['done', 'completed', 'complete', 'cancelled', 'canceled'].includes(status)
           );
         })
@@ -7896,6 +7935,7 @@ function getPrioritySourceItems(store, userId) {
         .filter(action => {
           return (
             action.user_id === userId &&
+            !shouldExcludeFromToday(action) &&
             ['suggested', 'draft', 'executing', 'failed'].includes(
               normalizeActionStatus(action.status || 'suggested')
             )
@@ -7914,6 +7954,10 @@ function getPrioritySourceItems(store, userId) {
     priority: action.priority || 'normal',
     urgency: action.priority === 'high' ? 'high' : 'normal',
     status: action.status || 'suggested',
+    datetime_hint: action.datetime_hint || null,
+    scheduled_at: action.scheduled_at || null,
+    remind_at: action.remind_at || null,
+    reminder_at: action.reminder_at || null,
     project_id: action.project_id || null,
     project_name: action.project_name || null,
     source: 'action',
@@ -9762,6 +9806,7 @@ app.get('/store/today', (req, res) => {
       return (
         itemBelongsToUser(item, userId) &&
         item.bucket === 'today' &&
+        !shouldExcludeFromToday(item) &&
         !item.archived_at &&
         !item.checked &&
         !isCompletedStatus(item.status)
