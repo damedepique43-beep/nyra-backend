@@ -1799,7 +1799,11 @@ function cloneStoredItemAsTaskFromToday({ sourceItem, userId }) {
     user_id: userId || sourceItem.user_id,
     bucket: 'tasks',
     type: 'task',
-    status: 'active',
+    // Important : la carte miroir doit rester une vraie tâche active pour Orga.
+    // Certaines vues historiques filtrent encore les tâches sur le statut "todo".
+    // Le statut "active" est conservé pour les éléments opérationnels, mais ici
+    // "todo" garantit la compatibilité avec Orga sans modifier Aujourd'hui.
+    status: 'todo',
     action_type: 'idea_to_task',
     action_label: 'Ajouter une tâche',
     created_at: nowIso(),
