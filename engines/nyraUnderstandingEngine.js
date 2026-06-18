@@ -670,14 +670,37 @@ function buildHypotheses({
   return hypotheses;
 }
 
-function buildCognitiveLayers({
-  thought,
-  intent,
-  temporalHints,
-  projectHints,
-  entities,
-  emotionalSignals,
-}) {
+function extractObservationInputs(thought) {
+  const text = thought.content;
+  const intent = detectPrimaryIntent(text);
+  const temporalHints = detectTemporalHints(text);
+  const projectHints = detectProjectHints(text);
+  const entities = detectEntityHints(text);
+  const emotionalSignals = detectEmotionalSignals(text);
+  const understandingType = deriveUnderstandingType(intent, temporalHints, projectHints, emotionalSignals);
+
+  return {
+    thought,
+    text,
+    intent,
+    temporalHints,
+    projectHints,
+    entities,
+    emotionalSignals,
+    understandingType,
+  };
+}
+
+function buildCognitiveLayers(observationInputs) {
+  const {
+    thought,
+    intent,
+    temporalHints,
+    projectHints,
+    entities,
+    emotionalSignals,
+  } = observationInputs;
+
   const observations = buildObservations({
     thought,
     intent,
@@ -714,21 +737,17 @@ function buildCognitiveLayers({
 
 function understandThought(thoughtInput) {
   const thought = normalizeThought(thoughtInput);
-  const text = thought.content;
-  const intent = detectPrimaryIntent(text);
-  const temporalHints = detectTemporalHints(text);
-  const projectHints = detectProjectHints(text);
-  const entities = detectEntityHints(text);
-  const emotionalSignals = detectEmotionalSignals(text);
-  const understandingType = deriveUnderstandingType(intent, temporalHints, projectHints, emotionalSignals);
-  const cognitiveLayers = buildCognitiveLayers({
-    thought,
+  const observationInputs = extractObservationInputs(thought);
+  const {
+    text,
     intent,
     temporalHints,
     projectHints,
     entities,
     emotionalSignals,
-  });
+    understandingType,
+  } = observationInputs;
+  const cognitiveLayers = buildCognitiveLayers(observationInputs);
 
   const output = {
     thought_id: thought.id || null,
