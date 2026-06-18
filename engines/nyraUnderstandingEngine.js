@@ -328,6 +328,390 @@ function deriveUnderstandingType(intent, temporalHints, projectHints, emotionalS
   return 'note_understanding';
 }
 
+function buildObservation({
+  id,
+  type,
+  value,
+  confidence = 0.5,
+  evidence = [],
+  metadata = {},
+}) {
+  return {
+    id: normalizeKey(id || type || 'observation'),
+    type: normalizeText(type || 'observation') || 'observation',
+    value,
+    confidence: Math.min(1, Math.max(0, Number(confidence) || 0)),
+    evidence: uniqueArray(evidence.map(item => normalizeText(item)).filter(Boolean)),
+    metadata: metadata && typeof metadata === 'object' ? metadata : {},
+  };
+}
+
+function buildFact({
+  id,
+  type,
+  statement,
+  confidence = 0.5,
+  observationIds = [],
+  metadata = {},
+}) {
+  return {
+    id: normalizeKey(id || type || 'fact'),
+    type: normalizeText(type || 'fact') || 'fact',
+    statement: normalizeText(statement),
+    confidence: Math.min(1, Math.max(0, Number(confidence) || 0)),
+    based_on_observations: uniqueArray(observationIds.map(item => normalizeText(item)).filter(Boolean)),
+    metadata: metadata && typeof metadata === 'object' ? metadata : {},
+  };
+}
+
+function buildHypothesis({
+  id,
+  type,
+  statement,
+  confidence = 0.5,
+  factIds = [],
+  status = 'provisional',
+  metadata = {},
+}) {
+  return {
+    id: normalizeKey(id || type || 'hypothesis'),
+    type: normalizeText(type || 'hypothesis') || 'hypothesis',
+    statement: normalizeText(statement),
+    confidence: Math.min(1, Math.max(0, Number(confidence) || 0)),
+    status: normalizeText(status || 'provisional') || 'provisional',
+    based_on_facts: uniqueArray(factIds.map(item => normalizeText(item)).filter(Boolean)),
+    metadata: metadata && typeof metadata === 'object' ? metadata : {},
+  };
+}
+
+function buildObservations({
+  thought,
+  intent,
+  temporalHints,
+  projectHints,
+  entities,
+  emotionalSignals,
+}) {
+  const observations = [];
+
+  if (thought.content) {
+    observations.push(buildObservation({
+      id: 'raw_text_received',
+      type: 'raw_content',
+      value: thought.content,
+      confidence: 1,
+      evidence: ['Thought contains normalized textual content.'],
+      metadata: {
+        source: thought.source,
+        character_count: thought.content.length,
+      },
+    }));
+  }
+
+  observations.push(buildObservation({
+    id: `intent_signal_${intent.primary}`,
+    type: 'intent_signal',
+    value: intent.primary,
+    confidence: intent.confidence,
+    evidence: intent.signals || [],
+    metadata: {
+      collection_hint: intent.collection_hint || null,
+    },
+  }));
+
+  temporalHints.forEach((hint, index) => {
+    observations.push(buildObservation({
+      id: `temporal_signal_${index + 1}_${hint.type}`,
+      type: 'temporal_signal',
+      value: hint.value,
+      confidence: hint.confidence,
+      evidence: [hint.type],
+    }));
+  });
+
+  projectHints.forEach((hint, index) => {
+    observations.push(buildObservation({
+      id: `project_signal_${index + 1}_${hint.key || hint.type}`,
+      type: 'project_signal',
+      value: hint.value,
+      confidence: hint.confidence,
+      evidence: [hint.type],
+      metadata: {
+        key: hint.key || null,
+      },
+    }));
+  });
+
+  entities.forEach((entity, index) => {
+    observations.push(buildObservation({
+      id: `entity_signal_${index + 1}_${entity.key || entity.type}`,
+      type: 'entity_signal',
+      value: entity.value,
+      confidence: entity.confidence,
+      evidence: [entity.type],
+      metadata: {
+        key: entity.key || null,
+      },
+    }));
+  });
+
+  emotionalSignals.forEach((signal, index) => {
+    observations.push(buildObservation({
+      id: `emotional_signal_${index + 1}_${signal.value}`,
+      type: 'emotional_signal',
+      value: signal.value,
+      confidence: signal.confidence,
+      evidence: [signal.type],
+    }));
+  });
+
+  return observations;
+}
+
+function buildFacts({
+  thought,
+  intent,
+  temporalHints,
+  projectHints,
+  entities,
+  emotionalSignals,
+  observations,
+}) {
+  const observationsByType = observations.reduce((acc, observation) => {
+    acc[observation.type] = acc[observation.type] || [];
+    acc[observation.type].push(observation.id);
+    return acc;
+  }, {});
+
+  const facts = [];
+
+  if (thought.content) {
+    facts.push(buildFact({
+      id: 'thought_has_textual_content',
+      type: 'content_fact',
+      statement: 'The Thought contains textual content that can be understood by the cognitive pipeline.',
+      confidence: 1,
+      observationIds: observationsByType.raw_content || [],
+      metadata: {
+        source: thought.source,
+      },
+    }));
+  }
+
+  facts.push(buildFact({
+    id: `primary_intent_is_${intent.primary}`,
+    type: 'intent_fact',
+    statement: `The current best explicit intent is "${intent.primary}".`,
+    confidence: intent.confidence,
+    observationIds: observationsByType.intent_signal || [],
+    metadata: {
+      signals: intent.signals || [],
+      collection_hint: intent.collection_hint || null,
+    },
+  }));
+
+  if (temporalHints.length > 0) {
+    facts.push(buildFact({
+      id: 'thought_contains_temporal_information',
+      type: 'temporal_fact',
+      statement: 'The Thought contains temporal information that may influence future decisions.',
+      confidence: Math.max(...temporalHints.map(hint => Number(hint.confidence) || 0)),
+      observationIds: observationsByType.temporal_signal || [],
+      metadata: {
+        temporal_hint_count: temporalHints.length,
+      },
+    }));
+  }
+
+  if (projectHints.length > 0) {
+    facts.push(buildFact({
+      id: 'thought_mentions_project_context',
+      type: 'project_fact',
+      statement: 'The Thought mentions or implies a project context.',
+      confidence: Math.max(...projectHints.map(hint => Number(hint.confidence) || 0)),
+      observationIds: observationsByType.project_signal || [],
+      metadata: {
+        project_keys: uniqueArray(projectHints.map(hint => hint.key).filter(Boolean)),
+      },
+    }));
+  }
+
+  if (entities.length > 0) {
+    facts.push(buildFact({
+      id: 'thought_mentions_known_entities',
+      type: 'entity_fact',
+      statement: 'The Thought mentions one or more known entities.',
+      confidence: Math.max(...entities.map(entity => Number(entity.confidence) || 0)),
+      observationIds: observationsByType.entity_signal || [],
+      metadata: {
+        entity_keys: uniqueArray(entities.map(entity => entity.key).filter(Boolean)),
+      },
+    }));
+  }
+
+  if (emotionalSignals.length > 0) {
+    facts.push(buildFact({
+      id: 'thought_contains_emotional_signal',
+      type: 'emotional_fact',
+      statement: 'The Thought contains at least one emotional signal.',
+      confidence: Math.max(...emotionalSignals.map(signal => Number(signal.confidence) || 0)),
+      observationIds: observationsByType.emotional_signal || [],
+      metadata: {
+        emotion_values: uniqueArray(emotionalSignals.map(signal => signal.value).filter(Boolean)),
+      },
+    }));
+  }
+
+  return facts;
+}
+
+function buildHypotheses({
+  intent,
+  temporalHints,
+  projectHints,
+  emotionalSignals,
+  facts,
+}) {
+  const factIds = facts.map(fact => fact.id);
+  const hypotheses = [];
+
+  if (intent.primary === 'create_task') {
+    hypotheses.push(buildHypothesis({
+      id: 'thought_may_need_action_creation',
+      type: 'action_need_hypothesis',
+      statement: 'The Thought may need to become an action so the user does not keep it in working memory.',
+      confidence: intent.confidence,
+      factIds,
+      metadata: {
+        intent: intent.primary,
+      },
+    }));
+  }
+
+  if (intent.primary === 'create_reminder') {
+    hypotheses.push(buildHypothesis({
+      id: 'thought_may_need_future_prompt',
+      type: 'reminder_need_hypothesis',
+      statement: 'The Thought may need a future prompt because it contains reminder language.',
+      confidence: temporalHints.length > 0 ? intent.confidence : Math.min(intent.confidence, 0.72),
+      factIds,
+      metadata: {
+        temporal_hint_count: temporalHints.length,
+      },
+    }));
+  }
+
+  if (intent.primary === 'add_to_collection') {
+    hypotheses.push(buildHypothesis({
+      id: 'thought_may_belong_to_collection',
+      type: 'collection_hypothesis',
+      statement: 'The Thought may need to be organized into a Collection.',
+      confidence: intent.confidence,
+      factIds,
+      metadata: {
+        collection_hint: intent.collection_hint || 'unspecified',
+      },
+    }));
+  }
+
+  if (intent.primary === 'capture_idea' || intent.primary === 'project_thought' || projectHints.length > 0) {
+    hypotheses.push(buildHypothesis({
+      id: 'thought_may_have_project_or_idea_value',
+      type: 'project_or_idea_hypothesis',
+      statement: 'The Thought may have future value as an idea, project element, or structured reflection.',
+      confidence: Math.max(intent.confidence || 0, projectHints.length > 0 ? 0.72 : 0),
+      factIds,
+      metadata: {
+        project_hint_count: projectHints.length,
+      },
+    }));
+  }
+
+  if (intent.primary === 'reflect_emotion' || emotionalSignals.length > 0) {
+    hypotheses.push(buildHypothesis({
+      id: 'thought_may_need_regulation_or_reflection',
+      type: 'emotional_support_hypothesis',
+      statement: 'The Thought may need emotional regulation support or reflective accompaniment before operational action.',
+      confidence: Math.max(intent.confidence || 0, emotionalSignals.length > 0 ? 0.76 : 0),
+      factIds,
+      metadata: {
+        emotional_signal_count: emotionalSignals.length,
+      },
+    }));
+  }
+
+  if (intent.primary === 'capture_note' || hypotheses.length === 0) {
+    hypotheses.push(buildHypothesis({
+      id: 'thought_may_be_contextual_note',
+      type: 'context_note_hypothesis',
+      statement: 'The Thought may be best preserved as contextual information until more context is available.',
+      confidence: intent.confidence || 0.62,
+      factIds,
+      metadata: {
+        intent: intent.primary,
+      },
+    }));
+  }
+
+  if ((intent.confidence || 0) < 0.7) {
+    hypotheses.push(buildHypothesis({
+      id: 'thought_may_require_later_reinterpretation',
+      type: 'uncertainty_hypothesis',
+      statement: 'The Thought has limited intent confidence and may need later reinterpretation with more context.',
+      confidence: 1 - (intent.confidence || 0.5),
+      factIds,
+      status: 'uncertain',
+      metadata: {
+        intent_confidence: intent.confidence,
+      },
+    }));
+  }
+
+  return hypotheses;
+}
+
+function buildCognitiveLayers({
+  thought,
+  intent,
+  temporalHints,
+  projectHints,
+  entities,
+  emotionalSignals,
+}) {
+  const observations = buildObservations({
+    thought,
+    intent,
+    temporalHints,
+    projectHints,
+    entities,
+    emotionalSignals,
+  });
+
+  const facts = buildFacts({
+    thought,
+    intent,
+    temporalHints,
+    projectHints,
+    entities,
+    emotionalSignals,
+    observations,
+  });
+
+  const hypotheses = buildHypotheses({
+    intent,
+    temporalHints,
+    projectHints,
+    emotionalSignals,
+    facts,
+  });
+
+  return {
+    observations,
+    facts,
+    hypotheses,
+  };
+}
+
 function understandThought(thoughtInput) {
   const thought = normalizeThought(thoughtInput);
   const text = thought.content;
@@ -337,6 +721,14 @@ function understandThought(thoughtInput) {
   const entities = detectEntityHints(text);
   const emotionalSignals = detectEmotionalSignals(text);
   const understandingType = deriveUnderstandingType(intent, temporalHints, projectHints, emotionalSignals);
+  const cognitiveLayers = buildCognitiveLayers({
+    thought,
+    intent,
+    temporalHints,
+    projectHints,
+    entities,
+    emotionalSignals,
+  });
 
   const output = {
     thought_id: thought.id || null,
@@ -348,6 +740,9 @@ function understandThought(thoughtInput) {
     temporal_hints: temporalHints,
     project_hints: projectHints,
     emotional_signals: emotionalSignals,
+    observations: cognitiveLayers.observations,
+    facts: cognitiveLayers.facts,
+    hypotheses: cognitiveLayers.hypotheses,
     ambiguities: [],
     confidence: intent.confidence,
     requires_reasoning: true,
@@ -363,6 +758,7 @@ function understandThought(thoughtInput) {
       behaviorChanged: false,
       metadata: {
         legacy_engine_name: 'nyraUnderstandingEngine',
+        cognitive_layers: ['observations', 'facts', 'hypotheses'],
       },
     }),
     ...output,
