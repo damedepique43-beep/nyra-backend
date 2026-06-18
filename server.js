@@ -3481,7 +3481,52 @@ function upsertJournalConversationItem({ store, userId, message, reply, analysis
   return syncReflectionSubjectMetadata(store, subject);
 }
 
-function saveCapture({ userId, message, reply, analysis, action }) {
+function buildCognitiveConversationTrace(thoughtOrchestration) {
+  const safeOrchestration = thoughtOrchestration && typeof thoughtOrchestration === 'object'
+    ? thoughtOrchestration
+    : {};
+  const thought = safeOrchestration.thought && typeof safeOrchestration.thought === 'object'
+    ? safeOrchestration.thought
+    : null;
+  const understanding = safeOrchestration.understanding && typeof safeOrchestration.understanding === 'object'
+    ? safeOrchestration.understanding
+    : null;
+  const understandingOutput = understanding?.output && typeof understanding.output === 'object'
+    ? understanding.output
+    : understanding;
+  const reasoning = safeOrchestration.reasoning && typeof safeOrchestration.reasoning === 'object'
+    ? safeOrchestration.reasoning
+    : null;
+  const reasoningOutput = reasoning?.output && typeof reasoning.output === 'object'
+    ? reasoning.output
+    : reasoning;
+  const pipeline = safeOrchestration.pipeline && typeof safeOrchestration.pipeline === 'object'
+    ? safeOrchestration.pipeline
+    : null;
+
+  return {
+    thought_id: thought?.id || understandingOutput?.thought_id || reasoningOutput?.thought_id || null,
+    source: thought?.source || understandingOutput?.source || 'chat',
+    pipeline_status: pipeline?.status || null,
+    understanding_type: understandingOutput?.type || null,
+    primary_intent: understandingOutput?.intent?.primary || reasoningOutput?.primary_intent || null,
+    confidence: understandingOutput?.confidence ?? understandingOutput?.intent?.confidence ?? null,
+    observation_count: Array.isArray(understandingOutput?.observations) ? understandingOutput.observations.length : 0,
+    fact_count: Array.isArray(understandingOutput?.facts) ? understandingOutput.facts.length : 0,
+    hypothesis_count: Array.isArray(understandingOutput?.hypotheses) ? understandingOutput.hypotheses.length : 0,
+    hypothesis_types: Array.isArray(understandingOutput?.hypotheses)
+      ? uniqueArray(understandingOutput.hypotheses.map(hypothesis => normalizeText(hypothesis?.type)).filter(Boolean))
+      : [],
+    reasoning_strategy_count: Array.isArray(reasoningOutput?.strategies) ? reasoningOutput.strategies.length : 0,
+    reasoning_strategy_ids: Array.isArray(reasoningOutput?.strategies)
+      ? uniqueArray(reasoningOutput.strategies.map(strategy => normalizeText(strategy?.id)).filter(Boolean))
+      : [],
+    model_note: 'Trace cognitive légère liée à la conversation. Ne constitue pas le Modèle Cognitif Vivant.',
+    generated_at: nowIso(),
+  };
+}
+
+function saveCapture({ userId, message, reply, analysis, action, cognitiveTrace = null }) {
   const store = readStore();
 
   const shouldUseJournalConversation = isJournalConversationCapture(analysis, action);
@@ -3613,6 +3658,8 @@ function saveCapture({ userId, message, reply, analysis, action }) {
     project_id: linkedProject ? linkedProject.id : null,
     project_name: linkedProject ? linkedProject.name : null,
     relation_id: createdRelation ? createdRelation.id : null,
+    thought_id: cognitiveTrace?.thought_id || null,
+    cognitive_trace: cognitiveTrace && typeof cognitiveTrace === 'object' ? cognitiveTrace : null,
     created_at: nowIso(),
   });
 
@@ -10199,6 +10246,7 @@ app.post('/chat', async (req, res) => {
       reply,
       analysis,
       action,
+      cognitiveTrace: buildCognitiveConversationTrace(thoughtOrchestration),
     });
 
     res.json({
