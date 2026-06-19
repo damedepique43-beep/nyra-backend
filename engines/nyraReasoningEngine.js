@@ -66,6 +66,75 @@ function getEmotionalIntensity(understanding) {
   return confidence >= 0.8 ? 'medium' : 'low';
 }
 
+function getCognitiveLayers(understanding) {
+  return {
+    observations: normalizeArray(understanding.observations).map(normalizeObject),
+    facts: normalizeArray(understanding.facts).map(normalizeObject),
+    hypotheses: normalizeArray(understanding.hypotheses).map(normalizeObject),
+  };
+}
+
+function getLayerTypes(items = []) {
+  return [
+    ...new Set(
+      normalizeArray(items)
+        .map(item => normalizeText(item?.type))
+        .filter(Boolean)
+    ),
+  ];
+}
+
+function hasLayerType(items = [], type) {
+  const normalizedType = normalizeText(type);
+  return normalizeArray(items).some(item => normalizeText(item?.type) === normalizedType);
+}
+
+function hasLayerId(items = [], id) {
+  const normalizedId = normalizeText(id);
+  return normalizeArray(items).some(item => normalizeText(item?.id) === normalizedId);
+}
+
+function getBestLayerConfidence(items = [], fallback = 0.5) {
+  const confidences = normalizeArray(items)
+    .map(item => clamp01(item?.confidence, 0))
+    .filter(value => value > 0);
+
+  if (confidences.length === 0) return clamp01(fallback, 0.5);
+  return Math.max(...confidences);
+}
+
+function getHypothesisByType(hypotheses = [], type) {
+  const normalizedType = normalizeText(type);
+  return normalizeArray(hypotheses).find(hypothesis => normalizeText(hypothesis?.type) === normalizedType) || null;
+}
+
+function getHypothesisById(hypotheses = [], id) {
+  const normalizedId = normalizeText(id);
+  return normalizeArray(hypotheses).find(hypothesis => normalizeText(hypothesis?.id) === normalizedId) || null;
+}
+
+function buildReasoningBasis(understanding) {
+  const layers = getCognitiveLayers(understanding);
+  const primaryIntent = getPrimaryIntent(understanding);
+  const confidence = getIntentConfidence(understanding);
+  const temporalScope = getTemporalScope(understanding);
+  const emotionalIntensity = getEmotionalIntensity(understanding);
+
+  return {
+    primary_intent: primaryIntent,
+    confidence,
+    temporal_scope: temporalScope,
+    emotional_intensity: emotionalIntensity,
+    observations: layers.observations,
+    facts: layers.facts,
+    hypotheses: layers.hypotheses,
+    observation_types: getLayerTypes(layers.observations),
+    fact_types: getLayerTypes(layers.facts),
+    hypothesis_types: getLayerTypes(layers.hypotheses),
+    has_cognitive_layers: layers.observations.length > 0 || layers.facts.length > 0 || layers.hypotheses.length > 0,
+  };
+}
+
 function buildStrategy({
   id,
   label,
@@ -92,140 +161,283 @@ function buildStrategy({
   };
 }
 
-function buildStrategiesFromUnderstanding(understanding) {
-  const primaryIntent = getPrimaryIntent(understanding);
-  const confidence = getIntentConfidence(understanding);
-  const temporalScope = getTemporalScope(understanding);
-  const emotionalIntensity = getEmotionalIntensity(understanding);
+function buildExternalizeActionStrategy({ basis, hypothesis = null }) {
+  const confidence = hypothesis ? clamp01(hypothesis.confidence, basis.confidence) : basis.confidence;
+
+  return buildStrategy({
+    id: 'externalize_action',
+    label: 'Externaliser une action à réaliser',
+    confidence,
+    cognitiveCost: 0.18,
+    expectedBenefit: 0.78,
+    riskLevel: basis.temporal_scope === 'unspecified' ? 0.22 : 0.12,
+    reasons: [
+      hypothesis
+        ? 'Hypothèse cognitive : la pensée peut nécessiter la création d’une action.'
+        : 'Fallback intent : create_task.',
+      'La pensée peut être sortie de la mémoire de travail de l’utilisateur.',
+    ],
+    constraints: {
+      temporal_scope: basis.temporal_scope,
+      requires_decision: true,
+      reasoning_source: hypothesis ? 'hypothesis' : 'intent_fallback',
+    },
+    payload: {
+      intent: basis.primary_intent,
+      hypothesis_id: hypothesis?.id || null,
+    },
+  });
+}
+
+function buildFuturePromptStrategy({ basis, hypothesis = null }) {
+  const confidence = hypothesis ? clamp01(hypothesis.confidence, basis.confidence) : basis.confidence;
+
+  return buildStrategy({
+    id: 'schedule_future_prompt',
+    label: 'Préparer un rappel futur',
+    confidence,
+    cognitiveCost: 0.16,
+    expectedBenefit: 0.82,
+    riskLevel: basis.temporal_scope === 'unspecified' ? 0.35 : 0.12,
+    reasons: [
+      hypothesis
+        ? 'Hypothèse cognitive : la pensée peut nécessiter un rappel futur.'
+        : 'Fallback intent : create_reminder.',
+      'La pensée contient ou implique un besoin de soutien temporel.',
+    ],
+    constraints: {
+      temporal_scope: basis.temporal_scope,
+      requires_decision: true,
+      reasoning_source: hypothesis ? 'hypothesis' : 'intent_fallback',
+    },
+    payload: {
+      intent: basis.primary_intent,
+      hypothesis_id: hypothesis?.id || null,
+    },
+  });
+}
+
+function buildCollectionStrategy({ basis, understanding, hypothesis = null }) {
+  const intent = normalizeObject(understanding.intent);
+  const confidence = hypothesis ? clamp01(hypothesis.confidence, basis.confidence) : basis.confidence;
+
+  return buildStrategy({
+    id: 'organize_into_collection',
+    label: 'Classer un élément dans une collection',
+    confidence,
+    cognitiveCost: 0.12,
+    expectedBenefit: 0.72,
+    riskLevel: 0.1,
+    reasons: [
+      hypothesis
+        ? 'Hypothèse cognitive : la pensée peut appartenir à une Collection.'
+        : 'Fallback intent : add_to_collection.',
+      'La pensée semble viser le rangement d’un élément dans un ensemble existant.',
+    ],
+    constraints: {
+      collection_hint: normalizeText(intent.collection_hint || 'unspecified') || 'unspecified',
+      requires_decision: true,
+      reasoning_source: hypothesis ? 'hypothesis' : 'intent_fallback',
+    },
+    payload: {
+      intent: basis.primary_intent,
+      hypothesis_id: hypothesis?.id || null,
+    },
+  });
+}
+
+function buildRegulationStrategy({ basis, hypothesis = null }) {
+  const confidence = Math.max(
+    hypothesis ? clamp01(hypothesis.confidence, basis.confidence) : basis.confidence,
+    0.68
+  );
+
+  return buildStrategy({
+    id: 'support_regulation',
+    label: 'Soutenir la régulation cognitive et émotionnelle',
+    confidence,
+    cognitiveCost: basis.emotional_intensity === 'medium' ? 0.18 : 0.24,
+    expectedBenefit: basis.emotional_intensity === 'medium' ? 0.82 : 0.68,
+    riskLevel: 0.16,
+    reasons: [
+      hypothesis
+        ? 'Hypothèse cognitive : la pensée peut nécessiter régulation ou réflexion.'
+        : 'Fallback émotionnel : signal émotionnel détecté.',
+      'La priorité potentielle est d’accompagner avant d’organiser.',
+    ],
+    constraints: {
+      emotional_intensity: basis.emotional_intensity,
+      requires_decision: true,
+      reasoning_source: hypothesis ? 'hypothesis' : 'emotion_fallback',
+    },
+    payload: {
+      intent: basis.primary_intent,
+      hypothesis_id: hypothesis?.id || null,
+    },
+  });
+}
+
+function buildPreserveThoughtStrategy({ basis, hypothesis = null }) {
+  const confidence = hypothesis ? clamp01(hypothesis.confidence, basis.confidence) : basis.confidence;
+
+  return buildStrategy({
+    id: 'preserve_and_structure_thought',
+    label: 'Préserver et structurer la pensée',
+    confidence,
+    cognitiveCost: 0.2,
+    expectedBenefit: 0.7,
+    riskLevel: 0.18,
+    reasons: [
+      hypothesis
+        ? 'Hypothèse cognitive : la pensée peut avoir une valeur future.'
+        : `Fallback intent : ${basis.primary_intent}.`,
+      'La pensée peut être conservée et reliée correctement si elle apporte de la valeur future.',
+    ],
+    constraints: {
+      requires_decision: true,
+      reasoning_source: hypothesis ? 'hypothesis' : 'intent_fallback',
+    },
+    payload: {
+      intent: basis.primary_intent,
+      hypothesis_id: hypothesis?.id || null,
+    },
+  });
+}
+
+function buildContextCaptureStrategy({ basis, hypothesis = null }) {
+  const confidence = hypothesis ? clamp01(hypothesis.confidence, basis.confidence) : basis.confidence;
+
+  return buildStrategy({
+    id: 'capture_for_context',
+    label: 'Conserver la pensée comme contexte',
+    confidence,
+    cognitiveCost: 0.1,
+    expectedBenefit: 0.45,
+    riskLevel: 0.08,
+    reasons: [
+      hypothesis
+        ? 'Hypothèse cognitive : la pensée peut être préservée comme contexte.'
+        : 'Aucune stratégie spécialisée évidente n’a été détectée.',
+      'La pensée peut enrichir le contexte futur sans action immédiate.',
+    ],
+    constraints: {
+      requires_decision: true,
+      reasoning_source: hypothesis ? 'hypothesis' : 'fallback',
+    },
+    payload: {
+      intent: basis.primary_intent,
+      hypothesis_id: hypothesis?.id || null,
+    },
+  });
+}
+
+function addStrategyOnce(strategies, strategy) {
+  if (!strategy?.id) return;
+  const exists = strategies.some(existingStrategy => existingStrategy.id === strategy.id);
+  if (!exists) strategies.push(strategy);
+}
+
+function buildStrategiesFromCognitiveLayers({ understanding, basis }) {
+  const strategies = [];
+  const hypotheses = basis.hypotheses;
+  const facts = basis.facts;
+  const observations = basis.observations;
+
+  const actionHypothesis = getHypothesisByType(hypotheses, 'action_need_hypothesis');
+  if (actionHypothesis) {
+    addStrategyOnce(strategies, buildExternalizeActionStrategy({ basis, hypothesis: actionHypothesis }));
+  }
+
+  const reminderHypothesis = getHypothesisByType(hypotheses, 'reminder_need_hypothesis');
+  if (reminderHypothesis) {
+    addStrategyOnce(strategies, buildFuturePromptStrategy({ basis, hypothesis: reminderHypothesis }));
+  }
+
+  const collectionHypothesis = getHypothesisByType(hypotheses, 'collection_hypothesis');
+  if (collectionHypothesis) {
+    addStrategyOnce(strategies, buildCollectionStrategy({ basis, understanding, hypothesis: collectionHypothesis }));
+  }
+
+  const emotionalHypothesis = getHypothesisByType(hypotheses, 'emotional_support_hypothesis');
+  if (emotionalHypothesis) {
+    addStrategyOnce(strategies, buildRegulationStrategy({ basis, hypothesis: emotionalHypothesis }));
+  }
+
+  const projectOrIdeaHypothesis = getHypothesisByType(hypotheses, 'project_or_idea_hypothesis');
+  if (projectOrIdeaHypothesis) {
+    addStrategyOnce(strategies, buildPreserveThoughtStrategy({ basis, hypothesis: projectOrIdeaHypothesis }));
+  }
+
+  const contextNoteHypothesis = getHypothesisByType(hypotheses, 'context_note_hypothesis');
+  if (contextNoteHypothesis) {
+    addStrategyOnce(strategies, buildContextCaptureStrategy({ basis, hypothesis: contextNoteHypothesis }));
+  }
+
+  if (strategies.length > 0) {
+    return strategies;
+  }
+
+  if (hasLayerType(facts, 'emotional_fact') || hasLayerType(observations, 'emotional_signal')) {
+    addStrategyOnce(strategies, buildRegulationStrategy({ basis }));
+  }
+
+  if (hasLayerType(facts, 'temporal_fact') && basis.primary_intent === 'create_reminder') {
+    addStrategyOnce(strategies, buildFuturePromptStrategy({ basis }));
+  }
+
+  if (hasLayerType(facts, 'project_fact') || hasLayerType(observations, 'project_signal')) {
+    addStrategyOnce(strategies, buildPreserveThoughtStrategy({ basis }));
+  }
+
+  if (strategies.length > 0) {
+    return strategies;
+  }
+
+  return [];
+}
+
+function buildStrategiesFromFallbackSignals({ understanding, basis }) {
   const strategies = [];
 
-  if (primaryIntent === 'create_task') {
-    strategies.push(buildStrategy({
-      id: 'externalize_action',
-      label: 'Externaliser une action à réaliser',
-      confidence,
-      cognitiveCost: 0.18,
-      expectedBenefit: 0.78,
-      riskLevel: temporalScope === 'unspecified' ? 0.22 : 0.12,
-      reasons: [
-        'Intent détecté : create_task.',
-        'La pensée contient une action à ne pas garder uniquement en mémoire de travail.',
-      ],
-      constraints: {
-        temporal_scope: temporalScope,
-        requires_decision: true,
-      },
-      payload: {
-        intent: primaryIntent,
-      },
-    }));
-  } else if (primaryIntent === 'create_reminder') {
-    strategies.push(buildStrategy({
-      id: 'schedule_future_prompt',
-      label: 'Préparer un rappel futur',
-      confidence,
-      cognitiveCost: 0.16,
-      expectedBenefit: 0.82,
-      riskLevel: temporalScope === 'unspecified' ? 0.35 : 0.12,
-      reasons: [
-        'Intent détecté : create_reminder.',
-        'La pensée contient une demande de rappel temporel.',
-      ],
-      constraints: {
-        temporal_scope: temporalScope,
-        requires_decision: true,
-      },
-      payload: {
-        intent: primaryIntent,
-      },
-    }));
-  } else if (primaryIntent === 'add_to_collection') {
-    strategies.push(buildStrategy({
-      id: 'organize_into_collection',
-      label: 'Classer un élément dans une collection',
-      confidence,
-      cognitiveCost: 0.12,
-      expectedBenefit: 0.72,
-      riskLevel: 0.1,
-      reasons: [
-        'Intent détecté : add_to_collection.',
-        'La pensée semble viser le rangement d’un élément dans un ensemble existant.',
-      ],
-      constraints: {
-        collection_hint: normalizeText(understanding.intent?.collection_hint || 'unspecified') || 'unspecified',
-        requires_decision: true,
-      },
-      payload: {
-        intent: primaryIntent,
-      },
-    }));
-  } else if (primaryIntent === 'reflect_emotion' || emotionalIntensity !== 'none') {
-    strategies.push(buildStrategy({
-      id: 'support_regulation',
-      label: 'Soutenir la régulation cognitive et émotionnelle',
-      confidence: Math.max(confidence, 0.68),
-      cognitiveCost: emotionalIntensity === 'medium' ? 0.18 : 0.24,
-      expectedBenefit: emotionalIntensity === 'medium' ? 0.82 : 0.68,
-      riskLevel: 0.16,
-      reasons: [
-        'La pensée contient un signal émotionnel.',
-        'La priorité potentielle est d’accompagner avant d’organiser.',
-      ],
-      constraints: {
-        emotional_intensity: emotionalIntensity,
-        requires_decision: true,
-      },
-      payload: {
-        intent: primaryIntent,
-      },
-    }));
-  } else if (primaryIntent === 'capture_idea' || primaryIntent === 'project_thought') {
-    strategies.push(buildStrategy({
-      id: 'preserve_and_structure_thought',
-      label: 'Préserver et structurer la pensée',
-      confidence,
-      cognitiveCost: 0.2,
-      expectedBenefit: 0.7,
-      riskLevel: 0.18,
-      reasons: [
-        `Intent détecté : ${primaryIntent}.`,
-        'La pensée peut avoir une valeur future si elle est conservée et reliée correctement.',
-      ],
-      constraints: {
-        requires_decision: true,
-      },
-      payload: {
-        intent: primaryIntent,
-      },
-    }));
+  if (basis.primary_intent === 'create_task') {
+    addStrategyOnce(strategies, buildExternalizeActionStrategy({ basis }));
+  } else if (basis.primary_intent === 'create_reminder') {
+    addStrategyOnce(strategies, buildFuturePromptStrategy({ basis }));
+  } else if (basis.primary_intent === 'add_to_collection') {
+    addStrategyOnce(strategies, buildCollectionStrategy({ basis, understanding }));
+  } else if (basis.primary_intent === 'reflect_emotion' || basis.emotional_intensity !== 'none') {
+    addStrategyOnce(strategies, buildRegulationStrategy({ basis }));
+  } else if (basis.primary_intent === 'capture_idea' || basis.primary_intent === 'project_thought') {
+    addStrategyOnce(strategies, buildPreserveThoughtStrategy({ basis }));
   }
 
   if (strategies.length === 0) {
-    strategies.push(buildStrategy({
-      id: 'capture_for_context',
-      label: 'Conserver la pensée comme contexte',
-      confidence,
-      cognitiveCost: 0.1,
-      expectedBenefit: 0.45,
-      riskLevel: 0.08,
-      reasons: [
-        'Aucune stratégie spécialisée évidente n’a été détectée.',
-        'La pensée peut néanmoins enrichir le contexte futur.',
-      ],
-      constraints: {
-        requires_decision: true,
-      },
-      payload: {
-        intent: primaryIntent,
-      },
-    }));
+    addStrategyOnce(strategies, buildContextCaptureStrategy({ basis }));
   }
 
   return strategies;
 }
 
+function buildStrategiesFromUnderstanding(understanding) {
+  const basis = buildReasoningBasis(understanding);
+  const layerStrategies = buildStrategiesFromCognitiveLayers({
+    understanding,
+    basis,
+  });
+
+  if (layerStrategies.length > 0) {
+    return layerStrategies;
+  }
+
+  return buildStrategiesFromFallbackSignals({
+    understanding,
+    basis,
+  });
+}
+
 function buildReasoningOutput({ thought, understanding, strategies }) {
   const primaryIntent = getPrimaryIntent(understanding);
+  const basis = buildReasoningBasis(understanding);
 
   return {
     thought_id: thought?.id || understanding.thought_id || null,
@@ -234,6 +446,21 @@ function buildReasoningOutput({ thought, understanding, strategies }) {
     type: 'reasoning_result',
     reasoning_version: 'reasoning-v1',
     primary_intent: primaryIntent,
+    reasoning_basis: {
+      primary_source: basis.hypotheses.length > 0
+        ? 'hypotheses'
+        : basis.facts.length > 0
+          ? 'facts'
+          : basis.observations.length > 0
+            ? 'observations'
+            : 'fallback_signals',
+      observation_count: basis.observations.length,
+      fact_count: basis.facts.length,
+      hypothesis_count: basis.hypotheses.length,
+      observation_types: basis.observation_types,
+      fact_types: basis.fact_types,
+      hypothesis_types: basis.hypothesis_types,
+    },
     strategy_count: strategies.length,
     strategies,
     assumptions: [],
@@ -264,8 +491,9 @@ function reasonAboutThought({ thought, context = {} } = {}) {
       nextEngine: null,
       behaviorChanged: false,
       metadata: {
-        internal_analyzers: ['strategy_generator_v1'],
+        internal_analyzers: ['cognitive_layer_strategy_generator_v1'],
         foundation_role: 'construct_strategies_without_deciding',
+        reasoning_priority: ['hypotheses', 'facts', 'observations', 'fallback_signals'],
       },
     }),
     ...output,
