@@ -652,11 +652,74 @@ async function buildChatReply({
   };
 }
 
+
+function buildChatActionDecision({
+  action,
+  analysis,
+  thoughtOrchestration,
+} = {}) {
+  const safeAction = action && typeof action === 'object' ? action : null;
+  const safeAnalysis = analysis && typeof analysis === 'object' ? analysis : {};
+  const pipelineContext = buildPipelineAnalysisContext(thoughtOrchestration);
+
+  if (!safeAction) {
+    const clarificationRecommended = Boolean(
+      pipelineContext?.reasoning?.clarification_recommended
+    );
+
+    return {
+      decision_type: clarificationRecommended ? 'clarify' : 'no_action',
+      execution_type: null,
+      should_execute: false,
+      requires_clarification: clarificationRecommended,
+      confidence: clarificationRecommended ? 0.62 : 0.7,
+      source: 'legacy_detect_action_adapter',
+      reason: clarificationRecommended
+        ? 'Le pipeline suggère une clarification avant action.'
+        : 'Aucune action opérationnelle détectée par le flux historique.',
+      behavior_changed: false,
+      metadata: {
+        analysis_type: normalizeText(safeAnalysis.type || ''),
+        suggested_bucket: normalizeText(safeAnalysis.suggested_bucket || ''),
+        conversation_intent: normalizeText(safeAnalysis.conversation_intent || ''),
+        pipeline_context_available: Boolean(pipelineContext),
+      },
+    };
+  }
+
+  const actionType = normalizeText(safeAction.action_type || safeAction.type || '');
+  const status = normalizeText(safeAction.status || 'suggested');
+  const hasExactDate = Boolean(safeAction.has_exact_date);
+
+  return {
+    decision_type: actionType || 'unknown_action',
+    execution_type: actionType || null,
+    should_execute: true,
+    requires_clarification: false,
+    confidence: hasExactDate || actionType !== 'create_reminder' ? 0.95 : 0.86,
+    source: 'legacy_detect_action_adapter',
+    reason: 'Décision normalisée à partir du comportement historique de detectAction.',
+    behavior_changed: false,
+    metadata: {
+      action_status: status,
+      action_label: normalizeText(safeAction.label || ''),
+      has_exact_date: hasExactDate,
+      provider: normalizeText(safeAction.provider || 'local'),
+      sync_status: normalizeText(safeAction.sync_status || ''),
+      analysis_type: normalizeText(safeAnalysis.type || ''),
+      suggested_bucket: normalizeText(safeAnalysis.suggested_bucket || ''),
+      pipeline_context_available: Boolean(pipelineContext),
+    },
+  };
+}
+
+
 function buildChatCognitiveResponse({
   thoughtOrchestration,
   reply,
   analysis,
   action,
+  decision,
   suggestions,
   saved,
   memorySummary,
@@ -670,6 +733,7 @@ function buildChatCognitiveResponse({
     message: reply,
     analysis,
     action,
+    decision: decision || null,
     suggestions,
     thought: thoughtOrchestration?.thought || null,
     cognitive_pipeline: thoughtOrchestration?.pipeline || null,
@@ -690,6 +754,7 @@ module.exports = {
   buildNyraCognitiveOrchestration,
   buildInitialChatAnalysis,
   buildChatReply,
+  buildChatActionDecision,
   buildChatCognitiveResponse,
   buildPipelineAnalysisContext,
   buildPipelineContext,

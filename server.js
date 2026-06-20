@@ -19,6 +19,7 @@ const {
   buildNyraCognitiveOrchestration,
   buildInitialChatAnalysis,
   buildChatReply,
+  buildChatActionDecision,
   buildChatCognitiveResponse,
   buildPipelineAnalysisContext,
   createThought,
@@ -10274,6 +10275,13 @@ app.post('/chat', async (req, res) => {
       thoughtOrchestration
     );
     const action = detectAction(thought.content, userId, analysis);
+    const decision = typeof buildChatActionDecision === 'function'
+      ? buildChatActionDecision({
+          action,
+          analysis,
+          thoughtOrchestration,
+        })
+      : null;
     const suggestions = buildSuggestions(analysis, action);
 
     const replyResult = typeof buildChatReply === 'function'
@@ -10304,6 +10312,7 @@ app.post('/chat', async (req, res) => {
       reply,
       analysis,
       action,
+      decision,
       suggestions,
       saved,
       memorySummary: getStoreSummary(userId),
