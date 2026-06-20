@@ -89,28 +89,106 @@ function hasLayerType(items = [], type) {
   return normalizeArray(items).some(item => normalizeText(item?.type) === normalizedType);
 }
 
-function hasLayerId(items = [], id) {
-  const normalizedId = normalizeText(id);
-  return normalizeArray(items).some(item => normalizeText(item?.id) === normalizedId);
-}
-
-function getBestLayerConfidence(items = [], fallback = 0.5) {
-  const confidences = normalizeArray(items)
-    .map(item => clamp01(item?.confidence, 0))
-    .filter(value => value > 0);
-
-  if (confidences.length === 0) return clamp01(fallback, 0.5);
-  return Math.max(...confidences);
-}
-
 function getHypothesisByType(hypotheses = [], type) {
   const normalizedType = normalizeText(type);
   return normalizeArray(hypotheses).find(hypothesis => normalizeText(hypothesis?.type) === normalizedType) || null;
 }
 
-function getHypothesisById(hypotheses = [], id) {
-  const normalizedId = normalizeText(id);
-  return normalizeArray(hypotheses).find(hypothesis => normalizeText(hypothesis?.id) === normalizedId) || null;
+function getFactIds(facts = []) {
+  return normalizeArray(facts)
+    .map(fact => normalizeText(fact?.id))
+    .filter(Boolean);
+}
+
+function getObservationIds(observations = []) {
+  return normalizeArray(observations)
+    .map(observation => normalizeText(observation?.id))
+    .filter(Boolean);
+}
+
+function countSupportedFacts({ hypothesis, factIds }) {
+  const basedOnFacts = normalizeArray(hypothesis?.based_on_facts)
+    .map(factId => normalizeText(factId))
+    .filter(Boolean);
+
+  if (basedOnFacts.length === 0) return 0;
+
+  const availableFactIds = new Set(getFactIds(factIds));
+  return basedOnFacts.filter(factId => availableFactIds.has(factId)).length;
+}
+
+function getSupportLevel({ hypothesis, facts }) {
+  const basedOnFacts = normalizeArray(hypothesis?.based_on_facts)
+    .map(factId => normalizeText(factId))
+    .filter(Boolean);
+
+  if (basedOnFacts.length === 0) return 'unknown';
+
+  const availableFactIds = new Set(getFactIds(facts));
+  const supportedCount = basedOnFacts.filter(factId => availableFactIds.has(factId)).length;
+  const ratio = supportedCount / basedOnFacts.length;
+
+  if (ratio >= 0.75) return 'high';
+  if (ratio >= 0.4) return 'medium';
+  if (supportedCount > 0) return 'low';
+  return 'none';
+}
+
+function detectHypothesisContradiction({ hypothesis, facts }) {
+  const hypothesisId = normalizeText(hypothesis?.id);
+  const hypothesisType = normalizeText(hypothesis?.type);
+
+  return normalizeArray(facts).some(fact => {
+    const metadata = normalizeObject(fact?.metadata);
+    const contradictedHypotheses = normalizeArray(metadata.contradicted_hypotheses)
+      .map(item => normalizeText(item))
+      .filter(Boolean);
+    const contradictedTypes = normalizeArray(metadata.contradicted_hypothesis_types)
+      .map(item => normalizeText(item))
+      .filter(Boolean);
+
+    return (
+      (hypothesisId && contradictedHypotheses.includes(hypothesisId)) ||
+      (hypothesisType && contradictedTypes.includes(hypothesisType))
+    );
+  });
+}
+
+function classifyHypothesis({ hypothesis, facts }) {
+  const confidence = clamp01(hypothesis?.confidence, 0.5);
+  const supportLevel = getSupportLevel({ hypothesis, facts });
+  const contradicted = detectHypothesisContradiction({ hypothesis, facts });
+  const status = normalizeText(hypothesis?.status || 'provisional') || 'provisional';
+
+  if (contradicted) return 'contradicted';
+  if (status === 'uncertain') return 'needs_verification';
+  if (confidence >= 0.8 && (supportLevel === 'high' || supportLevel === 'medium')) return 'strong';
+  if (confidence >= 0.6 && supportLevel !== 'none') return 'plausible';
+  if (confidence < 0.45 || supportLevel === 'none') return 'weak';
+  return 'provisional';
+}
+
+function evaluateHypotheses({ hypotheses = [], facts = [] } = {}) {
+  return normalizeArray(hypotheses).map(hypothesis => {
+    const safeHypothesis = normalizeObject(hypothesis);
+    const confidence = clamp01(safeHypothesis.confidence, 0.5);
+    const supportLevel = getSupportLevel({ hypothesis: safeHypothesis, facts });
+    const contradicted = detectHypothesisContradiction({ hypothesis: safeHypothesis, facts });
+    const evaluationStatus = classifyHypothesis({ hypothesis: safeHypothesis, facts });
+    const requiresVerification = ['weak', 'provisional', 'needs_verification', 'contradicted'].includes(evaluationStatus);
+
+    return {
+      ...safeHypothesis,
+      evaluation: {
+        status: evaluationStatus,
+        confidence,
+        support_level: supportLevel,
+        contradicted,
+        requires_verification: requiresVerification,
+        based_on_fact_count: normalizeArray(safeHypothesis.based_on_facts).length,
+      },
+    };
+  });
 }
 
 function buildReasoningBasis(understanding) {
@@ -119,6 +197,10 @@ function buildReasoningBasis(understanding) {
   const confidence = getIntentConfidence(understanding);
   const temporalScope = getTemporalScope(understanding);
   const emotionalIntensity = getEmotionalIntensity(understanding);
+  const evaluatedHypotheses = evaluateHypotheses({
+    hypotheses: layers.hypotheses,
+    facts: layers.facts,
+  });
 
   return {
     primary_intent: primaryIntent,
@@ -127,10 +209,11 @@ function buildReasoningBasis(understanding) {
     emotional_intensity: emotionalIntensity,
     observations: layers.observations,
     facts: layers.facts,
-    hypotheses: layers.hypotheses,
+    hypotheses: evaluatedHypotheses,
+    raw_hypotheses: layers.hypotheses,
     observation_types: getLayerTypes(layers.observations),
     fact_types: getLayerTypes(layers.facts),
-    hypothesis_types: getLayerTypes(layers.hypotheses),
+    hypothesis_types: getLayerTypes(evaluatedHypotheses),
     has_cognitive_layers: layers.observations.length > 0 || layers.facts.length > 0 || layers.hypotheses.length > 0,
   };
 }
@@ -161,8 +244,36 @@ function buildStrategy({
   };
 }
 
+function getHypothesisConfidence(hypothesis, fallback) {
+  const evaluation = normalizeObject(hypothesis?.evaluation);
+  return clamp01(evaluation.confidence ?? hypothesis?.confidence, fallback);
+}
+
+function getHypothesisRiskAdjustment(hypothesis) {
+  const evaluation = normalizeObject(hypothesis?.evaluation);
+  const status = normalizeText(evaluation.status || 'provisional');
+
+  if (status === 'strong') return -0.03;
+  if (status === 'plausible') return 0;
+  if (status === 'provisional') return 0.06;
+  if (status === 'needs_verification') return 0.12;
+  if (status === 'weak') return 0.16;
+  if (status === 'contradicted') return 0.3;
+  return 0.08;
+}
+
+function getHypothesisReason(hypothesis, fallbackReason) {
+  if (!hypothesis) return fallbackReason;
+
+  const evaluation = normalizeObject(hypothesis.evaluation);
+  const status = normalizeText(evaluation.status || 'provisional');
+  const supportLevel = normalizeText(evaluation.support_level || 'unknown');
+
+  return `Hypothèse cognitive ${status} avec support ${supportLevel}.`;
+}
+
 function buildExternalizeActionStrategy({ basis, hypothesis = null }) {
-  const confidence = hypothesis ? clamp01(hypothesis.confidence, basis.confidence) : basis.confidence;
+  const confidence = hypothesis ? getHypothesisConfidence(hypothesis, basis.confidence) : basis.confidence;
 
   return buildStrategy({
     id: 'externalize_action',
@@ -170,17 +281,16 @@ function buildExternalizeActionStrategy({ basis, hypothesis = null }) {
     confidence,
     cognitiveCost: 0.18,
     expectedBenefit: 0.78,
-    riskLevel: basis.temporal_scope === 'unspecified' ? 0.22 : 0.12,
+    riskLevel: clamp01((basis.temporal_scope === 'unspecified' ? 0.22 : 0.12) + getHypothesisRiskAdjustment(hypothesis), 0.12),
     reasons: [
-      hypothesis
-        ? 'Hypothèse cognitive : la pensée peut nécessiter la création d’une action.'
-        : 'Fallback intent : create_task.',
+      getHypothesisReason(hypothesis, 'Fallback intent : create_task.'),
       'La pensée peut être sortie de la mémoire de travail de l’utilisateur.',
     ],
     constraints: {
       temporal_scope: basis.temporal_scope,
       requires_decision: true,
-      reasoning_source: hypothesis ? 'hypothesis' : 'intent_fallback',
+      reasoning_source: hypothesis ? 'evaluated_hypothesis' : 'intent_fallback',
+      hypothesis_status: hypothesis?.evaluation?.status || null,
     },
     payload: {
       intent: basis.primary_intent,
@@ -190,7 +300,7 @@ function buildExternalizeActionStrategy({ basis, hypothesis = null }) {
 }
 
 function buildFuturePromptStrategy({ basis, hypothesis = null }) {
-  const confidence = hypothesis ? clamp01(hypothesis.confidence, basis.confidence) : basis.confidence;
+  const confidence = hypothesis ? getHypothesisConfidence(hypothesis, basis.confidence) : basis.confidence;
 
   return buildStrategy({
     id: 'schedule_future_prompt',
@@ -198,17 +308,16 @@ function buildFuturePromptStrategy({ basis, hypothesis = null }) {
     confidence,
     cognitiveCost: 0.16,
     expectedBenefit: 0.82,
-    riskLevel: basis.temporal_scope === 'unspecified' ? 0.35 : 0.12,
+    riskLevel: clamp01((basis.temporal_scope === 'unspecified' ? 0.35 : 0.12) + getHypothesisRiskAdjustment(hypothesis), 0.12),
     reasons: [
-      hypothesis
-        ? 'Hypothèse cognitive : la pensée peut nécessiter un rappel futur.'
-        : 'Fallback intent : create_reminder.',
+      getHypothesisReason(hypothesis, 'Fallback intent : create_reminder.'),
       'La pensée contient ou implique un besoin de soutien temporel.',
     ],
     constraints: {
       temporal_scope: basis.temporal_scope,
       requires_decision: true,
-      reasoning_source: hypothesis ? 'hypothesis' : 'intent_fallback',
+      reasoning_source: hypothesis ? 'evaluated_hypothesis' : 'intent_fallback',
+      hypothesis_status: hypothesis?.evaluation?.status || null,
     },
     payload: {
       intent: basis.primary_intent,
@@ -219,7 +328,7 @@ function buildFuturePromptStrategy({ basis, hypothesis = null }) {
 
 function buildCollectionStrategy({ basis, understanding, hypothesis = null }) {
   const intent = normalizeObject(understanding.intent);
-  const confidence = hypothesis ? clamp01(hypothesis.confidence, basis.confidence) : basis.confidence;
+  const confidence = hypothesis ? getHypothesisConfidence(hypothesis, basis.confidence) : basis.confidence;
 
   return buildStrategy({
     id: 'organize_into_collection',
@@ -227,17 +336,16 @@ function buildCollectionStrategy({ basis, understanding, hypothesis = null }) {
     confidence,
     cognitiveCost: 0.12,
     expectedBenefit: 0.72,
-    riskLevel: 0.1,
+    riskLevel: clamp01(0.1 + getHypothesisRiskAdjustment(hypothesis), 0.1),
     reasons: [
-      hypothesis
-        ? 'Hypothèse cognitive : la pensée peut appartenir à une Collection.'
-        : 'Fallback intent : add_to_collection.',
+      getHypothesisReason(hypothesis, 'Fallback intent : add_to_collection.'),
       'La pensée semble viser le rangement d’un élément dans un ensemble existant.',
     ],
     constraints: {
       collection_hint: normalizeText(intent.collection_hint || 'unspecified') || 'unspecified',
       requires_decision: true,
-      reasoning_source: hypothesis ? 'hypothesis' : 'intent_fallback',
+      reasoning_source: hypothesis ? 'evaluated_hypothesis' : 'intent_fallback',
+      hypothesis_status: hypothesis?.evaluation?.status || null,
     },
     payload: {
       intent: basis.primary_intent,
@@ -248,7 +356,7 @@ function buildCollectionStrategy({ basis, understanding, hypothesis = null }) {
 
 function buildRegulationStrategy({ basis, hypothesis = null }) {
   const confidence = Math.max(
-    hypothesis ? clamp01(hypothesis.confidence, basis.confidence) : basis.confidence,
+    hypothesis ? getHypothesisConfidence(hypothesis, basis.confidence) : basis.confidence,
     0.68
   );
 
@@ -258,17 +366,16 @@ function buildRegulationStrategy({ basis, hypothesis = null }) {
     confidence,
     cognitiveCost: basis.emotional_intensity === 'medium' ? 0.18 : 0.24,
     expectedBenefit: basis.emotional_intensity === 'medium' ? 0.82 : 0.68,
-    riskLevel: 0.16,
+    riskLevel: clamp01(0.16 + getHypothesisRiskAdjustment(hypothesis), 0.16),
     reasons: [
-      hypothesis
-        ? 'Hypothèse cognitive : la pensée peut nécessiter régulation ou réflexion.'
-        : 'Fallback émotionnel : signal émotionnel détecté.',
+      getHypothesisReason(hypothesis, 'Fallback émotionnel : signal émotionnel détecté.'),
       'La priorité potentielle est d’accompagner avant d’organiser.',
     ],
     constraints: {
       emotional_intensity: basis.emotional_intensity,
       requires_decision: true,
-      reasoning_source: hypothesis ? 'hypothesis' : 'emotion_fallback',
+      reasoning_source: hypothesis ? 'evaluated_hypothesis' : 'emotion_fallback',
+      hypothesis_status: hypothesis?.evaluation?.status || null,
     },
     payload: {
       intent: basis.primary_intent,
@@ -278,7 +385,7 @@ function buildRegulationStrategy({ basis, hypothesis = null }) {
 }
 
 function buildPreserveThoughtStrategy({ basis, hypothesis = null }) {
-  const confidence = hypothesis ? clamp01(hypothesis.confidence, basis.confidence) : basis.confidence;
+  const confidence = hypothesis ? getHypothesisConfidence(hypothesis, basis.confidence) : basis.confidence;
 
   return buildStrategy({
     id: 'preserve_and_structure_thought',
@@ -286,16 +393,15 @@ function buildPreserveThoughtStrategy({ basis, hypothesis = null }) {
     confidence,
     cognitiveCost: 0.2,
     expectedBenefit: 0.7,
-    riskLevel: 0.18,
+    riskLevel: clamp01(0.18 + getHypothesisRiskAdjustment(hypothesis), 0.18),
     reasons: [
-      hypothesis
-        ? 'Hypothèse cognitive : la pensée peut avoir une valeur future.'
-        : `Fallback intent : ${basis.primary_intent}.`,
+      getHypothesisReason(hypothesis, `Fallback intent : ${basis.primary_intent}.`),
       'La pensée peut être conservée et reliée correctement si elle apporte de la valeur future.',
     ],
     constraints: {
       requires_decision: true,
-      reasoning_source: hypothesis ? 'hypothesis' : 'intent_fallback',
+      reasoning_source: hypothesis ? 'evaluated_hypothesis' : 'intent_fallback',
+      hypothesis_status: hypothesis?.evaluation?.status || null,
     },
     payload: {
       intent: basis.primary_intent,
@@ -305,7 +411,7 @@ function buildPreserveThoughtStrategy({ basis, hypothesis = null }) {
 }
 
 function buildContextCaptureStrategy({ basis, hypothesis = null }) {
-  const confidence = hypothesis ? clamp01(hypothesis.confidence, basis.confidence) : basis.confidence;
+  const confidence = hypothesis ? getHypothesisConfidence(hypothesis, basis.confidence) : basis.confidence;
 
   return buildStrategy({
     id: 'capture_for_context',
@@ -313,16 +419,15 @@ function buildContextCaptureStrategy({ basis, hypothesis = null }) {
     confidence,
     cognitiveCost: 0.1,
     expectedBenefit: 0.45,
-    riskLevel: 0.08,
+    riskLevel: clamp01(0.08 + getHypothesisRiskAdjustment(hypothesis), 0.08),
     reasons: [
-      hypothesis
-        ? 'Hypothèse cognitive : la pensée peut être préservée comme contexte.'
-        : 'Aucune stratégie spécialisée évidente n’a été détectée.',
+      getHypothesisReason(hypothesis, 'Aucune stratégie spécialisée évidente n’a été détectée.'),
       'La pensée peut enrichir le contexte futur sans action immédiate.',
     ],
     constraints: {
       requires_decision: true,
-      reasoning_source: hypothesis ? 'hypothesis' : 'fallback',
+      reasoning_source: hypothesis ? 'evaluated_hypothesis' : 'fallback',
+      hypothesis_status: hypothesis?.evaluation?.status || null,
     },
     payload: {
       intent: basis.primary_intent,
@@ -337,9 +442,14 @@ function addStrategyOnce(strategies, strategy) {
   if (!exists) strategies.push(strategy);
 }
 
+function isUsableHypothesis(hypothesis) {
+  const status = normalizeText(hypothesis?.evaluation?.status || 'provisional');
+  return !['contradicted', 'weak'].includes(status);
+}
+
 function buildStrategiesFromCognitiveLayers({ understanding, basis }) {
   const strategies = [];
-  const hypotheses = basis.hypotheses;
+  const hypotheses = basis.hypotheses.filter(isUsableHypothesis);
   const facts = basis.facts;
   const observations = basis.observations;
 
@@ -389,11 +499,7 @@ function buildStrategiesFromCognitiveLayers({ understanding, basis }) {
     addStrategyOnce(strategies, buildPreserveThoughtStrategy({ basis }));
   }
 
-  if (strategies.length > 0) {
-    return strategies;
-  }
-
-  return [];
+  return strategies;
 }
 
 function buildStrategiesFromFallbackSignals({ understanding, basis }) {
@@ -426,18 +532,46 @@ function buildStrategiesFromUnderstanding(understanding) {
   });
 
   if (layerStrategies.length > 0) {
-    return layerStrategies;
+    return {
+      basis,
+      strategies: layerStrategies,
+    };
   }
 
-  return buildStrategiesFromFallbackSignals({
-    understanding,
+  return {
     basis,
-  });
+    strategies: buildStrategiesFromFallbackSignals({
+      understanding,
+      basis,
+    }),
+  };
 }
 
-function buildReasoningOutput({ thought, understanding, strategies }) {
+function summarizeHypothesisEvaluations(hypotheses = []) {
+  const summary = {
+    strong: 0,
+    plausible: 0,
+    provisional: 0,
+    needs_verification: 0,
+    weak: 0,
+    contradicted: 0,
+  };
+
+  normalizeArray(hypotheses).forEach(hypothesis => {
+    const status = normalizeText(hypothesis?.evaluation?.status || 'provisional') || 'provisional';
+    if (summary[status] === undefined) summary[status] = 0;
+    summary[status] += 1;
+  });
+
+  return summary;
+}
+
+function buildReasoningOutput({ thought, understanding, basis, strategies }) {
   const primaryIntent = getPrimaryIntent(understanding);
-  const basis = buildReasoningBasis(understanding);
+  const hypothesisEvaluationSummary = summarizeHypothesisEvaluations(basis.hypotheses);
+  const hasUnstableHypotheses = basis.hypotheses.some(hypothesis => {
+    return ['weak', 'contradicted', 'needs_verification'].includes(normalizeText(hypothesis?.evaluation?.status));
+  });
 
   return {
     thought_id: thought?.id || understanding.thought_id || null,
@@ -448,7 +582,7 @@ function buildReasoningOutput({ thought, understanding, strategies }) {
     primary_intent: primaryIntent,
     reasoning_basis: {
       primary_source: basis.hypotheses.length > 0
-        ? 'hypotheses'
+        ? 'evaluated_hypotheses'
         : basis.facts.length > 0
           ? 'facts'
           : basis.observations.length > 0
@@ -460,13 +594,29 @@ function buildReasoningOutput({ thought, understanding, strategies }) {
       observation_types: basis.observation_types,
       fact_types: basis.fact_types,
       hypothesis_types: basis.hypothesis_types,
+      hypothesis_evaluation_summary: hypothesisEvaluationSummary,
     },
+    evaluated_hypotheses: basis.hypotheses.map(hypothesis => ({
+      id: hypothesis.id || null,
+      type: hypothesis.type || null,
+      confidence: hypothesis.evaluation?.confidence ?? hypothesis.confidence ?? null,
+      status: hypothesis.evaluation?.status || null,
+      support_level: hypothesis.evaluation?.support_level || null,
+      contradicted: Boolean(hypothesis.evaluation?.contradicted),
+      requires_verification: Boolean(hypothesis.evaluation?.requires_verification),
+    })),
     strategy_count: strategies.length,
     strategies,
     assumptions: [],
-    conflicts: [],
+    conflicts: basis.hypotheses
+      .filter(hypothesis => hypothesis.evaluation?.contradicted)
+      .map(hypothesis => ({
+        type: 'contradicted_hypothesis',
+        hypothesis_id: hypothesis.id || null,
+        hypothesis_type: hypothesis.type || null,
+      })),
     uncertainty: {
-      level: strategies.some(strategy => strategy.risk_level >= 0.3) ? 'medium' : 'low',
+      level: hasUnstableHypotheses || strategies.some(strategy => strategy.risk_level >= 0.3) ? 'medium' : 'low',
       requires_clarification: false,
     },
     decision_required: true,
@@ -476,11 +626,12 @@ function buildReasoningOutput({ thought, understanding, strategies }) {
 
 function reasonAboutThought({ thought, context = {} } = {}) {
   const understanding = getUnderstandingOutput(context);
-  const strategies = buildStrategiesFromUnderstanding(understanding);
+  const reasoning = buildStrategiesFromUnderstanding(understanding);
   const output = buildReasoningOutput({
     thought,
     understanding,
-    strategies,
+    basis: reasoning.basis,
+    strategies: reasoning.strategies,
   });
 
   return {
@@ -491,9 +642,9 @@ function reasonAboutThought({ thought, context = {} } = {}) {
       nextEngine: null,
       behaviorChanged: false,
       metadata: {
-        internal_analyzers: ['cognitive_layer_strategy_generator_v1'],
+        internal_analyzers: ['hypothesis_evaluator_v1', 'cognitive_layer_strategy_generator_v1'],
         foundation_role: 'construct_strategies_without_deciding',
-        reasoning_priority: ['hypotheses', 'facts', 'observations', 'fallback_signals'],
+        reasoning_priority: ['evaluated_hypotheses', 'facts', 'observations', 'fallback_signals'],
       },
     }),
     ...output,
