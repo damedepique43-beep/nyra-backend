@@ -16,6 +16,195 @@ function clampNumber(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function normalizeArray(value) {
+  return Array.isArray(value) ? value.filter(Boolean) : [];
+}
+
+function normalizeObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function findFirstObject(values = []) {
+  return normalizeArray(values).find(value => {
+    return value && typeof value === 'object' && !Array.isArray(value);
+  }) || null;
+}
+
+function getReasoningOutputFromEngineResult(value) {
+  const safeValue = normalizeObject(value);
+
+  if (Object.keys(safeValue).length === 0) return null;
+
+  if (safeValue.type === 'reasoning_result' || safeValue.reasoning_version || safeValue.strategies || safeValue.ranked_strategies) {
+    return safeValue;
+  }
+
+  const output = normalizeObject(safeValue.output);
+
+  if (Object.keys(output).length > 0) {
+    return output;
+  }
+
+  return null;
+}
+
+function extractReasoningOutput(candidateDecision, cognitiveContext = {}) {
+  const normalizedDecision = normalizeObject(candidateDecision?.normalized_decision);
+  const pipelineContext = normalizeObject(candidateDecision?.pipeline_context || cognitiveContext?.pipelineContext);
+  const contextDecision = normalizeObject(cognitiveContext?.decision);
+  const thoughtOrchestration = normalizeObject(cognitiveContext?.thoughtOrchestration);
+  const engineResults = normalizeObject(
+    pipelineContext.engine_results ||
+    thoughtOrchestration.engine_results ||
+    thoughtOrchestration.pipeline_context?.engine_results
+  );
+
+  const directOutput = findFirstObject([
+    normalizedDecision.reasoning_output,
+    normalizedDecision.reasoning,
+    pipelineContext.reasoning_output,
+    pipelineContext.reasoning,
+    contextDecision.reasoning_output,
+    contextDecision.reasoning,
+    cognitiveContext?.reasoning_output,
+    cognitiveContext?.reasoning,
+  ]);
+
+  if (directOutput) {
+    return getReasoningOutputFromEngineResult(directOutput) || directOutput;
+  }
+
+  return findFirstObject([
+    getReasoningOutputFromEngineResult(engineResults.reasoning),
+    getReasoningOutputFromEngineResult(engineResults.reasoning_engine),
+    getReasoningOutputFromEngineResult(pipelineContext.engine_result),
+    getReasoningOutputFromEngineResult(thoughtOrchestration.reasoning),
+  ]);
+}
+
+function findStrategyById(strategies = [], strategyId) {
+  const normalizedStrategyId = normalizeText(strategyId);
+
+  if (!normalizedStrategyId) return null;
+
+  return normalizeArray(strategies).find(strategy => normalizeText(strategy?.id) === normalizedStrategyId) || null;
+}
+
+function buildDecisionInput(candidateDecision, cognitiveContext = {}) {
+  // DecisionInput Contract V1
+  // Responsabilité : fournir au Decision Engine une entrée stable et lisible,
+  // issue du Reasoning Engine, sans exposer partout sa structure interne.
+  // Le contrat est informatif en V1 : il ne modifie pas encore le choix final.
+  const reasoningOutput = extractReasoningOutput(candidateDecision, cognitiveContext) || {};
+  const strategies = normalizeArray(reasoningOutput.strategies);
+  const rankedStrategies = normalizeArray(reasoningOutput.ranked_strategies);
+  const decisionPreparation = normalizeObject(reasoningOutput.decision_preparation);
+  const reasoningBasis = normalizeObject(reasoningOutput.reasoning_basis);
+  const uncertainty = normalizeObject(reasoningOutput.uncertainty);
+  const cognitiveDecisionQuestions = normalizeObject(reasoningOutput.cognitive_decision_questions);
+  const strongestCandidateId = normalizeText(
+    decisionPreparation.strongest_candidate_id ||
+    rankedStrategies[0]?.id ||
+    strategies[0]?.id ||
+    ''
+  );
+  const strongestStrategy =
+    findStrategyById(strategies, strongestCandidateId) ||
+    findStrategyById(rankedStrategies, strongestCandidateId) ||
+    strategies[0] ||
+    rankedStrategies[0] ||
+    null;
+  const strongestStrategyEvaluation = normalizeObject(strongestStrategy?.evaluation);
+  const strongestStrategyQuestions = normalizeObject(strongestStrategyEvaluation.cognitive_questions);
+  const strongestStrategyQuestionSummary = normalizeObject(strongestStrategyQuestions.summary);
+  const hypothesisSummary = normalizeObject(
+    reasoningBasis.hypothesis_evaluation_summary ||
+    reasoningOutput.hypothesis_evaluation_summary
+  );
+  const stateSummary = normalizeObject(
+    strongestStrategyQuestionSummary.state_summary ||
+    strongestStrategyQuestions.state_summary ||
+    cognitiveDecisionQuestions.state_summary ||
+    cognitiveContext?.latest_user_state ||
+    cognitiveContext?.analysis?.cognitive_state
+  );
+
+  return {
+    contract: 'decision-input-v1',
+    source: 'reasoning_engine',
+    behavior_impact: 'none',
+    available: Boolean(
+      reasoningOutput.reasoning_version ||
+      strategies.length > 0 ||
+      rankedStrategies.length > 0 ||
+      Object.keys(decisionPreparation).length > 0
+    ),
+    reasoning_version: reasoningOutput.reasoning_version || null,
+    ranked_strategies: rankedStrategies,
+    strategies,
+    strongest_candidate: strongestStrategy
+      ? {
+          id: strongestStrategy.id || strongestCandidateId || null,
+          label: strongestStrategy.label || null,
+          type: strongestStrategy.type || null,
+          score: strongestStrategyEvaluation.score ?? rankedStrategies[0]?.score ?? decisionPreparation.strongest_candidate_score ?? null,
+          readiness: strongestStrategyEvaluation.readiness || rankedStrategies[0]?.readiness || null,
+          confidence: strongestStrategyEvaluation.confidence ?? strongestStrategy.confidence ?? rankedStrategies[0]?.confidence ?? null,
+          expected_benefit: strongestStrategyEvaluation.expected_benefit ?? strongestStrategy.expected_benefit ?? rankedStrategies[0]?.expected_benefit ?? null,
+          cognitive_cost: strongestStrategyEvaluation.cognitive_cost ?? strongestStrategy.cognitive_cost ?? rankedStrategies[0]?.cognitive_cost ?? null,
+          risk_level: strongestStrategyEvaluation.risk_level ?? strongestStrategy.risk_level ?? rankedStrategies[0]?.risk_level ?? null,
+          decision_boundary: strongestStrategyEvaluation.decision_boundary || null,
+          cognitive_questions_summary: strongestStrategyQuestionSummary,
+        }
+      : null,
+    decision_preparation: {
+      status: decisionPreparation.status || null,
+      decision_taken: Boolean(decisionPreparation.decision_taken),
+      strongest_candidate_id: strongestCandidateId || null,
+      strongest_candidate_score: decisionPreparation.strongest_candidate_score ?? null,
+      ranked_strategy_ids: normalizeArray(decisionPreparation.ranked_strategy_ids),
+      clarification_candidate_ids: normalizeArray(decisionPreparation.clarification_candidate_ids),
+      uncertainty_level: decisionPreparation.uncertainty_level || uncertainty.level || null,
+      principle: decisionPreparation.principle || null,
+    },
+    uncertainty: {
+      level: uncertainty.level || decisionPreparation.uncertainty_level || null,
+      requires_clarification: Boolean(
+        uncertainty.requires_clarification ||
+        normalizeArray(decisionPreparation.clarification_candidate_ids).length > 0
+      ),
+    },
+    hypothesis_summary: hypothesisSummary,
+    cognitive_state: stateSummary,
+    reasoning_metadata: {
+      primary_intent: reasoningOutput.primary_intent || reasoningBasis.primary_intent || null,
+      strategy_count: reasoningOutput.strategy_count ?? strategies.length,
+      evaluated_hypothesis_count: normalizeArray(reasoningOutput.evaluated_hypotheses).length,
+      active_hypothesis_count: reasoningBasis.active_hypothesis_count ?? normalizeArray(reasoningOutput.active_hypothesis_ids).length,
+      rejected_hypothesis_count: reasoningBasis.rejected_hypothesis_count ?? normalizeArray(reasoningOutput.rejected_hypotheses).length,
+      competing_hypothesis_count: reasoningBasis.competing_hypothesis_count ?? normalizeArray(reasoningOutput.competing_hypotheses).length,
+      behavior_changed: Boolean(reasoningOutput.behavior_changed),
+    },
+    generated_at: new Date().toISOString(),
+  };
+}
+
+function summarizeDecisionInput(decisionInput) {
+  const safeInput = normalizeObject(decisionInput);
+
+  return {
+    contract: safeInput.contract || 'decision-input-v1',
+    available: Boolean(safeInput.available),
+    reasoning_version: safeInput.reasoning_version || null,
+    strongest_candidate_id: safeInput.strongest_candidate?.id || null,
+    strongest_candidate_score: safeInput.strongest_candidate?.score ?? null,
+    strongest_candidate_readiness: safeInput.strongest_candidate?.readiness || null,
+    strategy_count: safeInput.reasoning_metadata?.strategy_count ?? normalizeArray(safeInput.strategies).length,
+    uncertainty_level: safeInput.uncertainty?.level || null,
+    requires_clarification: Boolean(safeInput.uncertainty?.requires_clarification),
+  };
+}
+
 function extractReasoningPayload(candidateDecision, cognitiveContext = {}) {
   const normalizedDecision = candidateDecision?.normalized_decision || null;
   const pipelineContext = candidateDecision?.pipeline_context || cognitiveContext?.pipelineContext || null;
@@ -31,9 +220,13 @@ function extractReasoningPayload(candidateDecision, cognitiveContext = {}) {
 }
 
 function getCandidateConfidence(candidateDecision, cognitiveContext = {}) {
+  const decisionInput = buildDecisionInput(candidateDecision, cognitiveContext);
+  const strongestCandidate = normalizeObject(decisionInput.strongest_candidate);
   const reasoningPayload = extractReasoningPayload(candidateDecision, cognitiveContext);
 
   const rawConfidenceCandidates = [
+    strongestCandidate.confidence,
+    strongestCandidate.score,
     candidateDecision?.confidence,
     candidateDecision?.normalized_decision?.confidence,
     candidateDecision?.normalized_decision?.confidence_score,
@@ -52,7 +245,7 @@ function getCandidateConfidence(candidateDecision, cognitiveContext = {}) {
     return !Number.isNaN(number);
   });
 
-  if (foundConfidence === undefined) return 0.5;
+  if (foundConfidence === undefined || foundConfidence === null) return 0.5;
 
   const normalized = normalizeNumber(foundConfidence, 0.5);
 
@@ -62,12 +255,18 @@ function getCandidateConfidence(candidateDecision, cognitiveContext = {}) {
 }
 
 function detectReasoningSignals(candidateDecision, cognitiveContext = {}) {
+  const decisionInput = buildDecisionInput(candidateDecision, cognitiveContext);
   const reasoningPayload = extractReasoningPayload(candidateDecision, cognitiveContext);
   const normalizedDecision = reasoningPayload.normalized_decision || {};
   const pipelineContext = reasoningPayload.pipeline_context || {};
   const analysis = cognitiveContext?.analysis || {};
+  const hypothesisSummary = normalizeObject(decisionInput.hypothesis_summary);
+  const strongestCandidate = normalizeObject(decisionInput.strongest_candidate);
+  const decisionPreparation = normalizeObject(decisionInput.decision_preparation);
 
-  const hypothesisPayload =
+  const hasHypothesisEvaluation = Boolean(
+    Object.keys(hypothesisSummary).length > 0 ||
+    normalizeNumber(decisionInput.reasoning_metadata?.evaluated_hypothesis_count, 0) > 0 ||
     normalizedDecision.hypothesis_evaluation ||
     normalizedDecision.hypotheses_evaluation ||
     normalizedDecision.hypotheses ||
@@ -76,30 +275,18 @@ function detectReasoningSignals(candidateDecision, cognitiveContext = {}) {
     pipelineContext.hypotheses ||
     analysis.hypothesis_evaluation ||
     analysis.hypotheses_evaluation ||
-    analysis.hypotheses ||
-    null;
+    analysis.hypotheses
+  );
 
-  const strategyPayload =
-    normalizedDecision.strategy ||
-    normalizedDecision.cognitive_strategy ||
-    normalizedDecision.selected_strategy ||
-    normalizedDecision.reasoning_strategy ||
-    pipelineContext.strategy ||
-    pipelineContext.cognitive_strategy ||
-    pipelineContext.selected_strategy ||
-    pipelineContext.reasoning_strategy ||
-    null;
+  const hasStrategy = Boolean(
+    decisionInput.available ||
+    strongestCandidate.id ||
+    normalizeArray(decisionInput.strategies).length > 0 ||
+    normalizeArray(decisionInput.ranked_strategies).length > 0
+  );
 
-  const reasoningOutput =
-    normalizedDecision.reasoning_output ||
-    normalizedDecision.reasoning ||
-    pipelineContext.reasoning_output ||
-    pipelineContext.reasoning ||
-    null;
-
-  const hasHypothesisEvaluation = Boolean(hypothesisPayload);
-  const hasStrategy = Boolean(strategyPayload || reasoningOutput);
   const hasContradiction = Boolean(
+    normalizeNumber(hypothesisSummary.contradicted, 0) > 0 ||
     normalizedDecision.has_contradiction ||
     normalizedDecision.contradiction_detected ||
     pipelineContext.has_contradiction ||
@@ -107,7 +294,11 @@ function detectReasoningSignals(candidateDecision, cognitiveContext = {}) {
     analysis.has_contradiction ||
     analysis.contradiction_detected
   );
+
   const needsVerification = Boolean(
+    decisionInput.uncertainty?.requires_clarification ||
+    normalizeArray(decisionPreparation.clarification_candidate_ids).length > 0 ||
+    normalizeNumber(hypothesisSummary.needs_verification, 0) > 0 ||
     normalizedDecision.needs_verification ||
     normalizedDecision.requires_verification ||
     pipelineContext.needs_verification ||
@@ -121,6 +312,10 @@ function detectReasoningSignals(candidateDecision, cognitiveContext = {}) {
     has_reasoning_strategy: hasStrategy,
     has_contradiction: hasContradiction,
     needs_verification: needsVerification,
+    decision_input_available: Boolean(decisionInput.available),
+    strongest_candidate_readiness: strongestCandidate.readiness || null,
+    strongest_candidate_score: strongestCandidate.score ?? null,
+    uncertainty_level: decisionInput.uncertainty?.level || null,
   };
 }
 
@@ -131,8 +326,10 @@ function computeDecisionScore(candidateDecision, cognitiveContext = {}) {
   // Le score est informatif pour l'instant : chooseBestDecision continue de choisir
   // la première candidate valide afin d'éviter toute régression.
   const analysis = candidateDecision?.analysis_summary || cognitiveContext?.analysis || {};
+  const decisionInput = buildDecisionInput(candidateDecision, cognitiveContext);
   const confidence = getCandidateConfidence(candidateDecision, cognitiveContext);
   const reasoningSignals = detectReasoningSignals(candidateDecision, cognitiveContext);
+  const strongestCandidate = normalizeObject(decisionInput.strongest_candidate);
 
   let score = 50;
   const factors = [];
@@ -177,6 +374,24 @@ function computeDecisionScore(candidateDecision, cognitiveContext = {}) {
     factors.push({ id: 'reasoning_strategy_available', impact: 10, label: 'Une stratégie cognitive est disponible.' });
   }
 
+  if (decisionInput.available) {
+    score += 6;
+    factors.push({ id: 'decision_input_contract_available', impact: 6, label: 'Le contrat Reasoning → Decision est disponible.' });
+  }
+
+  if (strongestCandidate.readiness === 'ready_for_decision') {
+    score += 8;
+    factors.push({ id: 'strategy_ready_for_decision', impact: 8, label: 'La meilleure stratégie est prête pour une décision.' });
+  } else if (strongestCandidate.readiness === 'clarify_before_decision') {
+    score -= 10;
+    factors.push({ id: 'strategy_requires_clarification', impact: -10, label: 'La meilleure stratégie demande une clarification avant décision.' });
+  }
+
+  if (decisionInput.uncertainty?.level === 'medium') {
+    score -= 4;
+    factors.push({ id: 'medium_uncertainty', impact: -4, label: 'Le raisonnement indique une incertitude moyenne.' });
+  }
+
   if (reasoningSignals.has_contradiction) {
     score -= 14;
     factors.push({ id: 'contradiction_detected', impact: -14, label: 'Une contradiction est détectée.' });
@@ -212,7 +427,8 @@ function computeDecisionScore(candidateDecision, cognitiveContext = {}) {
           : 'weak',
     factors,
     reasoning_signals: reasoningSignals,
-    scoring_version: 'decision-score-v1.2',
+    decision_input_summary: summarizeDecisionInput(decisionInput),
+    scoring_version: 'decision-score-v1.3',
     generated_at: new Date().toISOString(),
   };
 }
@@ -222,16 +438,20 @@ function attachDecisionScore(candidateDecision, cognitiveContext = {}) {
     return null;
   }
 
+  const decisionInput = buildDecisionInput(candidateDecision, cognitiveContext);
   const decisionScore = computeDecisionScore(candidateDecision, cognitiveContext);
 
   return {
     ...candidateDecision,
+    decision_input: decisionInput,
     decision_score: decisionScore,
     selection_metadata: {
       scoring_available: true,
       scoring_version: decisionScore.scoring_version,
+      decision_input_available: Boolean(decisionInput.available),
+      decision_input_contract: decisionInput.contract,
       behavior_impact: 'none',
-      note: 'Score calculé sans modifier la stratégie de sélection V1.',
+      note: 'Contrat DecisionInput et score calculés sans modifier la stratégie de sélection V1.',
     },
   };
 }
@@ -294,10 +514,10 @@ function normalizeCandidateDecisionList(candidateDecisions) {
 }
 
 function chooseBestDecision(candidateDecisions, cognitiveContext = {}) {
-  // Nyra Decision Engine V1.2
-  // Responsabilité : enrichir les décisions candidates avec un score cognitif
-  // tout en conservant strictement le comportement V1 validé.
-  // Important : le score est calculé, mais il ne pilote pas encore le choix.
+  // Nyra Decision Engine V1.3
+  // Responsabilité : consommer un contrat DecisionInput issu du Reasoning Engine
+  // et enrichir les décisions candidates avec un score cognitif.
+  // Important : le contrat et le score sont calculés, mais ils ne pilotent pas encore le choix.
   const candidates = normalizeCandidateDecisionList(candidateDecisions);
   const scoredCandidates = candidates.map(candidateDecision => {
     return attachDecisionScore(candidateDecision, cognitiveContext);
@@ -308,14 +528,14 @@ function chooseBestDecision(candidateDecisions, cognitiveContext = {}) {
     return {
       id: crypto.randomUUID(),
       source: 'chat',
-      decision_layer: 'nyra_decision_engine_v1_2',
+      decision_layer: 'nyra_decision_engine_v1_3',
       decision_type: 'no_action',
       should_execute: false,
       candidate_action: null,
       normalized_decision: null,
       candidate_count: 0,
       scored_candidate_count: 0,
-      selection_strategy: 'first_valid_candidate_with_informative_score',
+      selection_strategy: 'first_valid_candidate_with_decision_input',
       selection_reason: 'Aucune décision candidate disponible.',
       selection_metadata: {
         scoring_available: true,
@@ -329,7 +549,7 @@ function chooseBestDecision(candidateDecisions, cognitiveContext = {}) {
 
   return {
     ...chosenDecision,
-    decision_layer: 'nyra_decision_engine_v1_2',
+    decision_layer: 'nyra_decision_engine_v1_3',
     candidate_count: candidates.length,
     scored_candidate_count: scoredCandidates.length,
     scored_candidates: scoredCandidates.map(candidateDecision => ({
@@ -338,9 +558,11 @@ function chooseBestDecision(candidateDecisions, cognitiveContext = {}) {
       should_execute: Boolean(candidateDecision.should_execute),
       score: candidateDecision.decision_score?.score ?? null,
       level: candidateDecision.decision_score?.level || null,
+      decision_input_available: Boolean(candidateDecision.decision_input?.available),
+      strongest_candidate_id: candidateDecision.decision_input?.strongest_candidate?.id || null,
     })),
-    selection_strategy: 'first_valid_candidate_with_informative_score',
-    selection_reason: 'Comportement V1 conservé : la première décision candidate valide est choisie. Le score est seulement informatif en V1.2.',
+    selection_strategy: 'first_valid_candidate_with_decision_input',
+    selection_reason: 'Comportement V1 conservé : la première décision candidate valide est choisie. Le DecisionInput et le score sont seulement informatifs en V1.3.',
     cognitive_context: cognitiveContext || {},
     selected_at: new Date().toISOString(),
   };
@@ -375,4 +597,5 @@ module.exports = {
   chooseBestDecision,
   resolveExecutableActionFromCandidateDecision,
   resolveExecutableActionFromDecision,
+  buildDecisionInput,
 };
