@@ -422,6 +422,44 @@ function normalizePipelineTemporalHintValue(hint) {
   return normalizeText(hint.value || hint.type || '') || null;
 }
 
+
+function buildInitialChatAnalysis({ thought, content, buildLegacyAnalysis } = {}) {
+  const normalizedContent = normalizeText(
+    thought && typeof thought === 'object' ? thought.content : content
+  );
+
+  if (typeof buildLegacyAnalysis !== 'function') {
+    return {
+      type: 'note',
+      is_task: false,
+      is_idea: false,
+      is_emotion: false,
+      is_project: false,
+      project_name: null,
+      urgency: 'normal',
+      suggested_bucket: 'inbox',
+      tags: ['note'],
+      datetime_hint: null,
+      conversation_intent: 'chat',
+      raw_text: normalizedContent,
+      orchestration_source: 'cognitive_orchestrator',
+      behavior_changed: false,
+    };
+  }
+
+  const legacyAnalysis = buildLegacyAnalysis(normalizedContent);
+  const normalizedAnalysis = legacyAnalysis && typeof legacyAnalysis === 'object'
+    ? { ...legacyAnalysis }
+    : {};
+
+  return {
+    ...normalizedAnalysis,
+    raw_text: normalizeText(normalizedAnalysis.raw_text || normalizedContent),
+    orchestration_source: 'cognitive_orchestrator',
+    behavior_changed: false,
+  };
+}
+
 function buildPipelineAnalysisContext(thoughtOrchestration) {
   const understanding = getPipelineUnderstandingOutput(thoughtOrchestration);
   const reasoning = getPipelineReasoningOutput(thoughtOrchestration);
@@ -558,6 +596,7 @@ async function orchestrateThought({
 
 module.exports = {
   buildNyraCognitiveOrchestration,
+  buildInitialChatAnalysis,
   buildPipelineAnalysisContext,
   buildPipelineContext,
   createThought,

@@ -17,6 +17,7 @@ const { compressTask } = require('./engines/actionCompressionEngine');
 const { analyzeMomentumRecovery } = require('./engines/momentumRecoveryEngine');
 const {
   buildNyraCognitiveOrchestration,
+  buildInitialChatAnalysis,
   buildPipelineAnalysisContext,
   createThought,
   orchestrateThought,
@@ -10255,8 +10256,15 @@ app.post('/chat', async (req, res) => {
     });
 
     const memorySummary = getStoreSummary(userId);
+    const initialAnalysis = typeof buildInitialChatAnalysis === 'function'
+      ? buildInitialChatAnalysis({
+          thought,
+          buildLegacyAnalysis: analyzeMessage,
+        })
+      : analyzeMessage(thought.content);
+
     const localAnalysis = enrichAnalysisWithPipelineContext(
-      analyzeMessage(thought.content),
+      initialAnalysis,
       thoughtOrchestration
     );
     const analysis = enrichAnalysisWithPipelineContext(
