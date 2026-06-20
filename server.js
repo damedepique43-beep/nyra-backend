@@ -2004,27 +2004,39 @@ function normalizeAIUnderstanding(localAnalysis, aiUnderstanding) {
     projectName ? normalizeKey(projectName) : null,
   ]);
 
+  const isEmotion = Boolean(aiUnderstanding.is_emotion ?? localAnalysis.is_emotion);
+  const hasOperationalRequest = hasExplicitOperationalRequest(localAnalysis.raw_text || '');
+  const shouldKeepReflectionFirst = (
+    isEmotion &&
+    !hasOperationalRequest &&
+    (suggestedBucket === 'journal' || type === 'emotion' || aiUnderstanding.response_level === 'reflection')
+  );
+
   return {
     ...localAnalysis,
-    type,
-    is_task: Boolean(aiUnderstanding.is_task ?? localAnalysis.is_task),
+    type: shouldKeepReflectionFirst ? 'emotion' : type,
+    is_task: shouldKeepReflectionFirst ? false : Boolean(aiUnderstanding.is_task ?? localAnalysis.is_task),
     is_idea: Boolean(aiUnderstanding.is_idea ?? localAnalysis.is_idea),
-    is_emotion: Boolean(aiUnderstanding.is_emotion ?? localAnalysis.is_emotion),
+    is_emotion: isEmotion,
     is_project: Boolean(aiUnderstanding.is_project ?? localAnalysis.is_project ?? projectName),
     project_name: projectName,
     urgency: ['low', 'normal', 'high'].includes(aiUnderstanding.urgency)
       ? aiUnderstanding.urgency
       : localAnalysis.urgency,
-    suggested_bucket: suggestedBucket,
+    suggested_bucket: shouldKeepReflectionFirst ? 'journal' : suggestedBucket,
     datetime_hint: normalizeText(aiUnderstanding.datetime_hint || '') || localAnalysis.datetime_hint || null,
-    response_level: ['capture', 'reflection', 'project'].includes(aiUnderstanding.response_level)
-      ? aiUnderstanding.response_level
+    response_level: shouldKeepReflectionFirst
+      ? 'reflection'
       : (
-          localAnalysis.is_emotion
-            ? 'reflection'
-            : localAnalysis.is_project
-              ? 'project'
-              : 'capture'
+          ['capture', 'reflection', 'project'].includes(aiUnderstanding.response_level)
+            ? aiUnderstanding.response_level
+            : (
+                localAnalysis.is_emotion
+                  ? 'reflection'
+                  : localAnalysis.is_project
+                    ? 'project'
+                    : 'capture'
+              )
         ),
     user_intent: normalizeText(aiUnderstanding.user_intent || ''),
     conversation_intent: conversationIntent,
@@ -2124,6 +2136,7 @@ function analyzeMessage(message) {
     tags: [],
     datetime_hint: detectDatetimeHint(text),
     conversation_intent: detectConversationIntent(text),
+    raw_text: text,
   };
 
   if (isReflectionResumeRequest(text)) {
@@ -2185,6 +2198,13 @@ function analyzeMessage(message) {
       'fatigué',
       'peur',
       'mal',
+      'surcharge',
+      'surcharge émotionnelle',
+      'surcharge emotionnelle',
+      'débordée',
+      'debordee',
+      'débordé',
+      'deborde',
     ])
   ) {
     analysis.type = analysis.is_task || analysis.is_idea ? 'mixed' : 'emotion';
@@ -2254,9 +2274,61 @@ function analyzeMessage(message) {
   return analysis;
 }
 
+function hasExplicitOperationalRequest(text) {
+  const lower = normalizeText(text).toLowerCase();
+
+  return includesAny(lower, [
+    'rappelle-moi',
+    'rappelle moi',
+    'crée un rappel',
+    'créer un rappel',
+    'ajoute ça à mes priorités',
+    'ajoute ça à aujourd’hui',
+    "ajoute ça à aujourd'hui",
+    'ajouter à aujourd’hui',
+    "ajouter à aujourd'hui",
+    'ajoute à ma liste',
+    'ajoute à la liste',
+    'liste de courses',
+    'liste des courses',
+    'transforme cette idée en tâche',
+    'transformer en tâche',
+    'transforme ça en tâche',
+    'planifier ça',
+    'planifier maintenant',
+    'traiter ça maintenant',
+    'traiter maintenant',
+  ]);
+}
+
+function isReflectionFirstAnalysis(analysis) {
+  const tags = Array.isArray(analysis?.tags) ? analysis.tags : [];
+
+  return (
+    Boolean(analysis?.is_emotion) ||
+    normalizeText(analysis?.type) === 'emotion' ||
+    normalizeText(analysis?.suggested_bucket) === 'journal' ||
+    normalizeText(analysis?.response_level) === 'reflection' ||
+    tags.includes('émotion') ||
+    tags.includes('emotion') ||
+    tags.includes('réflexion') ||
+    tags.includes('reflection')
+  );
+}
+
+function shouldPreventAutomaticActionForReflection(message, analysis) {
+  if (!isReflectionFirstAnalysis(analysis)) return false;
+
+  return !hasExplicitOperationalRequest(message);
+}
+
 function detectAction(message, userId, analysis) {
   const text = normalizeText(message);
   const lower = text.toLowerCase();
+
+  if (shouldPreventAutomaticActionForReflection(text, analysis)) {
+    return null;
+  }
 
   if (isShoppingListRequest(lower)) {
     const shoppingItem = extractShoppingListItem(message) || cleanActionTitle(message);
@@ -3481,52 +3553,7 @@ function upsertJournalConversationItem({ store, userId, message, reply, analysis
   return syncReflectionSubjectMetadata(store, subject);
 }
 
-function buildCognitiveConversationTrace(thoughtOrchestration) {
-  const safeOrchestration = thoughtOrchestration && typeof thoughtOrchestration === 'object'
-    ? thoughtOrchestration
-    : {};
-  const thought = safeOrchestration.thought && typeof safeOrchestration.thought === 'object'
-    ? safeOrchestration.thought
-    : null;
-  const understanding = safeOrchestration.understanding && typeof safeOrchestration.understanding === 'object'
-    ? safeOrchestration.understanding
-    : null;
-  const understandingOutput = understanding?.output && typeof understanding.output === 'object'
-    ? understanding.output
-    : understanding;
-  const reasoning = safeOrchestration.reasoning && typeof safeOrchestration.reasoning === 'object'
-    ? safeOrchestration.reasoning
-    : null;
-  const reasoningOutput = reasoning?.output && typeof reasoning.output === 'object'
-    ? reasoning.output
-    : reasoning;
-  const pipeline = safeOrchestration.pipeline && typeof safeOrchestration.pipeline === 'object'
-    ? safeOrchestration.pipeline
-    : null;
-
-  return {
-    thought_id: thought?.id || understandingOutput?.thought_id || reasoningOutput?.thought_id || null,
-    source: thought?.source || understandingOutput?.source || 'chat',
-    pipeline_status: pipeline?.status || null,
-    understanding_type: understandingOutput?.type || null,
-    primary_intent: understandingOutput?.intent?.primary || reasoningOutput?.primary_intent || null,
-    confidence: understandingOutput?.confidence ?? understandingOutput?.intent?.confidence ?? null,
-    observation_count: Array.isArray(understandingOutput?.observations) ? understandingOutput.observations.length : 0,
-    fact_count: Array.isArray(understandingOutput?.facts) ? understandingOutput.facts.length : 0,
-    hypothesis_count: Array.isArray(understandingOutput?.hypotheses) ? understandingOutput.hypotheses.length : 0,
-    hypothesis_types: Array.isArray(understandingOutput?.hypotheses)
-      ? uniqueArray(understandingOutput.hypotheses.map(hypothesis => normalizeText(hypothesis?.type)).filter(Boolean))
-      : [],
-    reasoning_strategy_count: Array.isArray(reasoningOutput?.strategies) ? reasoningOutput.strategies.length : 0,
-    reasoning_strategy_ids: Array.isArray(reasoningOutput?.strategies)
-      ? uniqueArray(reasoningOutput.strategies.map(strategy => normalizeText(strategy?.id)).filter(Boolean))
-      : [],
-    model_note: 'Trace cognitive légère liée à la conversation. Ne constitue pas le Modèle Cognitif Vivant.',
-    generated_at: nowIso(),
-  };
-}
-
-function saveCapture({ userId, message, reply, analysis, action, cognitiveTrace = null }) {
+function saveCapture({ userId, message, reply, analysis, action }) {
   const store = readStore();
 
   const shouldUseJournalConversation = isJournalConversationCapture(analysis, action);
@@ -3658,8 +3685,6 @@ function saveCapture({ userId, message, reply, analysis, action, cognitiveTrace 
     project_id: linkedProject ? linkedProject.id : null,
     project_name: linkedProject ? linkedProject.name : null,
     relation_id: createdRelation ? createdRelation.id : null,
-    thought_id: cognitiveTrace?.thought_id || null,
-    cognitive_trace: cognitiveTrace && typeof cognitiveTrace === 'object' ? cognitiveTrace : null,
     created_at: nowIso(),
   });
 
@@ -10246,7 +10271,6 @@ app.post('/chat', async (req, res) => {
       reply,
       analysis,
       action,
-      cognitiveTrace: buildCognitiveConversationTrace(thoughtOrchestration),
     });
 
     res.json({
