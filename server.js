@@ -2566,6 +2566,20 @@ function resolveExecutableActionFromDecision(action, decision) {
   return action || null;
 }
 
+
+function dispatchChatExecution({ userId, message, reply, analysis, action, decision } = {}) {
+  // Execution Dispatcher V1 : point d’entrée unique pour l’exécution issue du chat.
+  // Pour cette première étape, il conserve exactement le comportement historique
+  // en déléguant à saveCapture(), mais sépare déjà la décision de l’exécution.
+  return saveCapture({
+    userId,
+    message,
+    reply,
+    analysis,
+    action,
+  });
+}
+
 function buildSuggestions(analysis, action) {
   if (action) return [];
 
@@ -10316,12 +10330,13 @@ app.post('/chat', async (req, res) => {
 
     const reply = normalizeText(replyResult?.reply) || buildActionReply(action) || 'Je l’ai capté. Je le range dans Nyra.';
 
-    const saved = saveCapture({
+    const saved = dispatchChatExecution({
       userId,
       message: thought.content,
       reply,
       analysis,
       action,
+      decision,
     });
 
     const chatResponse = buildChatCognitiveResponse({
