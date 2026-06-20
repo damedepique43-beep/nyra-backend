@@ -2569,14 +2569,18 @@ function resolveExecutableActionFromDecision(action, decision) {
 
 function dispatchChatExecution({ userId, message, reply, analysis, action, decision } = {}) {
   // Execution Dispatcher V1 : point d’entrée unique pour l’exécution issue du chat.
-  // Pour cette première étape, il conserve exactement le comportement historique
-  // en déléguant à saveCapture(), mais sépare déjà la décision de l’exécution.
+  // Le dispatcher applique désormais lui-même le garde-fou Decision -> Execution.
+  // Ainsi, aucune action ne peut être exécutée si la décision cognitive demande
+  // explicitement de ne pas exécuter. Le comportement utilisateur reste inchangé :
+  // la capture est toujours sauvegardée, mais sans action opérationnelle.
+  const executableAction = resolveExecutableActionFromDecision(action, decision);
+
   return saveCapture({
     userId,
     message,
     reply,
     analysis,
-    action,
+    action: executableAction,
   });
 }
 
