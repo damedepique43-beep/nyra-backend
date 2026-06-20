@@ -2551,6 +2551,64 @@ function detectAction(message, userId, analysis) {
 }
 
 
+function buildChatCandidateDecision({ thought, analysis, detectedAction, decision, thoughtOrchestration } = {}) {
+  // Candidate Decision V1 : objet de transition entre Reasoning/Decision et Execution.
+  // Il ne décide pas encore à la place du Decision Engine : il encapsule simplement
+  // la décision actuelle, l'action candidate et les garde-fous associés.
+  // Objectif : préparer la migration de la responsabilité décisionnelle hors de server.js
+  // sans modifier le comportement utilisateur validé.
+  const normalizedDecision = decision && typeof decision === 'object'
+    ? decision
+    : null;
+
+  const candidateAction = detectedAction || null;
+  const shouldExecute = normalizedDecision?.should_execute === false
+    ? false
+    : Boolean(candidateAction);
+
+  const decisionType = normalizeText(
+    normalizedDecision?.decision_type ||
+    normalizedDecision?.type ||
+    (shouldExecute ? 'execute_candidate_action' : 'no_action')
+  ) || (shouldExecute ? 'execute_candidate_action' : 'no_action');
+
+  return {
+    id: crypto.randomUUID(),
+    source: 'chat',
+    decision_layer: 'candidate_decision_v1',
+    thought_id: thought?.id || null,
+    decision_type: decisionType,
+    should_execute: shouldExecute,
+    candidate_action: candidateAction,
+    normalized_decision: normalizedDecision,
+    analysis_summary: {
+      type: analysis?.type || null,
+      suggested_bucket: analysis?.suggested_bucket || null,
+      response_level: analysis?.response_level || null,
+      conversation_intent: analysis?.conversation_intent || null,
+      urgency: analysis?.urgency || null,
+      is_task: Boolean(analysis?.is_task),
+      is_idea: Boolean(analysis?.is_idea),
+      is_emotion: Boolean(analysis?.is_emotion),
+      is_project: Boolean(analysis?.is_project),
+    },
+    pipeline_context: buildPipelineAnalysisContext(thoughtOrchestration) || null,
+    created_at: nowIso(),
+  };
+}
+
+function resolveExecutableActionFromCandidateDecision(candidateDecision) {
+  if (!candidateDecision || typeof candidateDecision !== 'object') {
+    return null;
+  }
+
+  if (candidateDecision.should_execute === false) {
+    return null;
+  }
+
+  return candidateDecision.candidate_action || null;
+}
+
 function resolveExecutableActionFromDecision(action, decision) {
   if (!decision || typeof decision !== 'object') {
     return action || null;
@@ -2567,13 +2625,15 @@ function resolveExecutableActionFromDecision(action, decision) {
 }
 
 
-function dispatchChatExecution({ userId, message, reply, analysis, action, decision } = {}) {
+function dispatchChatExecution({ userId, message, reply, analysis, action, decision, candidateDecision } = {}) {
   // Execution Dispatcher V1 : point d’entrée unique pour l’exécution issue du chat.
   // Le dispatcher applique désormais lui-même le garde-fou Decision -> Execution.
   // Ainsi, aucune action ne peut être exécutée si la décision cognitive demande
   // explicitement de ne pas exécuter. Le comportement utilisateur reste inchangé :
   // la capture est toujours sauvegardée, mais sans action opérationnelle.
-  const executableAction = resolveExecutableActionFromDecision(action, decision);
+  const executableAction = candidateDecision
+    ? resolveExecutableActionFromCandidateDecision(candidateDecision)
+    : resolveExecutableActionFromDecision(action, decision);
 
   return saveCapture({
     userId,
@@ -10316,7 +10376,14 @@ app.post('/chat', async (req, res) => {
           thoughtOrchestration,
         })
       : null;
-    const action = resolveExecutableActionFromDecision(detectedAction, decision);
+    const candidateDecision = buildChatCandidateDecision({
+      thought,
+      analysis,
+      detectedAction,
+      decision,
+      thoughtOrchestration,
+    });
+    const action = resolveExecutableActionFromCandidateDecision(candidateDecision);
     const suggestions = buildSuggestions(analysis, action);
 
     const replyResult = typeof buildChatReply === 'function'
@@ -10341,6 +10408,7 @@ app.post('/chat', async (req, res) => {
       analysis,
       action,
       decision,
+      candidateDecision,
     });
 
     const chatResponse = buildChatCognitiveResponse({
