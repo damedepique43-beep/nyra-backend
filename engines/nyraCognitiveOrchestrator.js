@@ -594,6 +594,31 @@ async function orchestrateThought({
   };
 }
 
+function buildChatAnalysisWithPipeline({
+  thought,
+  content,
+  thoughtOrchestration,
+  buildLegacyAnalysis,
+} = {}) {
+  const initialAnalysis = buildInitialChatAnalysis({
+    thought,
+    content,
+    buildLegacyAnalysis,
+  });
+
+  const pipelineAnalysisContext = buildPipelineAnalysisContext(thoughtOrchestration);
+
+  if (!pipelineAnalysisContext) {
+    return initialAnalysis;
+  }
+
+  return {
+    ...initialAnalysis,
+    cognitive_pipeline_context: pipelineAnalysisContext,
+  };
+}
+
+
 
 function buildChatCognitiveResponse({
   thoughtOrchestration,
@@ -632,6 +657,7 @@ function buildChatCognitiveResponse({
 module.exports = {
   buildNyraCognitiveOrchestration,
   buildInitialChatAnalysis,
+  buildChatAnalysisWithPipeline,
   buildChatCognitiveResponse,
   buildPipelineAnalysisContext,
   buildPipelineContext,

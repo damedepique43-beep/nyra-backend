@@ -18,6 +18,7 @@ const { analyzeMomentumRecovery } = require('./engines/momentumRecoveryEngine');
 const {
   buildNyraCognitiveOrchestration,
   buildInitialChatAnalysis,
+  buildChatAnalysisWithPipeline,
   buildChatCognitiveResponse,
   buildPipelineAnalysisContext,
   createThought,
@@ -10257,17 +10258,21 @@ app.post('/chat', async (req, res) => {
     });
 
     const memorySummary = getStoreSummary(userId);
-    const initialAnalysis = typeof buildInitialChatAnalysis === 'function'
-      ? buildInitialChatAnalysis({
+    const localAnalysis = typeof buildChatAnalysisWithPipeline === 'function'
+      ? buildChatAnalysisWithPipeline({
           thought,
+          thoughtOrchestration,
           buildLegacyAnalysis: analyzeMessage,
         })
-      : analyzeMessage(thought.content);
-
-    const localAnalysis = enrichAnalysisWithPipelineContext(
-      initialAnalysis,
-      thoughtOrchestration
-    );
+      : enrichAnalysisWithPipelineContext(
+          typeof buildInitialChatAnalysis === 'function'
+            ? buildInitialChatAnalysis({
+                thought,
+                buildLegacyAnalysis: analyzeMessage,
+              })
+            : analyzeMessage(thought.content),
+          thoughtOrchestration
+        );
     const analysis = enrichAnalysisWithPipelineContext(
       await analyzeMessageWithAI(thought.content, localAnalysis, memorySummary),
       thoughtOrchestration
