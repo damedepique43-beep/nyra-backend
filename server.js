@@ -9215,6 +9215,13 @@ app.post('/store/actions/:actionId/complete', (req, res) => {
     });
   }
 
+  const linkedItem = result.item || (Array.isArray(store.items)
+    ? store.items.find(item => item.id === result.action?.item_id || item.action_id === result.action?.id)
+    : null);
+  const archivedItems = linkedItem
+    ? completeMatchingOrganizationItems(store, userId, linkedItem)
+    : [];
+
   writeStore(store);
 
   return res.json({
@@ -9223,6 +9230,7 @@ app.post('/store/actions/:actionId/complete', (req, res) => {
     action: result.action,
     event: result.event,
     linked_item: result.item,
+    archived_items: archivedItems,
   });
 });
 
@@ -9672,6 +9680,12 @@ app.patch('/store/items/:itemId', (req, res) => {
 
   item.updated_at = nowIso();
 
+  const shouldCompleteLinkedOrganizationItems =
+    Boolean(item.checked) || isCompletedStatus(item.status);
+  const linkedCompletedItems = shouldCompleteLinkedOrganizationItems
+    ? completeMatchingOrganizationItems(store, userId, item)
+    : [];
+
   const previousBucket = item.previous_bucket || item.bucket;
   const archivedItem = archiveCompletedOrganizationItem(store, item);
   const shoppingArchive = previousBucket === 'shopping_list'
@@ -9687,6 +9701,7 @@ app.patch('/store/items/:itemId', (req, res) => {
     item,
     action,
     archived_item: archivedItem,
+    linked_completed_items: linkedCompletedItems,
     shopping_archive: shoppingArchive,
     message: archivedItem ? 'Élément terminé et archivé dans la mémoire.' : 'Élément mis à jour.',
   });
