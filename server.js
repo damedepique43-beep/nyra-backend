@@ -18,6 +18,7 @@ const { analyzeMomentumRecovery } = require('./engines/momentumRecoveryEngine');
 const {
   buildNyraCognitiveOrchestration,
   buildInitialChatAnalysis,
+  buildChatCognitiveResponse,
   buildPipelineAnalysisContext,
   createThought,
   orchestrateThought,
@@ -10306,26 +10307,39 @@ app.post('/chat', async (req, res) => {
       action,
     });
 
-    res.json({
-      ok: true,
-      reply,
-      message: reply,
-      analysis,
-      action,
-      suggestions,
-      thought: thoughtOrchestration.thought,
-      cognitive_pipeline: thoughtOrchestration.pipeline,
-      stored_item: saved.item,
-      stored_action: saved.action,
-      linked_project: saved.project,
-      created_relation: saved.relation,
-      updated_context: saved.context,
-      user_state: saved.user_state,
-      memory_summary: getStoreSummary(userId),
-      perf: {
-        total_ms: Date.now() - startedAt,
-      },
-    });
+    const chatResponse = typeof buildChatCognitiveResponse === 'function'
+      ? buildChatCognitiveResponse({
+          thoughtOrchestration,
+          reply,
+          analysis,
+          action,
+          suggestions,
+          saved,
+          memorySummary: getStoreSummary(userId),
+          startedAt,
+        })
+      : {
+          ok: true,
+          reply,
+          message: reply,
+          analysis,
+          action,
+          suggestions,
+          thought: thoughtOrchestration.thought,
+          cognitive_pipeline: thoughtOrchestration.pipeline,
+          stored_item: saved.item,
+          stored_action: saved.action,
+          linked_project: saved.project,
+          created_relation: saved.relation,
+          updated_context: saved.context,
+          user_state: saved.user_state,
+          memory_summary: getStoreSummary(userId),
+          perf: {
+            total_ms: Date.now() - startedAt,
+          },
+        };
+
+    res.json(chatResponse);
   } catch (error) {
     console.error('❌ /chat error:', error.message);
 

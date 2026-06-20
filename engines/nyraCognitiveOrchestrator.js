@@ -594,9 +594,45 @@ async function orchestrateThought({
   };
 }
 
+
+function buildChatCognitiveResponse({
+  thoughtOrchestration,
+  reply,
+  analysis,
+  action,
+  suggestions,
+  saved,
+  memorySummary,
+  startedAt,
+} = {}) {
+  const safeSaved = saved && typeof saved === 'object' ? saved : {};
+
+  return {
+    ok: true,
+    reply,
+    message: reply,
+    analysis,
+    action,
+    suggestions,
+    thought: thoughtOrchestration?.thought || null,
+    cognitive_pipeline: thoughtOrchestration?.pipeline || null,
+    stored_item: safeSaved.item,
+    stored_action: safeSaved.action,
+    linked_project: safeSaved.project,
+    created_relation: safeSaved.relation,
+    updated_context: safeSaved.context,
+    user_state: safeSaved.user_state,
+    memory_summary: memorySummary,
+    perf: {
+      total_ms: startedAt ? Date.now() - startedAt : null,
+    },
+  };
+}
+
 module.exports = {
   buildNyraCognitiveOrchestration,
   buildInitialChatAnalysis,
+  buildChatCognitiveResponse,
   buildPipelineAnalysisContext,
   buildPipelineContext,
   createThought,
