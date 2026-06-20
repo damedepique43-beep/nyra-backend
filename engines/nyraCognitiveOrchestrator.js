@@ -594,31 +594,63 @@ async function orchestrateThought({
   };
 }
 
-function buildChatAnalysisWithPipeline({
+
+
+async function buildChatReply({
+  openaiClient,
+  model,
+  analysis,
+  memorySummary,
   thought,
-  content,
-  thoughtOrchestration,
-  buildLegacyAnalysis,
+  action,
+  buildActionReply,
+  buildSystemPrompt,
+  fallbackReply = 'Je l’ai capté. Je le range dans Nyra.',
 } = {}) {
-  const initialAnalysis = buildInitialChatAnalysis({
-    thought,
-    content,
-    buildLegacyAnalysis,
-  });
+  if (typeof buildActionReply === 'function') {
+    const actionReply = buildActionReply(action);
 
-  const pipelineAnalysisContext = buildPipelineAnalysisContext(thoughtOrchestration);
-
-  if (!pipelineAnalysisContext) {
-    return initialAnalysis;
+    if (actionReply) {
+      return {
+        reply: actionReply,
+        source: 'action_reply',
+        behavior_changed: false,
+      };
+    }
   }
 
+  if (!openaiClient?.chat?.completions?.create || typeof buildSystemPrompt !== 'function') {
+    return {
+      reply: normalizeText(fallbackReply),
+      source: 'fallback',
+      behavior_changed: false,
+    };
+  }
+
+  const completion = await openaiClient.chat.completions.create({
+    model,
+    temperature: 0.45,
+    max_tokens: 150,
+    messages: [
+      {
+        role: 'system',
+        content: buildSystemPrompt(analysis, memorySummary),
+      },
+      {
+        role: 'user',
+        content: normalizeText(thought?.content || ''),
+      },
+    ],
+  });
+
+  const reply = normalizeText(completion.choices?.[0]?.message?.content) || normalizeText(fallbackReply);
+
   return {
-    ...initialAnalysis,
-    cognitive_pipeline_context: pipelineAnalysisContext,
+    reply,
+    source: 'openai',
+    behavior_changed: false,
   };
 }
-
-
 
 function buildChatCognitiveResponse({
   thoughtOrchestration,
@@ -657,7 +689,7 @@ function buildChatCognitiveResponse({
 module.exports = {
   buildNyraCognitiveOrchestration,
   buildInitialChatAnalysis,
-  buildChatAnalysisWithPipeline,
+  buildChatReply,
   buildChatCognitiveResponse,
   buildPipelineAnalysisContext,
   buildPipelineContext,

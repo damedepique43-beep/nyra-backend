@@ -18,7 +18,7 @@ const { analyzeMomentumRecovery } = require('./engines/momentumRecoveryEngine');
 const {
   buildNyraCognitiveOrchestration,
   buildInitialChatAnalysis,
-  buildChatAnalysisWithPipeline,
+  buildChatReply,
   buildChatCognitiveResponse,
   buildPipelineAnalysisContext,
   createThought,
@@ -10258,21 +10258,17 @@ app.post('/chat', async (req, res) => {
     });
 
     const memorySummary = getStoreSummary(userId);
-    const localAnalysis = typeof buildChatAnalysisWithPipeline === 'function'
-      ? buildChatAnalysisWithPipeline({
+    const initialAnalysis = typeof buildInitialChatAnalysis === 'function'
+      ? buildInitialChatAnalysis({
           thought,
-          thoughtOrchestration,
           buildLegacyAnalysis: analyzeMessage,
         })
-      : enrichAnalysisWithPipelineContext(
-          typeof buildInitialChatAnalysis === 'function'
-            ? buildInitialChatAnalysis({
-                thought,
-                buildLegacyAnalysis: analyzeMessage,
-              })
-            : analyzeMessage(thought.content),
-          thoughtOrchestration
-        );
+      : analyzeMessage(thought.content);
+
+    const localAnalysis = enrichAnalysisWithPipelineContext(
+      initialAnalysis,
+      thoughtOrchestration
+    );
     const analysis = enrichAnalysisWithPipelineContext(
       await analyzeMessageWithAI(thought.content, localAnalysis, memorySummary),
       thoughtOrchestration
@@ -10280,29 +10276,20 @@ app.post('/chat', async (req, res) => {
     const action = detectAction(thought.content, userId, analysis);
     const suggestions = buildSuggestions(analysis, action);
 
-    let reply = buildActionReply(action);
+    const replyResult = typeof buildChatReply === 'function'
+      ? await buildChatReply({
+          openaiClient: openai,
+          model: OPENAI_MODEL,
+          analysis,
+          memorySummary,
+          thought,
+          action,
+          buildActionReply,
+          buildSystemPrompt,
+        })
+      : null;
 
-    if (!reply) {
-      const completion = await openai.chat.completions.create({
-        model: OPENAI_MODEL,
-        temperature: 0.45,
-        max_tokens: 150,
-        messages: [
-          {
-            role: 'system',
-            content: buildSystemPrompt(analysis, memorySummary),
-          },
-          {
-            role: 'user',
-            content: thought.content,
-          },
-        ],
-      });
-
-      reply =
-        normalizeText(completion.choices?.[0]?.message?.content) ||
-        'Je l’ai capté. Je le range dans Nyra.';
-    }
+    const reply = normalizeText(replyResult?.reply) || buildActionReply(action) || 'Je l’ai capté. Je le range dans Nyra.';
 
     const saved = saveCapture({
       userId,
