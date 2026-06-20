@@ -2550,6 +2550,22 @@ function detectAction(message, userId, analysis) {
   return null;
 }
 
+
+function resolveExecutableActionFromDecision(action, decision) {
+  if (!decision || typeof decision !== 'object') {
+    return action || null;
+  }
+
+  // Première micro-migration Decision : la décision normalisée devient le garde-fou
+  // de l'exécution. Pour l'instant, cela ne change que les cas no_action / clarify,
+  // qui restent sans action exécutée comme auparavant.
+  if (decision.should_execute === false) {
+    return null;
+  }
+
+  return action || null;
+}
+
 function buildSuggestions(analysis, action) {
   if (action) return [];
 
@@ -10274,14 +10290,15 @@ app.post('/chat', async (req, res) => {
       await analyzeMessageWithAI(thought.content, localAnalysis, memorySummary),
       thoughtOrchestration
     );
-    const action = detectAction(thought.content, userId, analysis);
+    const detectedAction = detectAction(thought.content, userId, analysis);
     const decision = typeof buildChatActionDecision === 'function'
       ? buildChatActionDecision({
-          action,
+          action: detectedAction,
           analysis,
           thoughtOrchestration,
         })
       : null;
+    const action = resolveExecutableActionFromDecision(detectedAction, decision);
     const suggestions = buildSuggestions(analysis, action);
 
     const replyResult = typeof buildChatReply === 'function'
