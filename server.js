@@ -2274,6 +2274,118 @@ function analyzeMessage(message) {
   return analysis;
 }
 
+
+function getPipelineUnderstandingOutput(thoughtOrchestration) {
+  const understanding = thoughtOrchestration?.understanding;
+
+  if (understanding?.output && typeof understanding.output === 'object') {
+    return understanding.output;
+  }
+
+  if (understanding && typeof understanding === 'object') {
+    return understanding;
+  }
+
+  return null;
+}
+
+function getPipelineReasoningOutput(thoughtOrchestration) {
+  const reasoning = thoughtOrchestration?.reasoning;
+
+  if (reasoning?.output && typeof reasoning.output === 'object') {
+    return reasoning.output;
+  }
+
+  if (reasoning && typeof reasoning === 'object') {
+    return reasoning;
+  }
+
+  return null;
+}
+
+function normalizePipelineTemporalHintValue(hint) {
+  if (!hint || typeof hint !== 'object') return null;
+
+  if (hint.type === 'relative_duration' && hint.value && typeof hint.value === 'object') {
+    const amount = Number(hint.value.amount || 0);
+    const unit = normalizeText(hint.value.unit || '');
+
+    if (amount > 0 && unit) {
+      return `dans ${amount} ${unit}`;
+    }
+  }
+
+  return normalizeText(hint.value || hint.type || '') || null;
+}
+
+function buildPipelineAnalysisContext(thoughtOrchestration) {
+  const understanding = getPipelineUnderstandingOutput(thoughtOrchestration);
+  const reasoning = getPipelineReasoningOutput(thoughtOrchestration);
+
+  if (!understanding && !reasoning) return null;
+
+  const intent = understanding?.intent && typeof understanding.intent === 'object'
+    ? understanding.intent
+    : null;
+
+  const temporalHints = Array.isArray(understanding?.temporal_hints)
+    ? understanding.temporal_hints
+    : [];
+
+  const projectHints = Array.isArray(understanding?.project_hints)
+    ? understanding.project_hints
+    : [];
+
+  const emotionalSignals = Array.isArray(understanding?.emotional_signals)
+    ? understanding.emotional_signals
+    : [];
+
+  const strategies = Array.isArray(reasoning?.strategies)
+    ? reasoning.strategies
+    : [];
+
+  return {
+    source: 'cognitive_pipeline',
+    behavior_changed: false,
+    understanding: understanding
+      ? {
+          type: normalizeText(understanding.type || ''),
+          primary_intent: normalizeText(intent?.primary || understanding.primary_intent || ''),
+          confidence: Number(intent?.confidence ?? understanding.confidence ?? 0),
+          temporal_hint: normalizePipelineTemporalHintValue(temporalHints[0]),
+          project_hint: normalizeText(projectHints[0]?.value || ''),
+          emotional_signal_count: emotionalSignals.length,
+          observation_count: Array.isArray(understanding.observations) ? understanding.observations.length : 0,
+          fact_count: Array.isArray(understanding.facts) ? understanding.facts.length : 0,
+          hypothesis_count: Array.isArray(understanding.hypotheses) ? understanding.hypotheses.length : 0,
+        }
+      : null,
+    reasoning: reasoning
+      ? {
+          strategy_count: strategies.length,
+          top_strategy: normalizeText(strategies[0]?.type || strategies[0]?.strategy || ''),
+          clarification_recommended: Boolean(
+            reasoning.clarification_recommended ||
+            reasoning.needs_clarification ||
+            strategies.some(strategy => normalizeText(strategy?.type || strategy?.strategy || '').includes('clarification'))
+          ),
+        }
+      : null,
+  };
+}
+
+function enrichAnalysisWithPipelineContext(analysis, thoughtOrchestration) {
+  const safeAnalysis = analysis && typeof analysis === 'object' ? analysis : {};
+  const pipelineAnalysisContext = buildPipelineAnalysisContext(thoughtOrchestration);
+
+  if (!pipelineAnalysisContext) return safeAnalysis;
+
+  return {
+    ...safeAnalysis,
+    cognitive_pipeline_context: pipelineAnalysisContext,
+  };
+}
+
 function hasExplicitOperationalRequest(text) {
   const lower = normalizeText(text).toLowerCase();
 
@@ -10236,8 +10348,14 @@ app.post('/chat', async (req, res) => {
     });
 
     const memorySummary = getStoreSummary(userId);
-    const localAnalysis = analyzeMessage(thought.content);
-    const analysis = await analyzeMessageWithAI(thought.content, localAnalysis, memorySummary);
+    const localAnalysis = enrichAnalysisWithPipelineContext(
+      analyzeMessage(thought.content),
+      thoughtOrchestration
+    );
+    const analysis = enrichAnalysisWithPipelineContext(
+      await analyzeMessageWithAI(thought.content, localAnalysis, memorySummary),
+      thoughtOrchestration
+    );
     const action = detectAction(thought.content, userId, analysis);
     const suggestions = buildSuggestions(analysis, action);
 
