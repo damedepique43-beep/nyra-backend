@@ -2119,6 +2119,23 @@ async function analyzeMessageWithAI(message, localAnalysis, memorySummary) {
   }
 }
 
+function enrichAnalysisWithPipelineContext(analysis, thoughtOrchestration) {
+  const normalizedAnalysis = analysis && typeof analysis === 'object'
+    ? { ...analysis }
+    : {};
+
+  const pipelineAnalysisContext = buildPipelineAnalysisContext(thoughtOrchestration);
+
+  if (!pipelineAnalysisContext) {
+    return normalizedAnalysis;
+  }
+
+  return {
+    ...normalizedAnalysis,
+    cognitive_pipeline_context: pipelineAnalysisContext,
+  };
+}
+
 function analyzeMessage(message) {
   const text = normalizeText(message);
   const lower = text.toLowerCase();
