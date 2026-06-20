@@ -168,27 +168,157 @@ function classifyHypothesis({ hypothesis, facts }) {
   return 'provisional';
 }
 
+function calculateAdjustedHypothesisConfidence({ confidence, supportLevel, contradicted }) {
+  if (contradicted) return Math.max(0, Math.round((confidence * 0.35) * 1000) / 1000);
+
+  const supportAdjustments = {
+    high: 0.12,
+    medium: 0.06,
+    low: -0.02,
+    none: -0.18,
+    unknown: -0.08,
+  };
+
+  return Math.round(clamp01(confidence + (supportAdjustments[supportLevel] ?? -0.08), confidence) * 1000) / 1000;
+}
+
+function explainHypothesisEvaluation({ hypothesis, supportLevel, contradicted, adjustedConfidence, evaluationStatus }) {
+  const explanations = [];
+  const type = normalizeText(hypothesis?.type || 'hypothesis');
+
+  if (contradicted) {
+    explanations.push(`Hypothèse ${type} mise de côté car contredite par les faits disponibles.`);
+  } else if (supportLevel === 'high' || supportLevel === 'medium') {
+    explanations.push(`Hypothèse ${type} renforcée par un support factuel ${supportLevel}.`);
+  } else if (supportLevel === 'low') {
+    explanations.push(`Hypothèse ${type} conservée mais avec support factuel faible.`);
+  } else if (supportLevel === 'none') {
+    explanations.push(`Hypothèse ${type} affaiblie car aucun fait référencé ne la soutient.`);
+  } else {
+    explanations.push(`Hypothèse ${type} conservée avec support factuel non vérifié.`);
+  }
+
+  explanations.push(`Statut ${evaluationStatus}, confiance ajustée ${adjustedConfidence}.`);
+
+  return explanations;
+}
+
 function evaluateHypotheses({ hypotheses = [], facts = [] } = {}) {
   return normalizeArray(hypotheses).map(hypothesis => {
     const safeHypothesis = normalizeObject(hypothesis);
     const confidence = clamp01(safeHypothesis.confidence, 0.5);
     const supportLevel = getSupportLevel({ hypothesis: safeHypothesis, facts });
     const contradicted = detectHypothesisContradiction({ hypothesis: safeHypothesis, facts });
-    const evaluationStatus = classifyHypothesis({ hypothesis: safeHypothesis, facts });
+    const adjustedConfidence = calculateAdjustedHypothesisConfidence({
+      confidence,
+      supportLevel,
+      contradicted,
+    });
+    const evaluationStatus = classifyHypothesis({
+      hypothesis: { ...safeHypothesis, confidence: adjustedConfidence },
+      facts,
+    });
     const requiresVerification = ['weak', 'provisional', 'needs_verification', 'contradicted'].includes(evaluationStatus);
 
     return {
       ...safeHypothesis,
       evaluation: {
         status: evaluationStatus,
-        confidence,
+        original_confidence: confidence,
+        confidence: adjustedConfidence,
         support_level: supportLevel,
         contradicted,
         requires_verification: requiresVerification,
         based_on_fact_count: normalizeArray(safeHypothesis.based_on_facts).length,
+        reasoning_notes: explainHypothesisEvaluation({
+          hypothesis: safeHypothesis,
+          supportLevel,
+          contradicted,
+          adjustedConfidence,
+          evaluationStatus,
+        }),
       },
     };
   });
+}
+
+function getHypothesisWeight(hypothesis) {
+  const status = normalizeText(hypothesis?.evaluation?.status || 'provisional');
+  const confidence = clamp01(hypothesis?.evaluation?.confidence ?? hypothesis?.confidence, 0.5);
+
+  const statusWeights = {
+    strong: 1,
+    plausible: 0.82,
+    provisional: 0.58,
+    needs_verification: 0.38,
+    weak: 0.18,
+    contradicted: 0,
+  };
+
+  return Math.round((confidence * (statusWeights[status] ?? 0.45)) * 1000) / 1000;
+}
+
+function groupHypothesesByType(hypotheses = []) {
+  return normalizeArray(hypotheses).reduce((groups, hypothesis) => {
+    const type = normalizeText(hypothesis?.type || 'unknown') || 'unknown';
+    if (!groups[type]) groups[type] = [];
+    groups[type].push(hypothesis);
+    return groups;
+  }, {});
+}
+
+function buildHypothesisReasoningState(hypotheses = []) {
+  const groups = groupHypothesesByType(hypotheses);
+  const activeHypotheses = [];
+  const rejectedHypotheses = [];
+  const competingHypotheses = [];
+
+  Object.entries(groups).forEach(([type, typedHypotheses]) => {
+    const sortedHypotheses = [...typedHypotheses].sort((a, b) => getHypothesisWeight(b) - getHypothesisWeight(a));
+    const usableHypotheses = sortedHypotheses.filter(isUsableHypothesis);
+    const bestHypothesis = usableHypotheses[0] || null;
+
+    if (bestHypothesis) {
+      activeHypotheses.push(bestHypothesis);
+    }
+
+    sortedHypotheses.forEach((hypothesis, index) => {
+      const status = normalizeText(hypothesis?.evaluation?.status || 'provisional');
+      const hypothesisId = hypothesis?.id || null;
+
+      if (status === 'contradicted' || status === 'weak') {
+        rejectedHypotheses.push({
+          id: hypothesisId,
+          type,
+          status,
+          reason: status === 'contradicted'
+            ? 'contradicted_by_available_facts'
+            : 'insufficient_support_or_confidence',
+        });
+        return;
+      }
+
+      if (index > 0 && bestHypothesis) {
+        const weightGap = getHypothesisWeight(bestHypothesis) - getHypothesisWeight(hypothesis);
+        if (weightGap < 0.18) {
+          competingHypotheses.push({
+            type,
+            primary_hypothesis_id: bestHypothesis.id || null,
+            competing_hypothesis_id: hypothesisId,
+            weight_gap: Math.round(weightGap * 1000) / 1000,
+          });
+        }
+      }
+    });
+  });
+
+  return {
+    active_hypotheses: activeHypotheses,
+    rejected_hypotheses: rejectedHypotheses,
+    competing_hypotheses: competingHypotheses,
+    has_competing_hypotheses: competingHypotheses.length > 0,
+    has_active_hypotheses: activeHypotheses.length > 0,
+  };
 }
 
 function buildReasoningBasis(understanding) {
@@ -201,6 +331,7 @@ function buildReasoningBasis(understanding) {
     hypotheses: layers.hypotheses,
     facts: layers.facts,
   });
+  const hypothesisReasoningState = buildHypothesisReasoningState(evaluatedHypotheses);
 
   return {
     primary_intent: primaryIntent,
@@ -210,6 +341,11 @@ function buildReasoningBasis(understanding) {
     observations: layers.observations,
     facts: layers.facts,
     hypotheses: evaluatedHypotheses,
+    active_hypotheses: hypothesisReasoningState.active_hypotheses,
+    rejected_hypotheses: hypothesisReasoningState.rejected_hypotheses,
+    competing_hypotheses: hypothesisReasoningState.competing_hypotheses,
+    has_competing_hypotheses: hypothesisReasoningState.has_competing_hypotheses,
+    has_active_hypotheses: hypothesisReasoningState.has_active_hypotheses,
     raw_hypotheses: layers.hypotheses,
     observation_types: getLayerTypes(layers.observations),
     fact_types: getLayerTypes(layers.facts),
@@ -268,6 +404,9 @@ function getHypothesisReason(hypothesis, fallbackReason) {
   const evaluation = normalizeObject(hypothesis.evaluation);
   const status = normalizeText(evaluation.status || 'provisional');
   const supportLevel = normalizeText(evaluation.support_level || 'unknown');
+
+  const notes = normalizeArray(evaluation.reasoning_notes).map(normalizeText).filter(Boolean);
+  if (notes.length > 0) return notes[0];
 
   return `Hypothèse cognitive ${status} avec support ${supportLevel}.`;
 }
@@ -436,6 +575,34 @@ function buildContextCaptureStrategy({ basis, hypothesis = null }) {
   });
 }
 
+function buildClarifyUnderstandingStrategy({ basis }) {
+  return buildStrategy({
+    id: 'clarify_understanding',
+    label: 'Clarifier avant toute décision',
+    confidence: 0.74,
+    cognitiveCost: 0.14,
+    expectedBenefit: 0.76,
+    riskLevel: 0.08,
+    reasons: [
+      'Les hypothèses disponibles sont trop faibles, contradictoires ou concurrentes.',
+      'Une clarification évite de transformer une pensée incertaine en mauvaise action.',
+    ],
+    constraints: {
+      requires_decision: true,
+      reasoning_source: 'hypothesis_uncertainty',
+      hypothesis_status: 'needs_verification',
+      rejected_hypotheses: basis.rejected_hypotheses,
+      competing_hypotheses: basis.competing_hypotheses,
+    },
+    payload: {
+      intent: basis.primary_intent,
+      clarification_reason: basis.has_competing_hypotheses
+        ? 'competing_hypotheses'
+        : 'insufficient_supported_hypotheses',
+    },
+  });
+}
+
 function addStrategyOnce(strategies, strategy) {
   if (!strategy?.id) return;
   const exists = strategies.some(existingStrategy => existingStrategy.id === strategy.id);
@@ -449,7 +616,9 @@ function isUsableHypothesis(hypothesis) {
 
 function buildStrategiesFromCognitiveLayers({ understanding, basis }) {
   const strategies = [];
-  const hypotheses = basis.hypotheses.filter(isUsableHypothesis);
+  const hypotheses = basis.active_hypotheses.length > 0
+    ? basis.active_hypotheses
+    : basis.hypotheses.filter(isUsableHypothesis);
   const facts = basis.facts;
   const observations = basis.observations;
 
@@ -484,6 +653,14 @@ function buildStrategiesFromCognitiveLayers({ understanding, basis }) {
   }
 
   if (strategies.length > 0) {
+    if (basis.has_competing_hypotheses) {
+      addStrategyOnce(strategies, buildClarifyUnderstandingStrategy({ basis }));
+    }
+    return strategies;
+  }
+
+  if (basis.hypotheses.length > 0 && (!basis.has_active_hypotheses || basis.has_competing_hypotheses)) {
+    addStrategyOnce(strategies, buildClarifyUnderstandingStrategy({ basis }));
     return strategies;
   }
 
@@ -570,7 +747,7 @@ function classifyStrategyReadiness(strategy) {
   const source = normalizeText(strategy?.constraints?.reasoning_source || 'unknown');
   const hypothesisStatus = normalizeText(strategy?.constraints?.hypothesis_status || '');
 
-  if (riskLevel >= 0.35 || confidence < 0.45 || hypothesisStatus === 'needs_verification') {
+  if (riskLevel >= 0.35 || confidence < 0.45 || hypothesisStatus === 'needs_verification' || source === 'hypothesis_uncertainty') {
     return 'clarify_before_decision';
   }
 
@@ -625,7 +802,7 @@ function buildDecisionPreparation({ strategies = [], basis }) {
   const clarificationCandidates = rankedStrategies.filter(strategy => strategy.readiness === 'clarify_before_decision');
   const hasHighUncertainty = basis.hypotheses.some(hypothesis => {
     return ['weak', 'contradicted', 'needs_verification'].includes(normalizeText(hypothesis?.evaluation?.status));
-  });
+  }) || basis.has_competing_hypotheses;
 
   return {
     status: strongestCandidate ? 'prepared_for_future_decision_engine' : 'no_strategy_available',
@@ -689,6 +866,9 @@ function buildReasoningOutput({ thought, understanding, basis, strategies }) {
       observation_count: basis.observations.length,
       fact_count: basis.facts.length,
       hypothesis_count: basis.hypotheses.length,
+      active_hypothesis_count: basis.active_hypotheses.length,
+      rejected_hypothesis_count: basis.rejected_hypotheses.length,
+      competing_hypothesis_count: basis.competing_hypotheses.length,
       observation_types: basis.observation_types,
       fact_types: basis.fact_types,
       hypothesis_types: basis.hypothesis_types,
@@ -698,11 +878,16 @@ function buildReasoningOutput({ thought, understanding, basis, strategies }) {
       id: hypothesis.id || null,
       type: hypothesis.type || null,
       confidence: hypothesis.evaluation?.confidence ?? hypothesis.confidence ?? null,
+      original_confidence: hypothesis.evaluation?.original_confidence ?? hypothesis.confidence ?? null,
       status: hypothesis.evaluation?.status || null,
       support_level: hypothesis.evaluation?.support_level || null,
       contradicted: Boolean(hypothesis.evaluation?.contradicted),
       requires_verification: Boolean(hypothesis.evaluation?.requires_verification),
+      reasoning_notes: normalizeArray(hypothesis.evaluation?.reasoning_notes),
     })),
+    active_hypothesis_ids: basis.active_hypotheses.map(hypothesis => hypothesis.id || null).filter(Boolean),
+    rejected_hypotheses: basis.rejected_hypotheses,
+    competing_hypotheses: basis.competing_hypotheses,
     strategy_count: enrichedStrategies.length,
     strategies: enrichedStrategies,
     ranked_strategies: rankedStrategies,
@@ -716,8 +901,8 @@ function buildReasoningOutput({ thought, understanding, basis, strategies }) {
         hypothesis_type: hypothesis.type || null,
       })),
     uncertainty: {
-      level: hasUnstableHypotheses || strategies.some(strategy => strategy.risk_level >= 0.3) ? 'medium' : 'low',
-      requires_clarification: decisionPreparation.clarification_candidate_ids.length > 0,
+      level: hasUnstableHypotheses || basis.has_competing_hypotheses || strategies.some(strategy => strategy.risk_level >= 0.3) ? 'medium' : 'low',
+      requires_clarification: decisionPreparation.clarification_candidate_ids.length > 0 || basis.has_competing_hypotheses,
     },
     decision_required: true,
     behavior_changed: false,
@@ -742,7 +927,7 @@ function reasonAboutThought({ thought, context = {} } = {}) {
       nextEngine: null,
       behaviorChanged: false,
       metadata: {
-        internal_analyzers: ['hypothesis_evaluator_v1', 'cognitive_layer_strategy_generator_v1', 'strategy_evaluator_v1'],
+        internal_analyzers: ['hypothesis_evaluator_v2', 'hypothesis_arbitration_v1', 'cognitive_layer_strategy_generator_v1', 'strategy_evaluator_v1'],
         foundation_role: 'construct_strategies_without_deciding',
         reasoning_priority: ['evaluated_hypotheses', 'facts', 'observations', 'fallback_signals'],
       },
