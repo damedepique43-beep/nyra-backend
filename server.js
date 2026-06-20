@@ -2557,23 +2557,94 @@ function detectAction(message, userId, analysis) {
 }
 
 
+function buildExecutionContext({
+  userId,
+  message,
+  reply,
+  analysis,
+  action,
+  decision,
+  candidateDecision,
+  executableAction,
+} = {}) {
+  // Execution Context V1
+  // Responsabilité : préparer une représentation stable entre Chosen Decision
+  // et exécution métier, sans modifier le comportement utilisateur.
+  // Le dispatcher peut ainsi commencer à transporter la décision complète
+  // sans déplacer prématurément la logique de saveCapture().
+  return {
+    contract: 'execution-context-v1',
+    source: 'execution_dispatcher',
+    behavior_impact: 'none',
+    user_id: userId || 'local-user',
+    message_preview: normalizeText(message).slice(0, 180),
+    reply_preview: normalizeText(reply).slice(0, 180),
+    analysis_summary: {
+      type: analysis?.type || null,
+      suggested_bucket: analysis?.suggested_bucket || null,
+      response_level: analysis?.response_level || null,
+      conversation_intent: analysis?.conversation_intent || null,
+      urgency: analysis?.urgency || null,
+      is_task: Boolean(analysis?.is_task),
+      is_idea: Boolean(analysis?.is_idea),
+      is_emotion: Boolean(analysis?.is_emotion),
+      is_project: Boolean(analysis?.is_project),
+    },
+    chosen_decision: candidateDecision
+      ? {
+          id: candidateDecision.id || null,
+          decision_layer: candidateDecision.decision_layer || null,
+          decision_type: candidateDecision.decision_type || null,
+          should_execute: candidateDecision.should_execute !== false,
+          selection_strategy: candidateDecision.selection_strategy || null,
+          decision_score: candidateDecision.decision_score || null,
+          decision_input_summary: candidateDecision.decision_score?.decision_input_summary || null,
+          selection_metadata: candidateDecision.selection_metadata || null,
+        }
+      : null,
+    legacy_decision: decision || null,
+    original_action_type: action?.action_type || action?.type || null,
+    executable_action_type: executableAction?.action_type || executableAction?.type || null,
+    execution_allowed: Boolean(executableAction),
+    execution_guard: candidateDecision?.should_execute === false
+      ? 'blocked_by_chosen_decision'
+      : 'allowed_or_no_action',
+    generated_at: nowIso(),
+  };
+}
+
 function dispatchChatExecution({ userId, message, reply, analysis, action, decision, candidateDecision } = {}) {
-  // Execution Dispatcher V1 : point d’entrée unique pour l’exécution issue du chat.
-  // Le dispatcher applique désormais lui-même le garde-fou Decision -> Execution.
-  // Ainsi, aucune action ne peut être exécutée si la décision cognitive demande
-  // explicitement de ne pas exécuter. Le comportement utilisateur reste inchangé :
-  // la capture est toujours sauvegardée, mais sans action opérationnelle.
+  // Execution Dispatcher V1.1 : point d’entrée unique pour l’exécution issue du chat.
+  // Le dispatcher applique toujours le garde-fou Decision -> Execution.
+  // Il construit désormais un Execution Context informatif à partir de la Chosen Decision,
+  // sans modifier la logique métier de saveCapture() ni le comportement utilisateur.
   const executableAction = candidateDecision
     ? resolveExecutableActionFromCandidateDecision(candidateDecision)
     : resolveExecutableActionFromDecision(action, decision);
 
-  return saveCapture({
+  const executionContext = buildExecutionContext({
+    userId,
+    message,
+    reply,
+    analysis,
+    action,
+    decision,
+    candidateDecision,
+    executableAction,
+  });
+
+  const saved = saveCapture({
     userId,
     message,
     reply,
     analysis,
     action: executableAction,
   });
+
+  return {
+    ...saved,
+    execution_context: executionContext,
+  };
 }
 
 function buildSuggestions(analysis, action) {
