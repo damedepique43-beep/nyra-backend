@@ -547,6 +547,98 @@ function buildStrategiesFromUnderstanding(understanding) {
   };
 }
 
+function computeStrategyScore(strategy) {
+  const confidence = clamp01(strategy?.confidence, 0.5);
+  const expectedBenefit = clamp01(strategy?.expected_benefit, 0.5);
+  const cognitiveCost = clamp01(strategy?.cognitive_cost, 0.2);
+  const riskLevel = clamp01(strategy?.risk_level, 0.1);
+
+  const rawScore = (
+    (expectedBenefit * 0.42) +
+    (confidence * 0.32) +
+    ((1 - cognitiveCost) * 0.16) +
+    ((1 - riskLevel) * 0.10)
+  );
+
+  return Math.round(clamp01(rawScore, 0.5) * 1000) / 1000;
+}
+
+function classifyStrategyReadiness(strategy) {
+  const score = computeStrategyScore(strategy);
+  const riskLevel = clamp01(strategy?.risk_level, 0.1);
+  const confidence = clamp01(strategy?.confidence, 0.5);
+  const source = normalizeText(strategy?.constraints?.reasoning_source || 'unknown');
+  const hypothesisStatus = normalizeText(strategy?.constraints?.hypothesis_status || '');
+
+  if (riskLevel >= 0.35 || confidence < 0.45 || hypothesisStatus === 'needs_verification') {
+    return 'clarify_before_decision';
+  }
+
+  if (source === 'evaluated_hypothesis' && score >= 0.72) {
+    return 'ready_for_decision';
+  }
+
+  if (score >= 0.62) {
+    return 'decision_candidate';
+  }
+
+  return 'low_priority_candidate';
+}
+
+function enrichStrategyForDecisionPreparation(strategy, index) {
+  const score = computeStrategyScore(strategy);
+  const readiness = classifyStrategyReadiness(strategy);
+
+  return {
+    ...strategy,
+    evaluation: {
+      rank_hint: index + 1,
+      score,
+      readiness,
+      confidence: clamp01(strategy?.confidence, 0.5),
+      expected_benefit: clamp01(strategy?.expected_benefit, 0.5),
+      cognitive_cost: clamp01(strategy?.cognitive_cost, 0.2),
+      risk_level: clamp01(strategy?.risk_level, 0.1),
+      decision_boundary: 'not_decided_by_reasoning_engine',
+    },
+  };
+}
+
+function buildRankedStrategyReferences(strategies = []) {
+  return normalizeArray(strategies)
+    .map(strategy => ({
+      id: strategy.id,
+      label: strategy.label,
+      score: computeStrategyScore(strategy),
+      readiness: classifyStrategyReadiness(strategy),
+      risk_level: clamp01(strategy?.risk_level, 0.1),
+      cognitive_cost: clamp01(strategy?.cognitive_cost, 0.2),
+      expected_benefit: clamp01(strategy?.expected_benefit, 0.5),
+      confidence: clamp01(strategy?.confidence, 0.5),
+    }))
+    .sort((a, b) => b.score - a.score);
+}
+
+function buildDecisionPreparation({ strategies = [], basis }) {
+  const rankedStrategies = buildRankedStrategyReferences(strategies);
+  const strongestCandidate = rankedStrategies[0] || null;
+  const clarificationCandidates = rankedStrategies.filter(strategy => strategy.readiness === 'clarify_before_decision');
+  const hasHighUncertainty = basis.hypotheses.some(hypothesis => {
+    return ['weak', 'contradicted', 'needs_verification'].includes(normalizeText(hypothesis?.evaluation?.status));
+  });
+
+  return {
+    status: strongestCandidate ? 'prepared_for_future_decision_engine' : 'no_strategy_available',
+    decision_taken: false,
+    strongest_candidate_id: strongestCandidate?.id || null,
+    strongest_candidate_score: strongestCandidate?.score ?? null,
+    ranked_strategy_ids: rankedStrategies.map(strategy => strategy.id),
+    clarification_candidate_ids: clarificationCandidates.map(strategy => strategy.id),
+    uncertainty_level: hasHighUncertainty || clarificationCandidates.length > 0 ? 'medium' : 'low',
+    principle: 'Reasoning Engine prépare les stratégies, mais ne choisit pas et n’exécute pas.',
+  };
+}
+
 function summarizeHypothesisEvaluations(hypotheses = []) {
   const summary = {
     strong: 0,
@@ -568,6 +660,12 @@ function summarizeHypothesisEvaluations(hypotheses = []) {
 
 function buildReasoningOutput({ thought, understanding, basis, strategies }) {
   const primaryIntent = getPrimaryIntent(understanding);
+  const enrichedStrategies = normalizeArray(strategies).map(enrichStrategyForDecisionPreparation);
+  const rankedStrategies = buildRankedStrategyReferences(enrichedStrategies);
+  const decisionPreparation = buildDecisionPreparation({
+    strategies: enrichedStrategies,
+    basis,
+  });
   const hypothesisEvaluationSummary = summarizeHypothesisEvaluations(basis.hypotheses);
   const hasUnstableHypotheses = basis.hypotheses.some(hypothesis => {
     return ['weak', 'contradicted', 'needs_verification'].includes(normalizeText(hypothesis?.evaluation?.status));
@@ -605,8 +703,10 @@ function buildReasoningOutput({ thought, understanding, basis, strategies }) {
       contradicted: Boolean(hypothesis.evaluation?.contradicted),
       requires_verification: Boolean(hypothesis.evaluation?.requires_verification),
     })),
-    strategy_count: strategies.length,
-    strategies,
+    strategy_count: enrichedStrategies.length,
+    strategies: enrichedStrategies,
+    ranked_strategies: rankedStrategies,
+    decision_preparation: decisionPreparation,
     assumptions: [],
     conflicts: basis.hypotheses
       .filter(hypothesis => hypothesis.evaluation?.contradicted)
@@ -617,7 +717,7 @@ function buildReasoningOutput({ thought, understanding, basis, strategies }) {
       })),
     uncertainty: {
       level: hasUnstableHypotheses || strategies.some(strategy => strategy.risk_level >= 0.3) ? 'medium' : 'low',
-      requires_clarification: false,
+      requires_clarification: decisionPreparation.clarification_candidate_ids.length > 0,
     },
     decision_required: true,
     behavior_changed: false,
@@ -642,7 +742,7 @@ function reasonAboutThought({ thought, context = {} } = {}) {
       nextEngine: null,
       behaviorChanged: false,
       metadata: {
-        internal_analyzers: ['hypothesis_evaluator_v1', 'cognitive_layer_strategy_generator_v1'],
+        internal_analyzers: ['hypothesis_evaluator_v1', 'cognitive_layer_strategy_generator_v1', 'strategy_evaluator_v1'],
         foundation_role: 'construct_strategies_without_deciding',
         reasoning_priority: ['evaluated_hypotheses', 'facts', 'observations', 'fallback_signals'],
       },
