@@ -27,6 +27,7 @@ const {
 } = require('./engines/nyraCognitiveOrchestrator');
 const {
   buildChatCandidateDecision,
+  chooseBestDecision,
   resolveExecutableActionFromCandidateDecision,
   resolveExecutableActionFromDecision,
 } = require('./engines/nyraDecisionEngine');
@@ -10329,7 +10330,13 @@ app.post('/chat', async (req, res) => {
       decision,
       pipelineContext: buildPipelineAnalysisContext(thoughtOrchestration) || null,
     });
-    const action = resolveExecutableActionFromCandidateDecision(candidateDecision);
+    const chosenDecision = chooseBestDecision([candidateDecision], {
+      thought,
+      analysis,
+      decision,
+      pipelineContext: buildPipelineAnalysisContext(thoughtOrchestration) || null,
+    });
+    const action = resolveExecutableActionFromCandidateDecision(chosenDecision);
     const suggestions = buildSuggestions(analysis, action);
 
     const replyResult = typeof buildChatReply === 'function'
@@ -10354,7 +10361,7 @@ app.post('/chat', async (req, res) => {
       analysis,
       action,
       decision,
-      candidateDecision,
+      candidateDecision: chosenDecision,
     });
 
     const chatResponse = buildChatCognitiveResponse({

@@ -51,6 +51,54 @@ function buildChatCandidateDecision({ thought, analysis, detectedAction, decisio
   };
 }
 
+
+function normalizeCandidateDecisionList(candidateDecisions) {
+  if (!Array.isArray(candidateDecisions)) {
+    return candidateDecisions ? [candidateDecisions].filter(Boolean) : [];
+  }
+
+  return candidateDecisions.filter(candidateDecision => {
+    return candidateDecision && typeof candidateDecision === 'object';
+  });
+}
+
+function chooseBestDecision(candidateDecisions, cognitiveContext = {}) {
+  // Nyra Decision Engine V1.1
+  // Responsabilité : choisir une décision parmi une ou plusieurs décisions candidates.
+  // Pour cette première étape, le comportement reste volontairement identique :
+  // une seule candidate entre dans le moteur, et la première candidate valide est choisie.
+  // L'objectif est d'établir l'API stable du futur Decision Engine sans changer l'usage.
+  const candidates = normalizeCandidateDecisionList(candidateDecisions);
+  const chosenDecision = candidates[0] || null;
+
+  if (!chosenDecision) {
+    return {
+      id: crypto.randomUUID(),
+      source: 'chat',
+      decision_layer: 'nyra_decision_engine_v1_1',
+      decision_type: 'no_action',
+      should_execute: false,
+      candidate_action: null,
+      normalized_decision: null,
+      candidate_count: 0,
+      selection_strategy: 'first_valid_candidate',
+      selection_reason: 'Aucune décision candidate disponible.',
+      cognitive_context: cognitiveContext || {},
+      created_at: new Date().toISOString(),
+    };
+  }
+
+  return {
+    ...chosenDecision,
+    decision_layer: 'nyra_decision_engine_v1_1',
+    candidate_count: candidates.length,
+    selection_strategy: 'first_valid_candidate',
+    selection_reason: 'Comportement V1 conservé : la première décision candidate valide est choisie.',
+    cognitive_context: cognitiveContext || {},
+    selected_at: new Date().toISOString(),
+  };
+}
+
 function resolveExecutableActionFromCandidateDecision(candidateDecision) {
   if (!candidateDecision || typeof candidateDecision !== 'object') {
     return null;
@@ -77,6 +125,7 @@ function resolveExecutableActionFromDecision(action, decision) {
 
 module.exports = {
   buildChatCandidateDecision,
+  chooseBestDecision,
   resolveExecutableActionFromCandidateDecision,
   resolveExecutableActionFromDecision,
 };
