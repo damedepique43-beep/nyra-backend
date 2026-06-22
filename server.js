@@ -5145,6 +5145,16 @@ function buildSystemPrompt(analysis, memorySummary, cognitivePromptContext = nul
     strongestConversationStyle === 'guided_dump'
   );
 
+  console.log('===== NYRA DEBUG BUILD SYSTEM PROMPT =====');
+  console.log('selected_intervention:', JSON.stringify(cognitivePromptContext?.reasoning?.selected_intervention || null, null, 2));
+  console.log('cognitive_intervention:', JSON.stringify(cognitivePromptContext?.reasoning?.cognitive_intervention || null, null, 2));
+  console.log('strongest_strategy:', JSON.stringify(cognitivePromptContext?.reasoning?.strongest_strategy || null, null, 2));
+  console.log('selectedInterventionId:', selectedInterventionId);
+  console.log('strongestStrategyId:', strongestStrategyId);
+  console.log('strongestConversationStyle:', strongestConversationStyle);
+  console.log('isBrainDumpProtocol:', isBrainDumpProtocol);
+  console.log('==========================================');
+
   const executionContract = isBrainDumpProtocol
     ? [
         'CONTRAT D’EXÉCUTION PRIORITAIRE',
