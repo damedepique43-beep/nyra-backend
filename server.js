@@ -5218,7 +5218,7 @@ function extractCognitiveCostFromDecisionProfile(decisionProfile = {}) {
   return {
     available: true,
     level: Number(cognitiveCost.level ?? cognitiveCost.current_level ?? cognitiveCost.score ?? NaN),
-    max_level: Number(cognitiveCost.max_level ?? cognitiveCost.maximum_level ?? cognitiveCost.allowed_max_level ?? cognitiveCost.level ?? NaN),
+    max_level: Number(cognitiveCost.max_level ?? cognitiveCost.max_allowed_level ?? cognitiveCost.maximum_level ?? cognitiveCost.allowed_max_level ?? cognitiveCost.level ?? NaN),
     allowed_operations: Array.isArray(cognitiveCost.allowed_operations) ? cognitiveCost.allowed_operations : [],
     forbidden_operations: Array.isArray(cognitiveCost.forbidden_operations) ? cognitiveCost.forbidden_operations : [],
     raw: cognitiveCost,
@@ -10730,6 +10730,7 @@ app.post('/chat', async (req, res) => {
       thought,
       analysis,
       decision,
+      thoughtOrchestration,
       pipelineContext: buildPipelineAnalysisContext(thoughtOrchestration) || null,
     });
     const action = resolveExecutableActionFromCandidateDecision(chosenDecision);
