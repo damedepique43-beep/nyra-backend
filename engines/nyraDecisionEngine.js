@@ -346,6 +346,157 @@ function normalizeDecisionProfileMetric(value, fallback = 'unknown') {
   return normalizedValue;
 }
 
+function normalizeDecisionProfileTextList(values = []) {
+  return normalizeArray(values)
+    .flatMap(value => Array.isArray(value) ? value : [value])
+    .map(value => normalizeText(value))
+    .filter(Boolean);
+}
+
+function includesAnyText(value, patterns = []) {
+  const normalizedValue = normalizeText(value).toLowerCase();
+
+  if (!normalizedValue) return false;
+
+  return normalizeArray(patterns).some(pattern => {
+    return normalizedValue.includes(normalizeText(pattern).toLowerCase());
+  });
+}
+
+function normalizeCognitiveCostLevel(value, fallback = 3) {
+  if (typeof value === 'number' && !Number.isNaN(value)) {
+    return clampNumber(Math.round(value), 0, 7);
+  }
+
+  const normalizedValue = normalizeText(value).toLowerCase();
+
+  if (!normalizedValue) return fallback;
+
+  const directNumber = Number(normalizedValue);
+
+  if (!Number.isNaN(directNumber)) {
+    return clampNumber(Math.round(directNumber), 0, 7);
+  }
+
+  const costMap = {
+    none: 0,
+    no_cost: 0,
+    zero: 0,
+    very_low: 1,
+    low: 1,
+    minimal: 1,
+    light: 2,
+    medium: 3,
+    moderate: 3,
+    high: 5,
+    heavy: 5,
+    very_high: 6,
+    complex: 7,
+  };
+
+  return costMap[normalizedValue] ?? fallback;
+}
+
+function labelCognitiveCostLevel(level) {
+  const normalizedLevel = normalizeCognitiveCostLevel(level, 3);
+
+  if (normalizedLevel <= 0) return 'none';
+  if (normalizedLevel === 1) return 'externalisation_only';
+  if (normalizedLevel === 2) return 'simple_response';
+  if (normalizedLevel === 3) return 'light_sorting';
+  if (normalizedLevel === 4) return 'comparison';
+  if (normalizedLevel === 5) return 'prioritization';
+  if (normalizedLevel === 6) return 'planning';
+  return 'complex_decision';
+}
+
+function buildCognitiveCostProfile({
+  rawCost,
+  cognitiveNeed,
+  strongestCandidate,
+  decisionPreparation,
+  analysis,
+  cognitiveQuestionsSummary,
+} = {}) {
+  // Cognitive Cost V1
+  // Responsabilité : représenter explicitement l'effort mental demandé à l'utilisateur.
+  // Cette structure est informative : elle prépare l'arbitrage sans modifier le choix final.
+  const candidateText = [
+    cognitiveNeed,
+    strongestCandidate?.id,
+    strongestCandidate?.label,
+    strongestCandidate?.type,
+    decisionPreparation?.principle,
+    analysis?.conversation_intent,
+    analysis?.response_level,
+    cognitiveQuestionsSummary?.protocol,
+    cognitiveQuestionsSummary?.phase,
+  ].join(' ');
+
+  const isBrainDumpCollect = Boolean(
+    includesAnyText(candidateText, [
+      'brain_dump',
+      'brain dump',
+      'vide cerveau',
+      'vider le cerveau',
+      'dévers',
+      'devers',
+      'externalis',
+      'surcharge',
+      'mental_overload',
+      'cognitive_load',
+      'charge mentale',
+    ])
+  );
+
+  const rawLevel = normalizeCognitiveCostLevel(rawCost, isBrainDumpCollect ? 1 : 3);
+  const level = isBrainDumpCollect ? 1 : rawLevel;
+  const maxAllowedLevel = isBrainDumpCollect ? 1 : 7;
+
+  if (isBrainDumpCollect) {
+    return {
+      contract: 'cognitive-cost-v1',
+      level,
+      label: labelCognitiveCostLevel(level),
+      max_allowed_level: maxAllowedLevel,
+      rationale: 'Phase de collecte Brain Dump : Nyra doit réduire l’effort mental au minimum et inviter à externaliser sans tri.',
+      allowed_operations: [
+        'externaliser librement',
+        'écrire en vrac',
+        'rassurer',
+        'annoncer que Nyra fera le tri ensuite',
+      ],
+      forbidden_operations: [
+        'demander de choisir',
+        'demander de prioriser',
+        'demander de comparer',
+        'demander par quoi commencer',
+        'demander ce qui est le plus urgent',
+        'demander la première chose qui vient',
+        'proposer un plan avant collecte',
+      ],
+      source: 'brain_dump_collect_constraint',
+    };
+  }
+
+  return {
+    contract: 'cognitive-cost-v1',
+    level,
+    label: labelCognitiveCostLevel(level),
+    max_allowed_level: maxAllowedLevel,
+    rationale: 'Coût cognitif estimé à partir de la stratégie candidate et du contexte disponible.',
+    allowed_operations: normalizeDecisionProfileTextList([
+      cognitiveQuestionsSummary?.allowed_operation,
+      cognitiveQuestionsSummary?.allowed_operations,
+    ]),
+    forbidden_operations: normalizeDecisionProfileTextList([
+      cognitiveQuestionsSummary?.forbidden_operation,
+      cognitiveQuestionsSummary?.forbidden_operations,
+    ]),
+    source: rawCost ? 'reasoning_strategy' : 'decision_profile_default',
+  };
+}
+
 function buildDecisionProfile(candidateDecision, cognitiveContext = {}, decisionInputOverride = null) {
   // Decision Profile V1
   // Responsabilité : synthétiser la situation décisionnelle avant le score et le choix.
@@ -376,13 +527,22 @@ function buildDecisionProfile(candidateDecision, cognitiveContext = {}, decision
     analysis.type,
   ], 'unknown');
 
-  const cognitiveCost = normalizeDecisionProfileMetric(resolveDecisionProfileValue([
+  const rawCognitiveCost = resolveDecisionProfileValue([
     strongestCandidate.cognitive_cost,
     cognitiveQuestionsSummary.cognitive_cost,
     decisionPreparation.cognitive_cost,
     normalizedDecision.cognitive_cost,
     candidateAction.cognitive_cost,
-  ], null));
+  ], null);
+
+  const cognitiveCost = buildCognitiveCostProfile({
+    rawCost: rawCognitiveCost,
+    cognitiveNeed,
+    strongestCandidate,
+    decisionPreparation,
+    analysis,
+    cognitiveQuestionsSummary,
+  });
 
   const expectedBenefit = normalizeDecisionProfileMetric(resolveDecisionProfileValue([
     strongestCandidate.expected_benefit,
@@ -452,12 +612,16 @@ function buildDecisionProfile(candidateDecision, cognitiveContext = {}, decision
 
 function summarizeDecisionProfile(decisionProfile) {
   const safeProfile = normalizeObject(decisionProfile);
+  const cognitiveCost = normalizeObject(safeProfile.cognitive_cost);
 
   return {
     contract: safeProfile.contract || 'decision-profile-v1',
     available: Boolean(safeProfile.available),
     cognitive_need: safeProfile.cognitive_need || 'unknown',
-    cognitive_cost: safeProfile.cognitive_cost || 'unknown',
+    cognitive_cost_level: cognitiveCost.level ?? null,
+    cognitive_cost_label: cognitiveCost.label || 'unknown',
+    cognitive_cost_max_allowed_level: cognitiveCost.max_allowed_level ?? null,
+    cognitive_cost_forbidden_operations: normalizeArray(cognitiveCost.forbidden_operations),
     expected_benefit: safeProfile.expected_benefit || 'unknown',
     readiness: safeProfile.readiness || 'unknown',
     uncertainty_level: safeProfile.uncertainty?.level || null,
@@ -528,6 +692,22 @@ function computeDecisionScore(candidateDecision, cognitiveContext = {}) {
     factors.push({ id: 'decision_input_contract_available', impact: 6, label: 'Le contrat Reasoning → Decision est disponible.' });
   }
 
+  const cognitiveCost = normalizeObject(decisionProfile.cognitive_cost);
+  const cognitiveCostLevel = normalizeCognitiveCostLevel(cognitiveCost.level, 3);
+
+  if (cognitiveCostLevel <= 1) {
+    score += 6;
+    factors.push({ id: 'low_cognitive_cost', impact: 6, label: 'La stratégie demande très peu d’effort mental à l’utilisateur.' });
+  } else if (cognitiveCostLevel >= 5) {
+    score -= 6;
+    factors.push({ id: 'high_cognitive_cost', impact: -6, label: 'La stratégie demande un effort cognitif élevé à l’utilisateur.' });
+  }
+
+  if (cognitiveCost.max_allowed_level !== undefined && cognitiveCostLevel > cognitiveCost.max_allowed_level) {
+    score -= 12;
+    factors.push({ id: 'cognitive_cost_limit_exceeded', impact: -12, label: 'La stratégie dépasse le coût cognitif maximal autorisé par le profil décisionnel.' });
+  }
+
   if (strongestCandidate.readiness === 'ready_for_decision') {
     score += 8;
     factors.push({ id: 'strategy_ready_for_decision', impact: 8, label: 'La meilleure stratégie est prête pour une décision.' });
@@ -578,7 +758,7 @@ function computeDecisionScore(candidateDecision, cognitiveContext = {}) {
     reasoning_signals: reasoningSignals,
     decision_input_summary: summarizeDecisionInput(decisionInput),
     decision_profile_summary: summarizeDecisionProfile(decisionProfile),
-    scoring_version: 'decision-score-v1.4',
+    scoring_version: 'decision-score-v1.5',
     generated_at: new Date().toISOString(),
   };
 }
@@ -668,7 +848,7 @@ function normalizeCandidateDecisionList(candidateDecisions) {
 }
 
 function chooseBestDecision(candidateDecisions, cognitiveContext = {}) {
-  // Nyra Decision Engine V1.3
+  // Nyra Decision Engine V1.5
   // Responsabilité : consommer un contrat DecisionInput issu du Reasoning Engine
   // et enrichir les décisions candidates avec un score cognitif.
   // Important : le contrat et le score sont calculés, mais ils ne pilotent pas encore le choix.
@@ -682,7 +862,7 @@ function chooseBestDecision(candidateDecisions, cognitiveContext = {}) {
     return {
       id: crypto.randomUUID(),
       source: 'chat',
-      decision_layer: 'nyra_decision_engine_v1_3',
+      decision_layer: 'nyra_decision_engine_v1_5',
       decision_type: 'no_action',
       should_execute: false,
       candidate_action: null,
@@ -703,7 +883,7 @@ function chooseBestDecision(candidateDecisions, cognitiveContext = {}) {
 
   return {
     ...chosenDecision,
-    decision_layer: 'nyra_decision_engine_v1_3',
+    decision_layer: 'nyra_decision_engine_v1_5',
     candidate_count: candidates.length,
     scored_candidate_count: scoredCandidates.length,
     scored_candidates: scoredCandidates.map(candidateDecision => ({
@@ -716,9 +896,11 @@ function chooseBestDecision(candidateDecisions, cognitiveContext = {}) {
       strongest_candidate_id: candidateDecision.decision_input?.strongest_candidate?.id || null,
       decision_profile_available: Boolean(candidateDecision.decision_profile?.available),
       cognitive_need: candidateDecision.decision_profile?.cognitive_need || null,
+      cognitive_cost_level: candidateDecision.decision_profile?.cognitive_cost?.level ?? null,
+      cognitive_cost_label: candidateDecision.decision_profile?.cognitive_cost?.label || null,
     })),
     selection_strategy: 'first_valid_candidate_with_decision_input',
-    selection_reason: 'Comportement V1 conservé : la première décision candidate valide est choisie. Le DecisionInput, le DecisionProfile et le score sont seulement informatifs en V1.4.',
+    selection_reason: 'Comportement V1 conservé : la première décision candidate valide est choisie. Le DecisionInput, le DecisionProfile, le CognitiveCost et le score sont seulement informatifs en V1.5.',
     cognitive_context: cognitiveContext || {},
     selected_at: new Date().toISOString(),
   };
@@ -755,4 +937,5 @@ module.exports = {
   resolveExecutableActionFromDecision,
   buildDecisionInput,
   buildDecisionProfile,
+  buildCognitiveCostProfile,
 };
