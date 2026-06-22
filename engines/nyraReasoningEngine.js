@@ -21,6 +21,53 @@ function normalizeObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
+function normalizeCognitiveNeed(value, fallback = 'preserve_context') {
+  const normalized = normalizeText(value || fallback)
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  const allowedNeeds = [
+    'reduce_cognitive_load',
+    'prevent_forgetting',
+    'clarify_uncertainty',
+    'support_regulation',
+    'preserve_context',
+    'structure_idea',
+    'organize_information',
+    'prepare_action',
+    'capture_without_action',
+  ];
+
+  if (allowedNeeds.includes(normalized)) return normalized;
+
+  return fallback;
+}
+
+function buildCognitiveNeed({ primary, label, confidence = 0.72, source = 'strategy_builder', rationale = '' } = {}) {
+  const normalizedPrimary = normalizeCognitiveNeed(primary);
+
+  const defaultLabels = {
+    reduce_cognitive_load: 'Réduire la charge cognitive',
+    prevent_forgetting: 'Prévenir l’oubli',
+    clarify_uncertainty: 'Clarifier l’incertitude',
+    support_regulation: 'Soutenir la régulation',
+    preserve_context: 'Préserver le contexte',
+    structure_idea: 'Structurer une idée',
+    organize_information: 'Organiser une information',
+    prepare_action: 'Préparer une action',
+    capture_without_action: 'Capturer sans action immédiate',
+  };
+
+  return {
+    primary: normalizedPrimary,
+    label: normalizeText(label || defaultLabels[normalizedPrimary] || defaultLabels.preserve_context),
+    confidence: clamp01(confidence, 0.72),
+    source: normalizeText(source || 'strategy_builder'),
+    rationale: normalizeText(rationale || 'Besoin cognitif associé à cette stratégie.'),
+  };
+}
+
 function getUnderstandingOutput(context = {}) {
   const safeContext = normalizeObject(context);
   const engineResults = normalizeObject(safeContext.engine_results);
@@ -362,10 +409,13 @@ function buildStrategy({
   cognitiveCost = 0.2,
   expectedBenefit = 0.5,
   riskLevel = 0.1,
+  cognitiveNeed = {},
   reasons = [],
   constraints = {},
   payload = {},
 }) {
+  const cognitiveNeedPayload = buildCognitiveNeed(cognitiveNeed);
+
   return {
     id: normalizeText(id),
     label: normalizeText(label),
@@ -374,8 +424,13 @@ function buildStrategy({
     cognitive_cost: clamp01(cognitiveCost, 0.2),
     expected_benefit: clamp01(expectedBenefit, 0.5),
     risk_level: clamp01(riskLevel, 0.1),
+    primary_cognitive_need: cognitiveNeedPayload.primary,
+    cognitive_need: cognitiveNeedPayload,
     reasons: normalizeArray(reasons).map(reason => normalizeText(reason)).filter(Boolean),
-    constraints: normalizeObject(constraints),
+    constraints: {
+      ...normalizeObject(constraints),
+      primary_cognitive_need: cognitiveNeedPayload.primary,
+    },
     payload: normalizeObject(payload),
   };
 }
@@ -421,6 +476,13 @@ function buildExternalizeActionStrategy({ basis, hypothesis = null }) {
     cognitiveCost: 0.18,
     expectedBenefit: 0.78,
     riskLevel: clamp01((basis.temporal_scope === 'unspecified' ? 0.22 : 0.12) + getHypothesisRiskAdjustment(hypothesis), 0.12),
+    cognitiveNeed: {
+      primary: 'prepare_action',
+      label: 'Préparer une action sans saturer la mémoire de travail',
+      confidence,
+      source: hypothesis ? 'evaluated_hypothesis' : 'intent_fallback',
+      rationale: 'La stratégie vise à sortir une action de la tête de l’utilisateur pour la rendre traitable.',
+    },
     reasons: [
       getHypothesisReason(hypothesis, 'Fallback intent : create_task.'),
       'La pensée peut être sortie de la mémoire de travail de l’utilisateur.',
@@ -448,6 +510,13 @@ function buildFuturePromptStrategy({ basis, hypothesis = null }) {
     cognitiveCost: 0.16,
     expectedBenefit: 0.82,
     riskLevel: clamp01((basis.temporal_scope === 'unspecified' ? 0.35 : 0.12) + getHypothesisRiskAdjustment(hypothesis), 0.12),
+    cognitiveNeed: {
+      primary: 'prevent_forgetting',
+      label: 'Prévenir l’oubli',
+      confidence,
+      source: hypothesis ? 'evaluated_hypothesis' : 'intent_fallback',
+      rationale: 'La stratégie vise à protéger l’utilisateur contre l’oubli d’un élément futur.',
+    },
     reasons: [
       getHypothesisReason(hypothesis, 'Fallback intent : create_reminder.'),
       'La pensée contient ou implique un besoin de soutien temporel.',
@@ -476,6 +545,13 @@ function buildCollectionStrategy({ basis, understanding, hypothesis = null }) {
     cognitiveCost: 0.12,
     expectedBenefit: 0.72,
     riskLevel: clamp01(0.1 + getHypothesisRiskAdjustment(hypothesis), 0.1),
+    cognitiveNeed: {
+      primary: 'organize_information',
+      label: 'Organiser une information',
+      confidence,
+      source: hypothesis ? 'evaluated_hypothesis' : 'intent_fallback',
+      rationale: 'La stratégie vise à ranger une information dans un ensemble utile.',
+    },
     reasons: [
       getHypothesisReason(hypothesis, 'Fallback intent : add_to_collection.'),
       'La pensée semble viser le rangement d’un élément dans un ensemble existant.',
@@ -506,6 +582,13 @@ function buildRegulationStrategy({ basis, hypothesis = null }) {
     cognitiveCost: basis.emotional_intensity === 'medium' ? 0.18 : 0.24,
     expectedBenefit: basis.emotional_intensity === 'medium' ? 0.82 : 0.68,
     riskLevel: clamp01(0.16 + getHypothesisRiskAdjustment(hypothesis), 0.16),
+    cognitiveNeed: {
+      primary: 'support_regulation',
+      label: 'Soutenir la régulation cognitive et émotionnelle',
+      confidence,
+      source: hypothesis ? 'evaluated_hypothesis' : 'emotion_fallback',
+      rationale: 'La stratégie vise à réduire la pression interne avant de pousser vers l’action.',
+    },
     reasons: [
       getHypothesisReason(hypothesis, 'Fallback émotionnel : signal émotionnel détecté.'),
       'La priorité potentielle est d’accompagner avant d’organiser.',
@@ -533,6 +616,13 @@ function buildPreserveThoughtStrategy({ basis, hypothesis = null }) {
     cognitiveCost: 0.2,
     expectedBenefit: 0.7,
     riskLevel: clamp01(0.18 + getHypothesisRiskAdjustment(hypothesis), 0.18),
+    cognitiveNeed: {
+      primary: 'structure_idea',
+      label: 'Préserver et structurer une pensée',
+      confidence,
+      source: hypothesis ? 'evaluated_hypothesis' : 'intent_fallback',
+      rationale: 'La stratégie vise à conserver une idée ou un projet sans le transformer trop tôt en tâche.',
+    },
     reasons: [
       getHypothesisReason(hypothesis, `Fallback intent : ${basis.primary_intent}.`),
       'La pensée peut être conservée et reliée correctement si elle apporte de la valeur future.',
@@ -559,6 +649,13 @@ function buildContextCaptureStrategy({ basis, hypothesis = null }) {
     cognitiveCost: 0.1,
     expectedBenefit: 0.45,
     riskLevel: clamp01(0.08 + getHypothesisRiskAdjustment(hypothesis), 0.08),
+    cognitiveNeed: {
+      primary: 'capture_without_action',
+      label: 'Capturer sans action immédiate',
+      confidence,
+      source: hypothesis ? 'evaluated_hypothesis' : 'fallback',
+      rationale: 'La stratégie vise à préserver le contexte sans créer de pression opérationnelle.',
+    },
     reasons: [
       getHypothesisReason(hypothesis, 'Aucune stratégie spécialisée évidente n’a été détectée.'),
       'La pensée peut enrichir le contexte futur sans action immédiate.',
@@ -583,6 +680,13 @@ function buildClarifyUnderstandingStrategy({ basis }) {
     cognitiveCost: 0.14,
     expectedBenefit: 0.76,
     riskLevel: 0.08,
+    cognitiveNeed: {
+      primary: 'clarify_uncertainty',
+      label: 'Clarifier avant de décider',
+      confidence: 0.78,
+      source: 'hypothesis_uncertainty',
+      rationale: 'La stratégie vise à éviter une action automatique lorsque le besoin réel reste incertain.',
+    },
     reasons: [
       'Les hypothèses disponibles sont trop faibles, contradictoires ou concurrentes.',
       'Une clarification évite de transformer une pensée incertaine en mauvaise action.',
@@ -907,6 +1011,8 @@ function buildRankedStrategyReferences(strategies = []) {
     .map(strategy => ({
       id: strategy.id,
       label: strategy.label,
+      primary_cognitive_need: strategy.primary_cognitive_need || strategy.cognitive_need?.primary || null,
+      cognitive_need: strategy.cognitive_need || null,
       score: computeStrategyScore(strategy),
       readiness: classifyStrategyReadiness(strategy),
       risk_level: clamp01(strategy?.risk_level, 0.1),
@@ -915,6 +1021,30 @@ function buildRankedStrategyReferences(strategies = []) {
       confidence: clamp01(strategy?.confidence, 0.5),
     }))
     .sort((a, b) => b.score - a.score);
+}
+
+function summarizeCognitiveNeeds(strategies = []) {
+  const needs = normalizeArray(strategies).reduce((acc, strategy) => {
+    const need = normalizeText(strategy?.primary_cognitive_need || strategy?.cognitive_need?.primary || 'preserve_context');
+    if (!acc[need]) {
+      acc[need] = {
+        need,
+        label: strategy?.cognitive_need?.label || need,
+        strategy_ids: [],
+        highest_score: null,
+      };
+    }
+
+    const score = computeStrategyScore(strategy);
+    acc[need].strategy_ids.push(strategy.id || null);
+    acc[need].highest_score = acc[need].highest_score === null
+      ? score
+      : Math.max(acc[need].highest_score, score);
+
+    return acc;
+  }, {});
+
+  return Object.values(needs).sort((a, b) => Number(b.highest_score || 0) - Number(a.highest_score || 0));
 }
 
 function buildDecisionPreparation({ strategies = [], basis }) {
@@ -1102,7 +1232,7 @@ function buildCognitiveQuestionReview({ strategy, basis, cognitiveContext }) {
       buildCognitiveQuestionAnswer({
         id: 'true_deposit',
         question: 'Qu’est-ce que l’utilisateur essaie vraiment de déposer ?',
-        answer: `Intention principale détectée : ${primaryIntent}. Stratégie candidate : ${strategyId}.`,
+        answer: `Intention principale détectée : ${primaryIntent}. Stratégie candidate : ${strategyId}. Besoin visé : ${strategy?.cognitive_need?.label || strategy?.primary_cognitive_need || 'non précisé'}.`,
         signal: primaryIntent === 'reflect_emotion' ? 'reflection_first' : 'capture_or_action',
       }),
       buildCognitiveQuestionAnswer({
@@ -1219,6 +1349,7 @@ function buildReasoningOutput({ thought, understanding, basis, strategies, alter
     });
   });
   const rankedStrategies = buildRankedStrategyReferences(enrichedStrategies);
+  const cognitiveNeedSummary = summarizeCognitiveNeeds(enrichedStrategies);
   const decisionPreparation = buildDecisionPreparation({
     strategies: enrichedStrategies,
     basis,
@@ -1271,6 +1402,13 @@ function buildReasoningOutput({ thought, understanding, basis, strategies, alter
     strategy_count: enrichedStrategies.length,
     strategies: enrichedStrategies,
     ranked_strategies: rankedStrategies,
+    cognitive_need_analysis: {
+      version: 'cognitive-need-strategy-annotation-v1',
+      behavior_changed: false,
+      need_count: cognitiveNeedSummary.length,
+      needs: cognitiveNeedSummary,
+      principle: 'Le besoin cognitif est porté par chaque stratégie afin que le Decision Engine puisse comparer les approches selon le problème cognitif satisfait.',
+    },
     alternative_strategy_analysis: alternativeStrategyAnalysis || {
       version: 'alternative-strategy-analyzer-v1',
       behavior_changed: false,
@@ -1325,7 +1463,7 @@ function reasonAboutThought({ thought, context = {} } = {}) {
       nextEngine: null,
       behaviorChanged: false,
       metadata: {
-        internal_analyzers: ['hypothesis_evaluator_v2', 'hypothesis_arbitration_v1', 'cognitive_layer_strategy_generator_v1', 'alternative_strategy_analyzer_v1', 'strategy_evaluator_v1', 'cognitive_questions_v1'],
+        internal_analyzers: ['hypothesis_evaluator_v2', 'hypothesis_arbitration_v1', 'cognitive_layer_strategy_generator_v1', 'alternative_strategy_analyzer_v1', 'cognitive_need_strategy_annotation_v1', 'strategy_evaluator_v1', 'cognitive_questions_v1'],
         foundation_role: 'construct_strategies_without_deciding',
         reasoning_priority: ['evaluated_hypotheses', 'facts', 'observations', 'fallback_signals'],
       },
