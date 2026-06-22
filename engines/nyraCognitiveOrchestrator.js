@@ -596,6 +596,79 @@ async function orchestrateThought({
 
 
 
+function buildChatReplyCognitiveContext(thoughtOrchestration) {
+  const understanding = getPipelineUnderstandingOutput(thoughtOrchestration);
+  const reasoning = getPipelineReasoningOutput(thoughtOrchestration);
+  const strategies = Array.isArray(reasoning?.strategies) ? reasoning.strategies : [];
+  const rankedStrategies = Array.isArray(reasoning?.ranked_strategies) ? reasoning.ranked_strategies : [];
+  const strongestStrategyId = normalizeText(
+    reasoning?.decision_preparation?.strongest_candidate_id ||
+    rankedStrategies[0]?.id ||
+    strategies[0]?.id ||
+    ''
+  );
+  const strongestStrategy = strategies.find(strategy => {
+    return normalizeText(strategy?.id) === strongestStrategyId;
+  }) || strategies[0] || null;
+
+  if (!understanding && !reasoning) {
+    return null;
+  }
+
+  return {
+    source: 'cognitive_pipeline',
+    behavior_changed: false,
+    understanding: understanding
+      ? {
+          type: normalizeText(understanding.type || ''),
+          domain: normalizeText(understanding.domain || understanding.cognitive_domain || understanding.intent?.domain || ''),
+          cognitive_state: normalizeText(
+            understanding.cognitive_state ||
+            understanding.primary_cognitive_state ||
+            understanding.intent?.cognitive_state ||
+            understanding.task_state ||
+            ''
+          ),
+          primary_intent: normalizeText(understanding.intent?.primary || understanding.primary_intent || ''),
+          confidence: Number(understanding.intent?.confidence ?? understanding.confidence ?? 0),
+        }
+      : null,
+    reasoning: reasoning
+      ? {
+          reasoning_version: normalizeText(reasoning.reasoning_version || reasoning.engine_version || ''),
+          dominant_cognitive_need: normalizeText(reasoning.reasoning_basis?.dominant_cognitive_need || ''),
+          cognitive_state: normalizeText(reasoning.reasoning_basis?.cognitive_state || ''),
+          situation_profile: reasoning.reasoning_basis?.situation_profile || null,
+          cognitive_intervention: reasoning.reasoning_basis?.cognitive_intervention || null,
+          selected_intervention: reasoning.cognitive_intervention_analysis?.selected_intervention || reasoning.reasoning_basis?.cognitive_intervention || null,
+          strategy_count: strategies.length,
+          strongest_strategy: strongestStrategy
+            ? {
+                id: normalizeText(strongestStrategy.id || ''),
+                label: normalizeText(strongestStrategy.label || ''),
+                primary_cognitive_need: normalizeText(strongestStrategy.primary_cognitive_need || strongestStrategy.cognitive_need?.primary || ''),
+                conversation_style: normalizeText(strongestStrategy.constraints?.conversation_style || ''),
+                next_prompt_goal: normalizeText(strongestStrategy.constraints?.next_prompt_goal || ''),
+                guidance: normalizeText(strongestStrategy.payload?.guidance || ''),
+              }
+            : null,
+          ranked_strategy_ids: rankedStrategies.map(strategy => normalizeText(strategy?.id)).filter(Boolean),
+          requires_clarification: Boolean(reasoning.uncertainty?.requires_clarification),
+        }
+      : null,
+  };
+}
+
+function buildReplySystemPrompt({ buildSystemPrompt, analysis, memorySummary, cognitivePromptContext }) {
+  if (typeof buildSystemPrompt !== 'function') return '';
+
+  // Contrat préparatoire : le troisième argument donne accès au pipeline cognitif complet.
+  // Les anciennes implémentations de buildSystemPrompt ignorent simplement cet argument,
+  // ce qui rend cette évolution non cassante.
+  return buildSystemPrompt(analysis, memorySummary, cognitivePromptContext);
+}
+
+
 async function buildChatReply({
   openaiClient,
   model,
@@ -603,6 +676,7 @@ async function buildChatReply({
   memorySummary,
   thought,
   action,
+  thoughtOrchestration = null,
   buildActionReply,
   buildSystemPrompt,
   fallbackReply = 'Je l’ai capté. Je le range dans Nyra.',
@@ -619,13 +693,23 @@ async function buildChatReply({
     }
   }
 
+  const cognitivePromptContext = buildChatReplyCognitiveContext(thoughtOrchestration);
+
   if (!openaiClient?.chat?.completions?.create || typeof buildSystemPrompt !== 'function') {
     return {
       reply: normalizeText(fallbackReply),
       source: 'fallback',
       behavior_changed: false,
+      cognitive_prompt_context: cognitivePromptContext,
     };
   }
+
+  const systemPrompt = buildReplySystemPrompt({
+    buildSystemPrompt,
+    analysis,
+    memorySummary,
+    cognitivePromptContext,
+  });
 
   const completion = await openaiClient.chat.completions.create({
     model,
@@ -634,7 +718,7 @@ async function buildChatReply({
     messages: [
       {
         role: 'system',
-        content: buildSystemPrompt(analysis, memorySummary),
+        content: systemPrompt,
       },
       {
         role: 'user',
@@ -649,6 +733,7 @@ async function buildChatReply({
     reply,
     source: 'openai',
     behavior_changed: false,
+    cognitive_prompt_context: cognitivePromptContext,
   };
 }
 
