@@ -319,6 +319,154 @@ function detectReasoningSignals(candidateDecision, cognitiveContext = {}) {
   };
 }
 
+
+function resolveDecisionProfileValue(values = [], fallback = null) {
+  const foundValue = normalizeArray(values).find(value => {
+    if (value === undefined || value === null) return false;
+
+    if (typeof value === 'string') return normalizeText(value).length > 0;
+
+    if (typeof value === 'number') return !Number.isNaN(value);
+
+    if (Array.isArray(value)) return value.length > 0;
+
+    if (typeof value === 'object') return Object.keys(value).length > 0;
+
+    return Boolean(value);
+  });
+
+  return foundValue === undefined ? fallback : foundValue;
+}
+
+function normalizeDecisionProfileMetric(value, fallback = 'unknown') {
+  const normalizedValue = normalizeText(value).toLowerCase();
+
+  if (!normalizedValue) return fallback;
+
+  return normalizedValue;
+}
+
+function buildDecisionProfile(candidateDecision, cognitiveContext = {}, decisionInputOverride = null) {
+  // Decision Profile V1
+  // Responsabilité : synthétiser la situation décisionnelle avant le score et le choix.
+  // Le profil est informatif en V1 : il ne modifie pas encore le comportement utilisateur.
+  const decisionInput = decisionInputOverride || buildDecisionInput(candidateDecision, cognitiveContext);
+  const analysis = normalizeObject(candidateDecision?.analysis_summary || cognitiveContext?.analysis);
+  const strongestCandidate = normalizeObject(decisionInput.strongest_candidate);
+  const cognitiveState = normalizeObject(decisionInput.cognitive_state);
+  const cognitiveQuestionsSummary = normalizeObject(strongestCandidate.cognitive_questions_summary);
+  const decisionPreparation = normalizeObject(decisionInput.decision_preparation);
+  const uncertainty = normalizeObject(decisionInput.uncertainty);
+  const reasoningMetadata = normalizeObject(decisionInput.reasoning_metadata);
+  const normalizedDecision = normalizeObject(candidateDecision?.normalized_decision);
+  const candidateAction = normalizeObject(candidateDecision?.candidate_action);
+
+  const cognitiveNeed = resolveDecisionProfileValue([
+    decisionInput.cognitive_need,
+    cognitiveQuestionsSummary.cognitive_need,
+    cognitiveQuestionsSummary.primary_need,
+    strongestCandidate.cognitive_need,
+    normalizedDecision.cognitive_need,
+    normalizedDecision.primary_cognitive_need,
+    cognitiveState.cognitive_need,
+    analysis.cognitive_need,
+    reasoningMetadata.primary_intent,
+    analysis.conversation_intent,
+    analysis.suggested_bucket,
+    analysis.type,
+  ], 'unknown');
+
+  const cognitiveCost = normalizeDecisionProfileMetric(resolveDecisionProfileValue([
+    strongestCandidate.cognitive_cost,
+    cognitiveQuestionsSummary.cognitive_cost,
+    decisionPreparation.cognitive_cost,
+    normalizedDecision.cognitive_cost,
+    candidateAction.cognitive_cost,
+  ], null));
+
+  const expectedBenefit = normalizeDecisionProfileMetric(resolveDecisionProfileValue([
+    strongestCandidate.expected_benefit,
+    cognitiveQuestionsSummary.expected_benefit,
+    decisionPreparation.expected_benefit,
+    normalizedDecision.expected_benefit,
+    candidateAction.expected_benefit,
+  ], null));
+
+  const readiness = normalizeDecisionProfileMetric(resolveDecisionProfileValue([
+    strongestCandidate.readiness,
+    decisionPreparation.readiness,
+    normalizedDecision.readiness,
+  ], 'unknown'));
+
+  const riskLevel = normalizeDecisionProfileMetric(resolveDecisionProfileValue([
+    strongestCandidate.risk_level,
+    cognitiveQuestionsSummary.risk_level,
+    decisionPreparation.risk_level,
+    normalizedDecision.risk_level,
+  ], 'unknown'));
+
+  return {
+    contract: 'decision-profile-v1',
+    source: 'nyra_decision_engine',
+    behavior_impact: 'none',
+    available: Boolean(decisionInput.available || strongestCandidate.id || candidateDecision?.candidate_action),
+    cognitive_need: normalizeText(cognitiveNeed) || 'unknown',
+    cognitive_cost: cognitiveCost,
+    expected_benefit: expectedBenefit,
+    user_context: {
+      cognitive_state: cognitiveState,
+      urgency: analysis.urgency || null,
+      response_level: analysis.response_level || null,
+      conversation_intent: analysis.conversation_intent || null,
+      is_task: Boolean(analysis.is_task),
+      is_emotion: Boolean(analysis.is_emotion),
+      is_idea: Boolean(analysis.is_idea),
+      is_project: Boolean(analysis.is_project),
+    },
+    situation_constraints: {
+      should_execute: candidateDecision?.should_execute === false ? false : Boolean(candidateDecision?.should_execute),
+      has_candidate_action: Boolean(candidateDecision?.candidate_action),
+      decision_boundary: strongestCandidate.decision_boundary || null,
+      requires_clarification: Boolean(uncertainty.requires_clarification),
+      clarification_candidate_ids: normalizeArray(decisionPreparation.clarification_candidate_ids),
+      risk_level: riskLevel,
+    },
+    uncertainty: {
+      level: uncertainty.level || decisionPreparation.uncertainty_level || null,
+      requires_clarification: Boolean(uncertainty.requires_clarification),
+    },
+    readiness,
+    arbitration_metadata: {
+      decision_input_contract: decisionInput.contract || null,
+      strongest_candidate_id: strongestCandidate.id || null,
+      strongest_candidate_score: strongestCandidate.score ?? decisionPreparation.strongest_candidate_score ?? null,
+      strongest_candidate_confidence: strongestCandidate.confidence ?? null,
+      strategy_count: reasoningMetadata.strategy_count ?? normalizeArray(decisionInput.strategies).length,
+      ranked_strategy_count: normalizeArray(decisionInput.ranked_strategies).length,
+      principle: decisionPreparation.principle || null,
+      profile_version: 'decision-profile-v1',
+    },
+    generated_at: new Date().toISOString(),
+  };
+}
+
+function summarizeDecisionProfile(decisionProfile) {
+  const safeProfile = normalizeObject(decisionProfile);
+
+  return {
+    contract: safeProfile.contract || 'decision-profile-v1',
+    available: Boolean(safeProfile.available),
+    cognitive_need: safeProfile.cognitive_need || 'unknown',
+    cognitive_cost: safeProfile.cognitive_cost || 'unknown',
+    expected_benefit: safeProfile.expected_benefit || 'unknown',
+    readiness: safeProfile.readiness || 'unknown',
+    uncertainty_level: safeProfile.uncertainty?.level || null,
+    requires_clarification: Boolean(safeProfile.uncertainty?.requires_clarification),
+    strongest_candidate_id: safeProfile.arbitration_metadata?.strongest_candidate_id || null,
+    strategy_count: safeProfile.arbitration_metadata?.strategy_count ?? null,
+  };
+}
+
 function computeDecisionScore(candidateDecision, cognitiveContext = {}) {
   // Decision Score V1.2
   // Responsabilité : commencer à mesurer la qualité cognitive d'une décision candidate
@@ -327,6 +475,7 @@ function computeDecisionScore(candidateDecision, cognitiveContext = {}) {
   // la première candidate valide afin d'éviter toute régression.
   const analysis = candidateDecision?.analysis_summary || cognitiveContext?.analysis || {};
   const decisionInput = buildDecisionInput(candidateDecision, cognitiveContext);
+  const decisionProfile = buildDecisionProfile(candidateDecision, cognitiveContext, decisionInput);
   const confidence = getCandidateConfidence(candidateDecision, cognitiveContext);
   const reasoningSignals = detectReasoningSignals(candidateDecision, cognitiveContext);
   const strongestCandidate = normalizeObject(decisionInput.strongest_candidate);
@@ -428,7 +577,8 @@ function computeDecisionScore(candidateDecision, cognitiveContext = {}) {
     factors,
     reasoning_signals: reasoningSignals,
     decision_input_summary: summarizeDecisionInput(decisionInput),
-    scoring_version: 'decision-score-v1.3',
+    decision_profile_summary: summarizeDecisionProfile(decisionProfile),
+    scoring_version: 'decision-score-v1.4',
     generated_at: new Date().toISOString(),
   };
 }
@@ -439,19 +589,23 @@ function attachDecisionScore(candidateDecision, cognitiveContext = {}) {
   }
 
   const decisionInput = buildDecisionInput(candidateDecision, cognitiveContext);
+  const decisionProfile = buildDecisionProfile(candidateDecision, cognitiveContext, decisionInput);
   const decisionScore = computeDecisionScore(candidateDecision, cognitiveContext);
 
   return {
     ...candidateDecision,
     decision_input: decisionInput,
+    decision_profile: decisionProfile,
     decision_score: decisionScore,
     selection_metadata: {
       scoring_available: true,
       scoring_version: decisionScore.scoring_version,
       decision_input_available: Boolean(decisionInput.available),
       decision_input_contract: decisionInput.contract,
+      decision_profile_available: Boolean(decisionProfile.available),
+      decision_profile_contract: decisionProfile.contract,
       behavior_impact: 'none',
-      note: 'Contrat DecisionInput et score calculés sans modifier la stratégie de sélection V1.',
+      note: 'Contrat DecisionInput, DecisionProfile et score calculés sans modifier la stratégie de sélection V1.',
     },
   };
 }
@@ -560,9 +714,11 @@ function chooseBestDecision(candidateDecisions, cognitiveContext = {}) {
       level: candidateDecision.decision_score?.level || null,
       decision_input_available: Boolean(candidateDecision.decision_input?.available),
       strongest_candidate_id: candidateDecision.decision_input?.strongest_candidate?.id || null,
+      decision_profile_available: Boolean(candidateDecision.decision_profile?.available),
+      cognitive_need: candidateDecision.decision_profile?.cognitive_need || null,
     })),
     selection_strategy: 'first_valid_candidate_with_decision_input',
-    selection_reason: 'Comportement V1 conservé : la première décision candidate valide est choisie. Le DecisionInput et le score sont seulement informatifs en V1.3.',
+    selection_reason: 'Comportement V1 conservé : la première décision candidate valide est choisie. Le DecisionInput, le DecisionProfile et le score sont seulement informatifs en V1.4.',
     cognitive_context: cognitiveContext || {},
     selected_at: new Date().toISOString(),
   };
@@ -598,4 +754,5 @@ module.exports = {
   resolveExecutableActionFromCandidateDecision,
   resolveExecutableActionFromDecision,
   buildDecisionInput,
+  buildDecisionProfile,
 };
