@@ -10421,16 +10421,6 @@ app.post('/chat', async (req, res) => {
     const action = resolveExecutableActionFromCandidateDecision(chosenDecision);
     const suggestions = buildSuggestions(analysis, action);
 
-    const reasoningDebugOutput = thoughtOrchestration?.reasoning?.output || thoughtOrchestration?.reasoning || null;
-    console.log('===== NYRA DEBUG REASONING OUTPUT =====');
-    console.log(JSON.stringify({
-      understanding: thoughtOrchestration?.understanding?.output || thoughtOrchestration?.understanding || null,
-      reasoning: reasoningDebugOutput,
-      pipeline: thoughtOrchestration?.pipeline || null,
-      pipeline_step: thoughtOrchestration?.pipeline_step || null,
-    }, null, 2));
-    console.log('=======================================');
-
     const replyResult = typeof buildChatReply === 'function'
       ? await buildChatReply({
           openaiClient: openai,
