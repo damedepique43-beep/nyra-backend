@@ -573,6 +573,147 @@ function buildSituationProfile({ understanding = {}, basis = {} } = {}) {
   };
 }
 
+
+function normalizeCognitiveInterventionId(value, fallback = 'none') {
+  const normalized = normalizeText(value || fallback)
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  const allowedInterventions = [
+    'brain_dump',
+    'secure_capture',
+    'progressive_clarification',
+    'emotional_regulation',
+    'structured_execution',
+    'context_preservation',
+    'none',
+  ];
+
+  if (allowedInterventions.includes(normalized)) return normalized;
+  return fallback;
+}
+
+function buildCognitiveIntervention({
+  id,
+  label,
+  goal,
+  confidence = 0.72,
+  conversationStyle = 'standard_support',
+  recommendedBuilders = [],
+  nextPromptGoal = '',
+  rationale = '',
+} = {}) {
+  const interventionId = normalizeCognitiveInterventionId(id);
+
+  const defaultLabels = {
+    brain_dump: 'Brain Dump guidé',
+    secure_capture: 'Capture sécurisée',
+    progressive_clarification: 'Clarification progressive',
+    emotional_regulation: 'Régulation cognitive et émotionnelle',
+    structured_execution: 'Exécution structurée',
+    context_preservation: 'Préservation du contexte',
+    none: 'Aucune intervention spécialisée',
+  };
+
+  return {
+    id: interventionId,
+    label: normalizeText(label || defaultLabels[interventionId] || defaultLabels.none),
+    goal: normalizeCognitiveNeed(goal || 'preserve_context'),
+    confidence: clamp01(confidence, 0.72),
+    conversation_style: normalizeText(conversationStyle || 'standard_support'),
+    recommended_builders: uniqueArray(normalizeArray(recommendedBuilders).map(item => normalizeText(item)).filter(Boolean)),
+    next_prompt_goal: normalizeText(nextPromptGoal || ''),
+    rationale: normalizeText(rationale || 'Intervention cognitive sélectionnée à partir du profil de situation.'),
+  };
+}
+
+function selectCognitiveIntervention({ profile = {}, basis = {} } = {}) {
+  // Cognitive Intervention Selector V1
+  // Responsabilité : choisir une méthode d'accompagnement du fonctionnement mental
+  // avant de choisir les stratégies techniques qui la mettront en œuvre.
+  // Ce composant reste interne au Reasoning Engine et ne décide ni n'exécute.
+  const safeProfile = normalizeObject(profile);
+  const cognitiveState = normalizeText(safeProfile.cognitive_state || basis.cognitive_state || 'neutral');
+  const dominantNeed = normalizeCognitiveNeed(safeProfile.dominant_need || basis.dominant_cognitive_need || 'preserve_context');
+
+  if (dominantNeed === 'reduce_cognitive_load' || ['overwhelmed', 'cognitive_overload', 'overload', 'surcharge', 'task_overload'].includes(cognitiveState)) {
+    return buildCognitiveIntervention({
+      id: 'brain_dump',
+      label: 'Brain Dump guidé',
+      goal: 'reduce_cognitive_load',
+      confidence: 0.88,
+      conversationStyle: 'guided_dump',
+      recommendedBuilders: ['guided_brain_dump', 'clarify_understanding'],
+      nextPromptGoal: 'Inviter l’utilisateur à vider tout ce qu’il a en tête sans trier, puis organiser ensuite.',
+      rationale: 'La surcharge cognitive demande d’abord de vider la mémoire de travail avant de prioriser ou de créer des tâches.',
+    });
+  }
+
+  if (dominantNeed === 'prevent_forgetting' || safeProfile.should_prepare_reminder) {
+    return buildCognitiveIntervention({
+      id: 'secure_capture',
+      label: 'Capture sécurisée',
+      goal: 'prevent_forgetting',
+      confidence: 0.84,
+      conversationStyle: 'secure_capture',
+      recommendedBuilders: ['schedule_future_prompt', 'externalize_action'],
+      nextPromptGoal: 'Sécuriser l’information pour que l’utilisateur n’ait plus à la garder en tête.',
+      rationale: 'Le risque d’oubli demande une capture fiable avant toute organisation plus fine.',
+    });
+  }
+
+  if (dominantNeed === 'support_regulation' || safeProfile.should_regulate) {
+    return buildCognitiveIntervention({
+      id: 'emotional_regulation',
+      label: 'Régulation cognitive et émotionnelle',
+      goal: 'support_regulation',
+      confidence: 0.82,
+      conversationStyle: 'regulation_first',
+      recommendedBuilders: ['support_regulation', 'clarify_understanding'],
+      nextPromptGoal: 'Réduire la pression interne avant toute demande d’organisation ou d’exécution.',
+      rationale: 'Une charge émotionnelle ou cognitive forte rend l’action directe moins adaptée.',
+    });
+  }
+
+  if (dominantNeed === 'clarify_uncertainty' || safeProfile.should_clarify_first) {
+    return buildCognitiveIntervention({
+      id: 'progressive_clarification',
+      label: 'Clarification progressive',
+      goal: 'clarify_uncertainty',
+      confidence: 0.78,
+      conversationStyle: 'progressive_clarification',
+      recommendedBuilders: ['clarify_understanding'],
+      nextPromptGoal: 'Clarifier une seule information utile avant de choisir une action.',
+      rationale: 'L’incertitude doit être réduite avant de transformer la pensée en action.',
+    });
+  }
+
+  if (dominantNeed === 'prepare_action' || safeProfile.should_externalize) {
+    return buildCognitiveIntervention({
+      id: 'structured_execution',
+      label: 'Exécution structurée',
+      goal: 'prepare_action',
+      confidence: 0.76,
+      conversationStyle: 'action_preparation',
+      recommendedBuilders: ['externalize_action'],
+      nextPromptGoal: 'Transformer la pensée en action claire et supportable.',
+      rationale: 'Le profil indique une action suffisamment claire pour être préparée.',
+    });
+  }
+
+  return buildCognitiveIntervention({
+    id: 'context_preservation',
+    label: 'Préservation du contexte',
+    goal: 'preserve_context',
+    confidence: 0.68,
+    conversationStyle: 'context_capture',
+    recommendedBuilders: ['capture_for_context'],
+    nextPromptGoal: 'Conserver l’information sans ajouter de pression opérationnelle.',
+    rationale: 'Aucune intervention spécialisée plus forte n’est justifiée par le profil actuel.',
+  });
+}
+
 function buildReasoningBasis(understanding) {
   const layers = getCognitiveLayers(understanding);
   const primaryIntent = getPrimaryIntent(understanding);
@@ -604,6 +745,10 @@ function buildReasoningBasis(understanding) {
     has_cognitive_layers: layers.observations.length > 0 || layers.facts.length > 0 || layers.hypotheses.length > 0,
   };
   const situationProfile = buildSituationProfile({ understanding, basis: provisionalBasis });
+  const cognitiveIntervention = selectCognitiveIntervention({
+    profile: situationProfile,
+    basis: provisionalBasis,
+  });
 
   return {
     ...provisionalBasis,
@@ -611,6 +756,7 @@ function buildReasoningBasis(understanding) {
     cognitive_state: situationProfile.cognitive_state,
     dominant_cognitive_need: situationProfile.dominant_need,
     situation_profile: situationProfile,
+    cognitive_intervention: cognitiveIntervention,
     confidence,
     temporal_scope: temporalScope,
     emotional_intensity: emotionalIntensity,
@@ -936,6 +1082,48 @@ function buildClarifyUnderstandingStrategy({ basis }) {
   });
 }
 
+
+function buildBrainDumpStrategy({ basis }) {
+  const intervention = normalizeObject(basis.cognitive_intervention);
+  const confidence = Math.max(clamp01(intervention.confidence, 0.82), 0.82);
+
+  return buildStrategy({
+    id: 'guided_brain_dump',
+    label: 'Guider un Brain Dump',
+    confidence,
+    cognitiveCost: 0.1,
+    expectedBenefit: 0.88,
+    riskLevel: 0.06,
+    cognitiveNeed: {
+      primary: 'reduce_cognitive_load',
+      label: 'Réduire la charge cognitive par vidage de mémoire de travail',
+      confidence,
+      source: 'cognitive_intervention',
+      rationale: 'Le Brain Dump aide l’utilisateur à sortir les éléments de sa tête avant de trier, prioriser ou agir.',
+    },
+    reasons: [
+      'Le profil de situation indique une surcharge cognitive.',
+      'L’intervention recommandée consiste à vider la mémoire de travail avant de choisir une tâche.',
+    ],
+    constraints: {
+      requires_decision: true,
+      reasoning_source: 'cognitive_intervention',
+      intervention_id: intervention.id || 'brain_dump',
+      intervention_label: intervention.label || 'Brain Dump guidé',
+      conversation_style: intervention.conversation_style || 'guided_dump',
+      next_prompt_goal: intervention.next_prompt_goal || 'Inviter l’utilisateur à vider tout ce qu’il a en tête.',
+      hypothesis_status: null,
+    },
+    payload: {
+      intent: basis.primary_intent,
+      intervention_id: intervention.id || 'brain_dump',
+      cognitive_state: basis.cognitive_state || null,
+      domain: basis.domain || null,
+      guidance: 'Demander à l’utilisateur d’écrire toutes les choses en tête sans les classer, puis annoncer que Nyra les organisera ensuite.',
+    },
+  });
+}
+
 function addStrategyOnce(strategies, strategy) {
   if (!strategy?.id) return;
   const exists = strategies.some(existingStrategy => existingStrategy.id === strategy.id);
@@ -955,6 +1143,7 @@ function buildStrategiesFromCognitiveLayers({ understanding, basis }) {
   const facts = basis.facts;
   const observations = basis.observations;
   const profile = normalizeObject(basis.situation_profile);
+  const intervention = normalizeObject(basis.cognitive_intervention);
 
   const actionHypothesis = getHypothesisByType(hypotheses, 'action_need_hypothesis');
   const reminderHypothesis = getHypothesisByType(hypotheses, 'reminder_need_hypothesis');
@@ -967,6 +1156,10 @@ function buildStrategiesFromCognitiveLayers({ understanding, basis }) {
   // Responsabilité : décider quels builders de stratégies sont pertinents
   // à partir de l'état cognitif détecté, sans décider ni exécuter.
   // Les builders existants restent la source unique des Strategy.
+  if (intervention.id === 'brain_dump') {
+    addStrategyOnce(strategies, buildBrainDumpStrategy({ basis }));
+  }
+
   if (profile.should_clarify_first) {
     addStrategyOnce(strategies, buildClarifyUnderstandingStrategy({ basis }));
   }
@@ -1065,6 +1258,11 @@ function buildStrategiesFromCognitiveLayers({ understanding, basis }) {
 function buildStrategiesFromFallbackSignals({ understanding, basis }) {
   const strategies = [];
   const profile = normalizeObject(basis.situation_profile);
+  const intervention = normalizeObject(basis.cognitive_intervention);
+
+  if (intervention.id === 'brain_dump') {
+    addStrategyOnce(strategies, buildBrainDumpStrategy({ basis }));
+  }
 
   if (profile.should_clarify_first) {
     addStrategyOnce(strategies, buildClarifyUnderstandingStrategy({ basis }));
@@ -1285,6 +1483,10 @@ function classifyStrategyReadiness(strategy) {
     return 'clarify_before_decision';
   }
 
+  if (source === 'cognitive_intervention' && score >= 0.68) {
+    return 'ready_for_decision';
+  }
+
   if (source === 'evaluated_hypothesis' && score >= 0.72) {
     return 'ready_for_decision';
   }
@@ -1461,6 +1663,7 @@ function estimateLoadReduction({ strategy, stateSummary }) {
   const cognitiveCost = clamp01(strategy?.cognitive_cost, 0.2);
   let score = expectedBenefit - (cognitiveCost * 0.35);
 
+  if (strategyId === 'guided_brain_dump') score += 0.24;
   if (strategyId === 'support_regulation') score += 0.18;
   if (strategyId === 'clarify_understanding') score += stateSummary.regulation_mode === 'clarification_support' ? 0.18 : 0.08;
   if (strategyId === 'externalize_action' || strategyId === 'schedule_future_prompt') score += 0.08;
@@ -1477,6 +1680,10 @@ function estimateMomentum({ strategy, stateSummary }) {
 
   if (['externalize_action', 'schedule_future_prompt', 'organize_into_collection'].includes(strategyId)) {
     score += 0.08;
+  }
+
+  if (strategyId === 'guided_brain_dump') {
+    score += 0.06;
   }
 
   if (strategyId === 'support_regulation' && isRecoveryState(stateSummary)) score += 0.1;
@@ -1556,10 +1763,10 @@ function buildCognitiveQuestionReview({ strategy, basis, cognitiveContext }) {
       buildCognitiveQuestionAnswer({
         id: 'action_or_understanding',
         question: 'Est-ce une demande d’action ou un besoin de compréhension ?',
-        answer: strategyId === 'support_regulation' || primaryIntent === 'reflect_emotion'
-          ? 'Le besoin semble d’abord être un soutien ou une compréhension, pas une action brute.'
+        answer: ['support_regulation', 'guided_brain_dump', 'clarify_understanding'].includes(strategyId) || primaryIntent === 'reflect_emotion'
+          ? 'Le besoin semble d’abord être un soutien, un vidage de charge ou une compréhension, pas une action brute.'
           : 'La stratégie reste compatible avec une préparation d’action ou de rangement.',
-        signal: strategyId === 'support_regulation' ? 'understanding_first' : 'action_possible',
+        signal: ['support_regulation', 'guided_brain_dump', 'clarify_understanding'].includes(strategyId) ? 'understanding_first' : 'action_possible',
       }),
       buildCognitiveQuestionAnswer({
         id: 'certainty_level',
@@ -1705,6 +1912,7 @@ function buildReasoningOutput({ thought, understanding, basis, strategies, alter
       cognitive_state: basis.cognitive_state || null,
       dominant_cognitive_need: basis.dominant_cognitive_need || null,
       situation_profile: basis.situation_profile || null,
+      cognitive_intervention: basis.cognitive_intervention || null,
       hypothesis_evaluation_summary: hypothesisEvaluationSummary,
     },
     evaluated_hypotheses: basis.hypotheses.map(hypothesis => ({
@@ -1724,6 +1932,12 @@ function buildReasoningOutput({ thought, understanding, basis, strategies, alter
     strategy_count: enrichedStrategies.length,
     strategies: enrichedStrategies,
     ranked_strategies: rankedStrategies,
+    cognitive_intervention_analysis: {
+      version: 'cognitive-intervention-selector-v1',
+      behavior_changed: false,
+      selected_intervention: basis.cognitive_intervention || null,
+      principle: 'Le Reasoning Engine choisit une méthode d’accompagnement cognitive avant de générer les stratégies qui la servent.',
+    },
     cognitive_need_analysis: {
       version: 'cognitive-need-strategy-annotation-v1',
       behavior_changed: false,
@@ -1785,7 +1999,7 @@ function reasonAboutThought({ thought, context = {} } = {}) {
       nextEngine: null,
       behaviorChanged: false,
       metadata: {
-        internal_analyzers: ['hypothesis_evaluator_v2', 'hypothesis_arbitration_v1', 'situation_profile_v1', 'cognitive_layer_strategy_generator_v1', 'alternative_strategy_analyzer_v1', 'cognitive_need_strategy_annotation_v1', 'strategy_evaluator_v1', 'cognitive_questions_v1'],
+        internal_analyzers: ['hypothesis_evaluator_v2', 'hypothesis_arbitration_v1', 'situation_profile_v1', 'cognitive_intervention_selector_v1', 'cognitive_layer_strategy_generator_v1', 'alternative_strategy_analyzer_v1', 'cognitive_need_strategy_annotation_v1', 'strategy_evaluator_v1', 'cognitive_questions_v1'],
         foundation_role: 'construct_strategies_without_deciding',
         reasoning_priority: ['evaluated_hypotheses', 'facts', 'observations', 'fallback_signals'],
       },
