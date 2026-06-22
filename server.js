@@ -805,8 +805,11 @@ function cleanActionTitle(text) {
 
 function stripReminderScheduleFromText(text) {
   return normalizeText(text)
+    .replace(/^(?:dans\s+\d{1,4}\s*(?:secondes?|sec|secs|s|minutes?|mins?|mn|mns|heures?|heure|h)\b)\s*/i, '')
+    .replace(/^(?:(?:demain matin|demain après-midi|demain apres-midi|demain soir|demain|aujourd['’]hui|ce soir)\b)\s*/i, '')
+    .replace(/^(?:à|a|vers)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\s*/i, '')
     .replace(/\s+dans\s+\d{1,4}\s*(?:secondes?|sec|secs|s|minutes?|mins?|mn|mns|heures?|heure|h)\b.*$/i, '')
-    .replace(/\s+(?:aujourd['’]hui|ce soir|demain|demain matin|demain après-midi|demain apres-midi|demain soir)\b.*$/i, '')
+    .replace(/\s+(?:demain matin|demain après-midi|demain apres-midi|demain soir|demain|aujourd['’]hui|ce soir)\b.*$/i, '')
     .replace(/\s+(?:à|a|vers)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}.*$/i, '')
     .trim();
 }
@@ -814,8 +817,16 @@ function stripReminderScheduleFromText(text) {
 function extractReminderTargetAfterSchedule(text) {
   const normalized = normalizeText(text);
 
+  const reminderVerbPattern = '(?:rappelle-moi|rappelle moi|rappel-moi|rappel moi|rappelle|rappel)';
+  const datePattern = '(?:demain matin|demain après-midi|demain apres-midi|demain soir|demain|aujourd[\'’]hui|ce soir)';
+  const timePattern = '(?:(?:à|a|vers)\\s*\\d{1,2}\\s*(?:h|:|\\.)\\s*\\d{0,2})';
+
   const patterns = [
-    /\bdans\s+\d{1,4}\s*(?:secondes?|sec|secs|s|minutes?|mins?|mn|mns|heures?|heure|h)\b\s+(?:de\s+|d['’]\s*|pour\s+|à\s+|a\s+)(.+)$/i,
+    new RegExp(`^${datePattern}\\s+${timePattern}?\\s*${reminderVerbPattern}\\s+(?:de\\s+|d[\'’]\\s*|pour\\s+|à\\s+|a\\s+)?(.+)$`, 'i'),
+    new RegExp(`^${timePattern}\\s*${reminderVerbPattern}\\s+(?:de\\s+|d[\'’]\\s*|pour\\s+|à\\s+|a\\s+)?(.+)$`, 'i'),
+    new RegExp(`^${reminderVerbPattern}\\s+${datePattern}\\s+${timePattern}?\\s*(?:de\\s+|d[\'’]\\s*|pour\\s+|à\\s+|a\\s+)?(.+)$`, 'i'),
+    new RegExp(`^${reminderVerbPattern}\\s+${timePattern}\\s*(?:de\\s+|d[\'’]\\s*|pour\\s+|à\\s+|a\\s+)?(.+)$`, 'i'),
+    /\bdans\s+\d{1,4}\s*(?:secondes?|sec|secs|s|minutes?|mins?|mn|mns|heures?|heure|h)\b\s+(?:de\s+|d['’]\s*|pour\s+|à\s+|a\s+)?(.+)$/i,
     /\b(?:demain matin|demain après-midi|demain apres-midi|demain soir|demain|aujourd['’]hui|ce soir)\b\s+(?:de\s+|d['’]\s*|pour\s+|à\s+|a\s+)(.+)$/i,
     /\b(?:à|a|vers)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\s+(?:de\s+|d['’]\s*|pour\s+|à\s+|a\s+)(.+)$/i,
   ];
@@ -853,6 +864,8 @@ function cleanReminderActionTitle(text) {
     .replace(/^rappel moi\s+/i, '')
     .replace(/^rappel-moi\s+/i, '')
     .replace(/^rappel\s+/i, '')
+    .replace(/^(?:demain matin|demain après-midi|demain apres-midi|demain soir|demain|aujourd['’]hui|ce soir)\b\s*/i, '')
+    .replace(/^(?:à|a|vers)\s*\d{1,2}\s*(?:h|:|\.)\s*\d{0,2}\s*/i, '')
     .replace(/^(?:de\s+|d['’]\s*|pour\s+|à\s+|a\s+)/i, '')
     .trim();
 
@@ -941,19 +954,80 @@ function getLocalDateParts(date = new Date(), timeZone = 'Europe/Paris') {
   };
 }
 
+function getLocalDateTimeParts(date = new Date(), timeZone = 'Europe/Paris') {
+  const formatter = new Intl.DateTimeFormat('fr-FR', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  });
+
+  const parts = formatter.formatToParts(date).reduce((acc, part) => {
+    acc[part.type] = part.value;
+    return acc;
+  }, {});
+
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+    second: Number(parts.second),
+  };
+}
+
 function buildParisDateAt(hour, minute = 0, dayOffset = 0) {
   const baseParts = getLocalDateParts(new Date(), 'Europe/Paris');
-  const utcCandidate = new Date(Date.UTC(
+  const targetDate = new Date(Date.UTC(
     baseParts.year,
     baseParts.month - 1,
-    baseParts.day + dayOffset,
-    Number(hour || 9) - 1,
-    Number(minute || 0),
+    baseParts.day + Number(dayOffset || 0),
+    12,
+    0,
+    0,
+    0
+  ));
+  const targetParts = getLocalDateParts(targetDate, 'UTC');
+  const targetHour = Number(hour || 9);
+  const targetMinute = Number(minute || 0);
+
+  const firstCandidate = new Date(Date.UTC(
+    targetParts.year,
+    targetParts.month - 1,
+    targetParts.day,
+    targetHour,
+    targetMinute,
     0,
     0
   ));
 
-  return utcCandidate.toISOString();
+  const localParts = getLocalDateTimeParts(firstCandidate, 'Europe/Paris');
+  const desiredAsUtc = Date.UTC(
+    targetParts.year,
+    targetParts.month - 1,
+    targetParts.day,
+    targetHour,
+    targetMinute,
+    0,
+    0
+  );
+  const localAsUtc = Date.UTC(
+    localParts.year,
+    localParts.month - 1,
+    localParts.day,
+    localParts.hour,
+    localParts.minute,
+    0,
+    0
+  );
+  const offsetMs = localAsUtc - desiredAsUtc;
+
+  return new Date(firstCandidate.getTime() - offsetMs).toISOString();
 }
 
 function extractExplicitTime(text) {
@@ -5302,7 +5376,7 @@ function isBrainDumpCollectRequest(message, protocolContext = {}) {
     serializedProfile.includes('guided_dump')
   );
   const lowCognitiveCostCollectContext = isLowCognitiveCostCollectContext(protocolContext);
-  const result = Boolean(hasOverloadExpression || hasBrainDumpSignal || lowCognitiveCostCollectContext);
+  const result = Boolean(hasOverloadExpression && (hasBrainDumpSignal || lowCognitiveCostCollectContext));
 
   console.log('===== NYRA BRAIN DUMP MATCH =====');
   console.log(JSON.stringify({
