@@ -5282,7 +5282,54 @@ function isBrainDumpCollectRequest(message, protocolContext = {}) {
 }
 
 function buildBrainDumpCollectReply() {
-  return 'Ok. Déverse tout ici, en vrac. Ne trie pas, ne priorise pas, ne cherche pas à être claire. Écris tout ce qui te prend de la place dans la tête, même dans le désordre. Je m’occupe ensuite de regrouper tout ça avec toi.';
+  return [
+    'Ok. On ne va pas essayer de mettre de l’ordre tout de suite.',
+    '',
+    'Déverse simplement tout ici, en vrac : tâches, idées, inquiétudes, rendez-vous, papiers, projets, tout ce qui occupe ton esprit.',
+    '',
+    'Ne trie pas, ne priorise pas, ne cherche pas à faire des phrases propres.',
+    '',
+    'Écris tout comme ça vient. Je m’occupe ensuite de regrouper et d’organiser avec toi.',
+  ].join('\n');
+}
+
+function buildChatExecutionPolicy({ message, thoughtOrchestration, pipelineContext, chosenDecision, analysis } = {}) {
+  // Execution Policy V1
+  // Responsabilité : déterminer si la réponse conversationnelle doit être
+  // produite de manière déterministe ou assistée par le LLM.
+  // En V1, seule la phase Brain Dump / collect est déterministe afin de
+  // garantir un coût cognitif minimal et éviter que le LLM demande de trier.
+  const protocolContext = {
+    thoughtOrchestration: thoughtOrchestration || null,
+    pipelineContext: pipelineContext || null,
+    chosenDecision: chosenDecision || null,
+    decision_profile: chosenDecision?.decision_profile || null,
+    analysis: analysis || null,
+  };
+
+  if (isBrainDumpCollectRequest(message, protocolContext)) {
+    return {
+      contract: 'execution-policy-v1',
+      mode: 'deterministic',
+      protocol: 'brain_dump',
+      phase: 'collect',
+      reason: 'Surcharge mentale détectée : la collecte doit minimiser le coût cognitif et ne demander aucun tri.',
+      behavior_impact: 'visible_reply_controlled',
+      reply: buildBrainDumpCollectReply(),
+      generated_at: new Date().toISOString(),
+    };
+  }
+
+  return {
+    contract: 'execution-policy-v1',
+    mode: 'llm_assisted',
+    protocol: null,
+    phase: null,
+    reason: 'Aucune politique déterministe applicable.',
+    behavior_impact: 'none',
+    reply: null,
+    generated_at: new Date().toISOString(),
+  };
 }
 
 function buildSystemPrompt(analysis, memorySummary, cognitivePromptContext = null) {
@@ -10620,37 +10667,42 @@ app.post('/chat', async (req, res) => {
     const action = resolveExecutableActionFromCandidateDecision(chosenDecision);
     const suggestions = buildSuggestions(analysis, action);
 
-    const replyResult = typeof buildChatReply === 'function'
-      ? await buildChatReply({
-          openaiClient: openai,
-          model: OPENAI_MODEL,
-          analysis,
-          memorySummary,
-          thought,
-          action,
-          thoughtOrchestration,
-          buildActionReply,
-          buildSystemPrompt: (promptAnalysis, promptMemorySummary, cognitivePromptContext = {}) => {
-            return buildSystemPrompt(promptAnalysis, promptMemorySummary, {
-              ...(cognitivePromptContext || {}),
-              chosenDecision,
-              decision_profile: chosenDecision?.decision_profile || null,
-              cognitive_cost: chosenDecision?.decision_profile?.cognitive_cost || null,
-            });
-          },
-        })
-      : null;
-
-    const brainDumpCollectReply = isBrainDumpCollectRequest(thought.content, {
+    const executionPolicy = buildChatExecutionPolicy({
+      message: thought.content,
       thoughtOrchestration,
       pipelineContext: buildPipelineAnalysisContext(thoughtOrchestration) || null,
       chosenDecision,
-      replyResult,
-    })
-      ? buildBrainDumpCollectReply()
-      : '';
+      analysis,
+    });
 
-    const reply = brainDumpCollectReply || normalizeText(replyResult?.reply) || buildActionReply(action) || 'Je l’ai capté. Je le range dans Nyra.';
+    const replyResult = executionPolicy.mode === 'deterministic'
+      ? {
+          reply: executionPolicy.reply,
+          execution_policy: executionPolicy,
+        }
+      : (typeof buildChatReply === 'function'
+          ? await buildChatReply({
+              openaiClient: openai,
+              model: OPENAI_MODEL,
+              analysis,
+              memorySummary,
+              thought,
+              action,
+              thoughtOrchestration,
+              buildActionReply,
+              buildSystemPrompt: (promptAnalysis, promptMemorySummary, cognitivePromptContext = {}) => {
+                return buildSystemPrompt(promptAnalysis, promptMemorySummary, {
+                  ...(cognitivePromptContext || {}),
+                  chosenDecision,
+                  decision_profile: chosenDecision?.decision_profile || null,
+                  cognitive_cost: chosenDecision?.decision_profile?.cognitive_cost || null,
+                  execution_policy: executionPolicy,
+                });
+              },
+            })
+          : null);
+
+    const reply = normalizeText(replyResult?.reply) || buildActionReply(action) || 'Je l’ai capté. Je le range dans Nyra.';
 
     const saved = dispatchChatExecution({
       userId,
