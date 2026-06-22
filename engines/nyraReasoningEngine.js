@@ -701,26 +701,138 @@ function buildStrategiesFromFallbackSignals({ understanding, basis }) {
   return strategies;
 }
 
+function hasStrategyId(strategies = [], strategyId) {
+  const normalizedStrategyId = normalizeText(strategyId);
+  if (!normalizedStrategyId) return false;
+
+  return normalizeArray(strategies).some(strategy => normalizeText(strategy?.id) === normalizedStrategyId);
+}
+
+function addAlternativeStrategy({ strategies, strategy, reason, addedAlternatives }) {
+  if (!strategy?.id || hasStrategyId(strategies, strategy.id)) return;
+
+  strategies.push({
+    ...strategy,
+    alternative_strategy: true,
+    alternative_reason: normalizeText(reason),
+  });
+
+  addedAlternatives.push({
+    strategy_id: strategy.id,
+    reason: normalizeText(reason),
+  });
+}
+
+function shouldAddClarificationAlternative({ basis, strategies }) {
+  if (hasStrategyId(strategies, 'clarify_understanding')) return false;
+  if (basis.has_competing_hypotheses) return true;
+  if (basis.rejected_hypotheses.length >= 1 && basis.active_hypotheses.length === 0) return true;
+
+  return basis.hypotheses.some(hypothesis => {
+    const status = normalizeText(hypothesis?.evaluation?.status || '');
+    return ['needs_verification', 'contradicted', 'weak'].includes(status);
+  });
+}
+
+function enrichWithAlternativeStrategies({ understanding, basis, strategies = [] }) {
+  // Alternative Strategy Analyzer V1
+  // Responsabilité : élargir les approches candidates sans décider ni exécuter.
+  // Ce composant interne ne remplace aucune stratégie existante et ajoute seulement
+  // des alternatives quand une situation cognitive peut raisonnablement être aidée
+  // par plusieurs angles d'accompagnement.
+  const enrichedStrategies = [...normalizeArray(strategies)];
+  const addedAlternatives = [];
+  const primaryIntent = normalizeText(basis.primary_intent || 'capture_note');
+  const hasEmotion = basis.emotional_intensity !== 'none';
+  const hasTemporalNeed = basis.temporal_scope !== 'unspecified';
+  const hasProjectOrIdeaSignal = (
+    primaryIntent === 'capture_idea' ||
+    primaryIntent === 'project_thought' ||
+    hasLayerType(basis.facts, 'project_fact') ||
+    hasLayerType(basis.observations, 'project_signal')
+  );
+
+  if (hasEmotion && !hasStrategyId(enrichedStrategies, 'support_regulation')) {
+    addAlternativeStrategy({
+      strategies: enrichedStrategies,
+      strategy: buildRegulationStrategy({ basis }),
+      reason: 'Signal émotionnel détecté : proposer aussi une approche de régulation.',
+      addedAlternatives,
+    });
+  }
+
+  if (shouldAddClarificationAlternative({ basis, strategies: enrichedStrategies })) {
+    addAlternativeStrategy({
+      strategies: enrichedStrategies,
+      strategy: buildClarifyUnderstandingStrategy({ basis }),
+      reason: 'Hypothèses incertaines ou concurrentes : proposer aussi une clarification.',
+      addedAlternatives,
+    });
+  }
+
+  if (primaryIntent === 'create_task' && !hasStrategyId(enrichedStrategies, 'externalize_action')) {
+    addAlternativeStrategy({
+      strategies: enrichedStrategies,
+      strategy: buildExternalizeActionStrategy({ basis }),
+      reason: 'Intention opérationnelle détectée : proposer aussi une externalisation.',
+      addedAlternatives,
+    });
+  }
+
+  if (primaryIntent === 'create_reminder' && hasTemporalNeed && !hasStrategyId(enrichedStrategies, 'schedule_future_prompt')) {
+    addAlternativeStrategy({
+      strategies: enrichedStrategies,
+      strategy: buildFuturePromptStrategy({ basis }),
+      reason: 'Signal temporel détecté : proposer aussi un soutien futur.',
+      addedAlternatives,
+    });
+  }
+
+  if (hasProjectOrIdeaSignal && !hasStrategyId(enrichedStrategies, 'preserve_and_structure_thought')) {
+    addAlternativeStrategy({
+      strategies: enrichedStrategies,
+      strategy: buildPreserveThoughtStrategy({ basis }),
+      reason: 'Signal projet ou idée détecté : proposer aussi une préservation structurée.',
+      addedAlternatives,
+    });
+  }
+
+  return {
+    strategies: enrichedStrategies,
+    analysis: {
+      version: 'alternative-strategy-analyzer-v1',
+      behavior_changed: false,
+      initial_strategy_count: normalizeArray(strategies).length,
+      final_strategy_count: enrichedStrategies.length,
+      added_strategy_count: addedAlternatives.length,
+      added_alternatives: addedAlternatives,
+      principle: 'Le Reasoning Engine enrichit les approches possibles sans choisir à la place du Decision Engine.',
+    },
+  };
+}
+
 function buildStrategiesFromUnderstanding(understanding) {
   const basis = buildReasoningBasis(understanding);
   const layerStrategies = buildStrategiesFromCognitiveLayers({
     understanding,
     basis,
   });
-
-  if (layerStrategies.length > 0) {
-    return {
-      basis,
-      strategies: layerStrategies,
-    };
-  }
+  const initialStrategies = layerStrategies.length > 0
+    ? layerStrategies
+    : buildStrategiesFromFallbackSignals({
+        understanding,
+        basis,
+      });
+  const alternativeAnalysis = enrichWithAlternativeStrategies({
+    understanding,
+    basis,
+    strategies: initialStrategies,
+  });
 
   return {
     basis,
-    strategies: buildStrategiesFromFallbackSignals({
-      understanding,
-      basis,
-    }),
+    strategies: alternativeAnalysis.strategies,
+    alternative_strategy_analysis: alternativeAnalysis.analysis,
   };
 }
 
@@ -1097,7 +1209,7 @@ function summarizeHypothesisEvaluations(hypotheses = []) {
   return summary;
 }
 
-function buildReasoningOutput({ thought, understanding, basis, strategies, context = {} }) {
+function buildReasoningOutput({ thought, understanding, basis, strategies, alternativeStrategyAnalysis = null, context = {} }) {
   const primaryIntent = getPrimaryIntent(understanding);
   const cognitiveContext = getCognitiveContext(context);
   const enrichedStrategies = normalizeArray(strategies).map((strategy, index) => {
@@ -1159,6 +1271,15 @@ function buildReasoningOutput({ thought, understanding, basis, strategies, conte
     strategy_count: enrichedStrategies.length,
     strategies: enrichedStrategies,
     ranked_strategies: rankedStrategies,
+    alternative_strategy_analysis: alternativeStrategyAnalysis || {
+      version: 'alternative-strategy-analyzer-v1',
+      behavior_changed: false,
+      initial_strategy_count: enrichedStrategies.length,
+      final_strategy_count: enrichedStrategies.length,
+      added_strategy_count: 0,
+      added_alternatives: [],
+      principle: 'Aucune analyse alternative fournie.',
+    },
     decision_preparation: decisionPreparation,
     cognitive_decision_questions: {
       version: 'cognitive-questions-v1',
@@ -1192,6 +1313,7 @@ function reasonAboutThought({ thought, context = {} } = {}) {
     understanding,
     basis: reasoning.basis,
     strategies: reasoning.strategies,
+    alternativeStrategyAnalysis: reasoning.alternative_strategy_analysis,
     context,
   });
 
@@ -1203,7 +1325,7 @@ function reasonAboutThought({ thought, context = {} } = {}) {
       nextEngine: null,
       behaviorChanged: false,
       metadata: {
-        internal_analyzers: ['hypothesis_evaluator_v2', 'hypothesis_arbitration_v1', 'cognitive_layer_strategy_generator_v1', 'strategy_evaluator_v1', 'cognitive_questions_v1'],
+        internal_analyzers: ['hypothesis_evaluator_v2', 'hypothesis_arbitration_v1', 'cognitive_layer_strategy_generator_v1', 'alternative_strategy_analyzer_v1', 'strategy_evaluator_v1', 'cognitive_questions_v1'],
         foundation_role: 'construct_strategies_without_deciding',
         reasoning_priority: ['evaluated_hypotheses', 'facts', 'observations', 'fallback_signals'],
       },
