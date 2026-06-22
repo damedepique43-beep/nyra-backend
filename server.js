@@ -5127,26 +5127,10 @@ function buildActionReply(action) {
 }
 
 
-function isBrainDumpCollectRequest(message, protocolContext = {}) {
+function hasBrainDumpOverloadExpression(message) {
   const normalizedMessage = normalizeText(message).toLowerCase();
-  const serializedContext = (() => {
-    try {
-      return JSON.stringify(protocolContext || {}).toLowerCase();
-    } catch (error) {
-      return '';
-    }
-  })();
 
-  const hasBrainDumpSignal = (
-    serializedContext.includes('brain_dump') ||
-    serializedContext.includes('guided_brain_dump') ||
-    serializedContext.includes('guided_dump') ||
-    serializedContext.includes('vide-moi ton cerveau')
-  );
-
-  if (!hasBrainDumpSignal) return false;
-
-  const hasOverloadExpression = [
+  return [
     'tellement de choses',
     'trop de choses',
     'trop de trucs',
@@ -5169,12 +5153,136 @@ function isBrainDumpCollectRequest(message, protocolContext = {}) {
     'surcharge mentale',
     'charge mentale',
   ].some(pattern => normalizedMessage.includes(pattern));
+}
 
-  return hasOverloadExpression;
+function serializeCognitiveContext(value) {
+  try {
+    return JSON.stringify(value || {}).toLowerCase();
+  } catch (error) {
+    return '';
+  }
+}
+
+function extractDecisionProfileFromContext(protocolContext = {}) {
+  return protocolContext?.decision_profile ||
+    protocolContext?.chosenDecision?.decision_profile ||
+    protocolContext?.candidateDecision?.decision_profile ||
+    protocolContext?.decision?.decision_profile ||
+    protocolContext?.replyResult?.decision_profile ||
+    null;
+}
+
+function extractCognitiveCostFromDecisionProfile(decisionProfile = {}) {
+  const cognitiveCost = decisionProfile?.cognitive_cost ||
+    decisionProfile?.cognitive_cost_constraint ||
+    decisionProfile?.cost ||
+    null;
+
+  if (!cognitiveCost) {
+    return {
+      available: false,
+      level: null,
+      max_level: null,
+      allowed_operations: [],
+      forbidden_operations: [],
+      raw: null,
+    };
+  }
+
+  if (typeof cognitiveCost === 'number') {
+    return {
+      available: true,
+      level: cognitiveCost,
+      max_level: cognitiveCost,
+      allowed_operations: [],
+      forbidden_operations: [],
+      raw: cognitiveCost,
+    };
+  }
+
+  if (typeof cognitiveCost === 'string') {
+    const normalizedCost = normalizeText(cognitiveCost).toLowerCase();
+    const numericMatch = normalizedCost.match(/\d+/);
+    const numericLevel = numericMatch ? Number(numericMatch[0]) : null;
+
+    return {
+      available: normalizedCost.length > 0,
+      level: Number.isNaN(numericLevel) ? null : numericLevel,
+      max_level: Number.isNaN(numericLevel) ? null : numericLevel,
+      allowed_operations: [],
+      forbidden_operations: [],
+      raw: cognitiveCost,
+    };
+  }
+
+  return {
+    available: true,
+    level: Number(cognitiveCost.level ?? cognitiveCost.current_level ?? cognitiveCost.score ?? NaN),
+    max_level: Number(cognitiveCost.max_level ?? cognitiveCost.maximum_level ?? cognitiveCost.allowed_max_level ?? cognitiveCost.level ?? NaN),
+    allowed_operations: Array.isArray(cognitiveCost.allowed_operations) ? cognitiveCost.allowed_operations : [],
+    forbidden_operations: Array.isArray(cognitiveCost.forbidden_operations) ? cognitiveCost.forbidden_operations : [],
+    raw: cognitiveCost,
+  };
+}
+
+function isLowCognitiveCostCollectContext(protocolContext = {}) {
+  const decisionProfile = extractDecisionProfileFromContext(protocolContext) || {};
+  const cognitiveCost = extractCognitiveCostFromDecisionProfile(decisionProfile);
+  const serializedContext = serializeCognitiveContext(protocolContext);
+  const serializedProfile = serializeCognitiveContext(decisionProfile);
+
+  const maxLevel = Number.isNaN(cognitiveCost.max_level) ? null : cognitiveCost.max_level;
+  const level = Number.isNaN(cognitiveCost.level) ? null : cognitiveCost.level;
+  const hasLowCostLimit = (
+    cognitiveCost.available &&
+    (
+      (typeof maxLevel === 'number' && maxLevel <= 1) ||
+      (typeof level === 'number' && level <= 1)
+    )
+  );
+  const hasBrainDumpSignal = (
+    serializedContext.includes('brain_dump') ||
+    serializedContext.includes('guided_brain_dump') ||
+    serializedContext.includes('guided_dump') ||
+    serializedContext.includes('vide-moi ton cerveau') ||
+    serializedProfile.includes('brain_dump') ||
+    serializedProfile.includes('guided_brain_dump') ||
+    serializedProfile.includes('guided_dump')
+  );
+  const forbidsSelection = [
+    ...cognitiveCost.forbidden_operations,
+    serializedProfile,
+  ].join(' ').toLowerCase();
+
+  return Boolean(
+    hasBrainDumpSignal ||
+    (hasLowCostLimit && (
+      forbidsSelection.includes('prioriser') ||
+      forbidsSelection.includes('choisir') ||
+      forbidsSelection.includes('première chose') ||
+      forbidsSelection.includes('premiere chose') ||
+      forbidsSelection.includes('par quoi commencer')
+    ))
+  );
+}
+
+function isBrainDumpCollectRequest(message, protocolContext = {}) {
+  const hasOverloadExpression = hasBrainDumpOverloadExpression(message);
+  if (!hasOverloadExpression) return false;
+
+  const serializedContext = serializeCognitiveContext(protocolContext);
+  const hasBrainDumpSignal = (
+    serializedContext.includes('brain_dump') ||
+    serializedContext.includes('guided_brain_dump') ||
+    serializedContext.includes('guided_dump') ||
+    serializedContext.includes('vide-moi ton cerveau')
+  );
+
+  return hasBrainDumpSignal || isLowCognitiveCostCollectContext(protocolContext);
 }
 
 function buildBrainDumpCollectReply() {
-  return 'Ok. Déverse tout ici, en vrac. Ne trie pas, ne priorise pas, ne cherche pas à être claire. Écris tout ce qui te prend de la place dans la tête, même dans le désordre. Je m’occupe ensuite de regrouper et de t’aider à choisir la première chose à faire.';
+  return 'Ok. Déverse tout ici, en vrac. Ne trie pas, ne priorise pas, ne cherche pas à être claire. Écris tout ce qui te prend de la place dans la tête, même dans le désordre. Je m’occupe ensuite de regrouper tout ça avec toi.';
 }
 
 function buildSystemPrompt(analysis, memorySummary, cognitivePromptContext = null) {
@@ -5189,11 +5297,15 @@ function buildSystemPrompt(analysis, memorySummary, cognitivePromptContext = nul
   const strongestConversationStyle = normalizeText(strongestStrategy?.conversation_style || '').toLowerCase();
   const strongestNextPromptGoal = normalizeText(strongestStrategy?.next_prompt_goal || '');
   const strongestGuidance = normalizeText(strongestStrategy?.guidance || '');
+  const decisionProfile = extractDecisionProfileFromContext(cognitivePromptContext || {}) || {};
+  const cognitiveCost = extractCognitiveCostFromDecisionProfile(decisionProfile);
+  const lowCognitiveCostCollect = isLowCognitiveCostCollectContext(cognitivePromptContext || {});
 
   const isBrainDumpProtocol = (
     selectedInterventionId === 'brain_dump' ||
     strongestStrategyId === 'guided_brain_dump' ||
-    strongestConversationStyle === 'guided_dump'
+    strongestConversationStyle === 'guided_dump' ||
+    lowCognitiveCostCollect
   );
 
   const executionContract = isBrainDumpProtocol
@@ -5206,6 +5318,26 @@ function buildSystemPrompt(analysis, memorySummary, cognitivePromptContext = nul
         '',
         'PROTOCOLE ACTIF : Brain Dump',
         'PHASE ACTIVE : collect',
+        '',
+        'CONTRAINTE DE COÛT COGNITIF :',
+        `Coût cognitif maximal autorisé : ${Number.isNaN(cognitiveCost.max_level) ? '1' : cognitiveCost.max_level}`,
+        'La réponse ne doit demander aucune sélection mentale à l’utilisateur.',
+        'Elle doit seulement ouvrir un espace de déversement.',
+        '',
+        'OPÉRATIONS AUTORISÉES :',
+        '- externaliser',
+        '- écrire librement',
+        '- rassurer',
+        '- préciser que Nyra regroupera ensuite',
+        '',
+        'OPÉRATIONS INTERDITES :',
+        '- choisir',
+        '- prioriser',
+        '- comparer',
+        '- planifier',
+        '- décider',
+        '- demander par quoi commencer',
+        '- demander la première chose qui vient',
         '',
         'OBJECTIF UNIQUE DE TA PROCHAINE RÉPONSE :',
         'Faire externaliser à l’utilisateur tout ce qu’il a en tête, sans tri, sans ordre et sans priorisation.',
@@ -5220,6 +5352,7 @@ function buildSystemPrompt(analysis, memorySummary, cognitivePromptContext = nul
         '- ne demande pas quelle tâche est prioritaire',
         '- ne demande pas quelle tâche est la plus urgente',
         '- ne demande pas quelle tâche est la plus simple',
+        '- ne demande pas quelle est la première chose qui lui vient',
         '- ne demande pas de choisir par quoi commencer',
         '- ne propose pas encore de plan',
         '- ne transforme pas encore les éléments en tâches',
@@ -5274,6 +5407,16 @@ ${JSON.stringify({
   conversation_style: strongestConversationStyle,
   next_prompt_goal: strongestNextPromptGoal,
   guidance: strongestGuidance,
+})}
+
+Decision Profile si disponible :
+${JSON.stringify({
+  cognitive_need: decisionProfile.cognitive_need || null,
+  cognitive_cost: cognitiveCost.raw || decisionProfile.cognitive_cost || null,
+  allowed_operations: cognitiveCost.allowed_operations,
+  forbidden_operations: cognitiveCost.forbidden_operations,
+  readiness: decisionProfile.readiness || null,
+  uncertainty: decisionProfile.uncertainty || null,
 })}
 
 =========================
@@ -10487,7 +10630,14 @@ app.post('/chat', async (req, res) => {
           action,
           thoughtOrchestration,
           buildActionReply,
-          buildSystemPrompt,
+          buildSystemPrompt: (promptAnalysis, promptMemorySummary, cognitivePromptContext = {}) => {
+            return buildSystemPrompt(promptAnalysis, promptMemorySummary, {
+              ...(cognitivePromptContext || {}),
+              chosenDecision,
+              decision_profile: chosenDecision?.decision_profile || null,
+              cognitive_cost: chosenDecision?.decision_profile?.cognitive_cost || null,
+            });
+          },
         })
       : null;
 
