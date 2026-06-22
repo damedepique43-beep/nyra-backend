@@ -133,7 +133,7 @@ function buildDecisionInput(candidateDecision, cognitiveContext = {}) {
   const reasoningBasisCognitiveIntervention = normalizeObject(reasoningBasis.cognitive_intervention);
   const propagatedCognitiveNeed = normalizeText(
     strongestStrategyCognitiveNeed.primary ||
-    strongestStrategy.primary_cognitive_need ||
+    strongestStrategy?.primary_cognitive_need ||
     decisionPreparation.cognitive_need ||
     reasoningBasis.dominant_cognitive_need ||
     reasoningBasisSituationProfile.dominant_need ||
