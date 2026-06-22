@@ -480,21 +480,37 @@ function inferCognitiveStateFromText(text = '') {
   return 'neutral';
 }
 
-function getUnderstandingCognitiveState(understanding = {}) {
-  const intent = normalizeObject(understanding.intent);
-  const metadata = normalizeObject(understanding.metadata);
-  const directState = normalizeText(
-    understanding.cognitive_state ||
-    understanding.primary_cognitive_state ||
-    understanding.task_state ||
-    intent.cognitive_state ||
-    intent.task_state ||
-    metadata.cognitive_state ||
-    ''
-  )
+function normalizeCognitiveStateValue(value) {
+  return normalizeText(value)
     .toLowerCase()
     .replace(/[^a-z0-9_]+/g, '_')
     .replace(/^_+|_+$/g, '');
+}
+
+function getUnderstandingCognitiveState(understanding = {}) {
+  const intent = normalizeObject(understanding.intent);
+  const metadata = normalizeObject(understanding.metadata);
+  const cognitiveStateObject = normalizeObject(understanding.cognitive_state);
+  const intentCognitiveStateObject = normalizeObject(intent.cognitive_state);
+  const metadataCognitiveStateObject = normalizeObject(metadata.cognitive_state);
+
+  const directState = normalizeCognitiveStateValue(
+    cognitiveStateObject.primary ||
+    cognitiveStateObject.value ||
+    cognitiveStateObject.state ||
+    understanding.primary_cognitive_state ||
+    understanding.task_state ||
+    intentCognitiveStateObject.primary ||
+    intentCognitiveStateObject.value ||
+    intentCognitiveStateObject.state ||
+    intent.cognitive_state ||
+    intent.task_state ||
+    metadataCognitiveStateObject.primary ||
+    metadataCognitiveStateObject.value ||
+    metadataCognitiveStateObject.state ||
+    metadata.cognitive_state ||
+    ''
+  );
 
   if (directState) return directState;
 
@@ -502,11 +518,17 @@ function getUnderstandingCognitiveState(understanding = {}) {
     return ['cognitive_state_fact', 'task_state_fact'].includes(normalizeText(fact?.type));
   });
 
+  const factCognitiveState = normalizeObject(stateFromFacts?.metadata?.cognitive_state);
+
   if (stateFromFacts?.metadata?.cognitive_state) {
-    return normalizeText(stateFromFacts.metadata.cognitive_state)
-      .toLowerCase()
-      .replace(/[^a-z0-9_]+/g, '_')
-      .replace(/^_+|_+$/g, '');
+    const factState = normalizeCognitiveStateValue(
+      factCognitiveState.primary ||
+      factCognitiveState.value ||
+      factCognitiveState.state ||
+      stateFromFacts.metadata.cognitive_state
+    );
+
+    if (factState) return factState;
   }
 
   return inferCognitiveStateFromText(understanding.raw_text || understanding.text || '');
