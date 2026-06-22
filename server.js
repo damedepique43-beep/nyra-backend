@@ -5302,7 +5302,7 @@ function isBrainDumpCollectRequest(message, protocolContext = {}) {
     serializedProfile.includes('guided_dump')
   );
   const lowCognitiveCostCollectContext = isLowCognitiveCostCollectContext(protocolContext);
-  const result = Boolean(hasOverloadExpression && (hasBrainDumpSignal || lowCognitiveCostCollectContext));
+  const result = Boolean(hasOverloadExpression || hasBrainDumpSignal || lowCognitiveCostCollectContext);
 
   console.log('===== NYRA BRAIN DUMP MATCH =====');
   console.log(JSON.stringify({
