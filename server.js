@@ -5268,17 +5268,61 @@ function isLowCognitiveCostCollectContext(protocolContext = {}) {
 
 function isBrainDumpCollectRequest(message, protocolContext = {}) {
   const hasOverloadExpression = hasBrainDumpOverloadExpression(message);
-  if (!hasOverloadExpression) return false;
-
   const serializedContext = serializeCognitiveContext(protocolContext);
+  const decisionProfile = extractDecisionProfileFromContext(protocolContext) || {};
+  const cognitiveCost = extractCognitiveCostFromDecisionProfile(decisionProfile);
+  const serializedProfile = serializeCognitiveContext(decisionProfile);
+  const maxLevel = Number.isNaN(cognitiveCost.max_level) ? null : cognitiveCost.max_level;
+  const level = Number.isNaN(cognitiveCost.level) ? null : cognitiveCost.level;
+  const hasLowCostLimit = (
+    cognitiveCost.available &&
+    (
+      (typeof maxLevel === 'number' && maxLevel <= 1) ||
+      (typeof level === 'number' && level <= 1)
+    )
+  );
+  const forbidsSelectionText = [
+    ...cognitiveCost.forbidden_operations,
+    serializedProfile,
+  ].join(' ').toLowerCase();
+  const forbidsSelection = (
+    forbidsSelectionText.includes('prioriser') ||
+    forbidsSelectionText.includes('choisir') ||
+    forbidsSelectionText.includes('première chose') ||
+    forbidsSelectionText.includes('premiere chose') ||
+    forbidsSelectionText.includes('par quoi commencer')
+  );
   const hasBrainDumpSignal = (
     serializedContext.includes('brain_dump') ||
     serializedContext.includes('guided_brain_dump') ||
     serializedContext.includes('guided_dump') ||
-    serializedContext.includes('vide-moi ton cerveau')
+    serializedContext.includes('vide-moi ton cerveau') ||
+    serializedProfile.includes('brain_dump') ||
+    serializedProfile.includes('guided_brain_dump') ||
+    serializedProfile.includes('guided_dump')
   );
+  const lowCognitiveCostCollectContext = isLowCognitiveCostCollectContext(protocolContext);
+  const result = Boolean(hasOverloadExpression && (hasBrainDumpSignal || lowCognitiveCostCollectContext));
 
-  return hasBrainDumpSignal || isLowCognitiveCostCollectContext(protocolContext);
+  console.log('===== NYRA BRAIN DUMP MATCH =====');
+  console.log(JSON.stringify({
+    message_preview: normalizeText(message).slice(0, 180),
+    has_overload_expression: hasOverloadExpression,
+    has_brain_dump_signal: hasBrainDumpSignal,
+    low_cognitive_cost_collect_context: lowCognitiveCostCollectContext,
+    cognitive_cost_available: Boolean(cognitiveCost.available),
+    cognitive_cost_level: level,
+    cognitive_cost_max_level: maxLevel,
+    has_low_cost_limit: hasLowCostLimit,
+    forbids_selection: forbidsSelection,
+    decision_profile_contract: decisionProfile.contract || null,
+    decision_profile_cognitive_need: decisionProfile.cognitive_need || null,
+    decision_profile_readiness: decisionProfile.readiness || null,
+    decision_profile_available: Boolean(decisionProfile.available),
+    result,
+  }, null, 2));
+
+  return result;
 }
 
 function buildBrainDumpCollectReply() {
@@ -5307,8 +5351,10 @@ function buildChatExecutionPolicy({ message, thoughtOrchestration, pipelineConte
     analysis: analysis || null,
   };
 
-  if (isBrainDumpCollectRequest(message, protocolContext)) {
-    return {
+  const matchedBrainDumpCollect = isBrainDumpCollectRequest(message, protocolContext);
+
+  if (matchedBrainDumpCollect) {
+    const policy = {
       contract: 'execution-policy-v1',
       mode: 'deterministic',
       protocol: 'brain_dump',
@@ -5318,9 +5364,20 @@ function buildChatExecutionPolicy({ message, thoughtOrchestration, pipelineConte
       reply: buildBrainDumpCollectReply(),
       generated_at: new Date().toISOString(),
     };
+
+    console.log('===== NYRA EXECUTION POLICY =====');
+    console.log(JSON.stringify({
+      mode: policy.mode,
+      protocol: policy.protocol,
+      phase: policy.phase,
+      reason: policy.reason,
+      llm_call_expected: false,
+    }, null, 2));
+
+    return policy;
   }
 
-  return {
+  const policy = {
     contract: 'execution-policy-v1',
     mode: 'llm_assisted',
     protocol: null,
@@ -5330,6 +5387,17 @@ function buildChatExecutionPolicy({ message, thoughtOrchestration, pipelineConte
     reply: null,
     generated_at: new Date().toISOString(),
   };
+
+  console.log('===== NYRA EXECUTION POLICY =====');
+  console.log(JSON.stringify({
+    mode: policy.mode,
+    protocol: policy.protocol,
+    phase: policy.phase,
+    reason: policy.reason,
+    llm_call_expected: true,
+  }, null, 2));
+
+  return policy;
 }
 
 function buildSystemPrompt(analysis, memorySummary, cognitivePromptContext = null) {
@@ -10674,6 +10742,17 @@ app.post('/chat', async (req, res) => {
       chosenDecision,
       analysis,
     });
+
+    console.log('===== NYRA CHAT REPLY ROUTING =====');
+    console.log(JSON.stringify({
+      execution_policy_mode: executionPolicy.mode,
+      execution_policy_protocol: executionPolicy.protocol,
+      execution_policy_phase: executionPolicy.phase,
+      llm_call_skipped: executionPolicy.mode === 'deterministic',
+      llm_call_reason: executionPolicy.mode === 'deterministic'
+        ? 'deterministic_execution_policy'
+        : 'llm_assisted_fallback',
+    }, null, 2));
 
     const replyResult = executionPolicy.mode === 'deterministic'
       ? {
