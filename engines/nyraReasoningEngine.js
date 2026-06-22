@@ -368,6 +368,211 @@ function buildHypothesisReasoningState(hypotheses = []) {
   };
 }
 
+
+function getUnderstandingDomain(understanding = {}) {
+  const intent = normalizeObject(understanding.intent);
+  const directDomain = normalizeText(
+    understanding.domain ||
+    understanding.cognitive_domain ||
+    intent.domain ||
+    intent.cognitive_domain ||
+    ''
+  )
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  if (directDomain) return directDomain;
+
+  const primaryIntent = getPrimaryIntent(understanding);
+  const intentDomainMap = {
+    create_task: 'task',
+    create_reminder: 'task',
+    add_to_collection: 'collection',
+    capture_idea: 'idea',
+    project_thought: 'project',
+    reflect_emotion: 'emotion',
+    capture_note: 'context',
+  };
+
+  return intentDomainMap[primaryIntent] || 'context';
+}
+
+function inferCognitiveStateFromText(text = '') {
+  const lower = normalizeText(text).toLowerCase();
+
+  if (!lower) return 'neutral';
+
+  if (includesAny(lower, [
+    'je ne sais pas par quoi commencer',
+    'je sais pas par quoi commencer',
+    'je ne sais plus par quoi commencer',
+    'je sais plus par quoi commencer',
+    'je ne sais pas par où commencer',
+    'je sais pas par ou commencer',
+    'je ne sais plus par où commencer',
+    'je sais plus par ou commencer',
+    'trop de choses',
+    'trop de trucs',
+    'plein de choses à faire',
+    'plein de choses a faire',
+    'dix trucs à faire',
+    '10 trucs à faire',
+    'je suis perdue',
+    'je suis perdu',
+    'je suis débordée',
+    'je suis debordee',
+    'je suis débordé',
+    'je suis deborde',
+    'submergée',
+    'submergee',
+    'charge mentale',
+    'surcharge',
+  ])) {
+    return 'overwhelmed';
+  }
+
+  if (includesAny(lower, [
+    'ne pas oublier',
+    'peur d oublier',
+    "peur d'oublier",
+    'j ai peur d oublier',
+    "j'ai peur d'oublier",
+    'il faut que je pense à',
+    'il faut que je pense a',
+    'pense à',
+    'penser à',
+  ])) {
+    return 'prevent_forgetting';
+  }
+
+  if (includesAny(lower, [
+    'je me sens',
+    'angoisse',
+    'stress',
+    'panique',
+    'triste',
+    'peur',
+    'mal',
+    'épuisée',
+    'epuisee',
+    'fatiguée',
+    'fatiguee',
+  ])) {
+    return 'emotional_overload';
+  }
+
+  if (includesAny(lower, [
+    'planifier',
+    'organiser',
+    'préparer',
+    'preparer',
+    'étape par étape',
+    'etape par etape',
+  ])) {
+    return 'planning';
+  }
+
+  return 'neutral';
+}
+
+function getUnderstandingCognitiveState(understanding = {}) {
+  const intent = normalizeObject(understanding.intent);
+  const metadata = normalizeObject(understanding.metadata);
+  const directState = normalizeText(
+    understanding.cognitive_state ||
+    understanding.primary_cognitive_state ||
+    understanding.task_state ||
+    intent.cognitive_state ||
+    intent.task_state ||
+    metadata.cognitive_state ||
+    ''
+  )
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  if (directState) return directState;
+
+  const stateFromFacts = normalizeArray(understanding.facts).find(fact => {
+    return ['cognitive_state_fact', 'task_state_fact'].includes(normalizeText(fact?.type));
+  });
+
+  if (stateFromFacts?.metadata?.cognitive_state) {
+    return normalizeText(stateFromFacts.metadata.cognitive_state)
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+  }
+
+  return inferCognitiveStateFromText(understanding.raw_text || understanding.text || '');
+}
+
+function buildSituationProfile({ understanding = {}, basis = {} } = {}) {
+  const domain = getUnderstandingDomain(understanding);
+  const cognitiveState = getUnderstandingCognitiveState(understanding);
+  const primaryIntent = normalizeText(basis.primary_intent || getPrimaryIntent(understanding));
+  const hasTemporalNeed = basis.temporal_scope && basis.temporal_scope !== 'unspecified';
+  const hasEmotion = basis.emotional_intensity && basis.emotional_intensity !== 'none';
+  const hasUncertainty = Boolean(
+    basis.has_competing_hypotheses ||
+    normalizeArray(basis.rejected_hypotheses).length > 0 ||
+    normalizeArray(basis.hypotheses).some(hypothesis => {
+      return ['weak', 'contradicted', 'needs_verification'].includes(normalizeText(hypothesis?.evaluation?.status));
+    })
+  );
+
+  const overloadedStates = ['overwhelmed', 'cognitive_overload', 'overload', 'surcharge', 'task_overload'];
+  const forgettingStates = ['prevent_forgetting', 'forgetting_risk', 'memory_support', 'remember_later'];
+  const planningStates = ['planning', 'action_ready', 'execution_ready', 'ready_to_act', 'simple_task'];
+  const emotionalStates = ['emotional_overload', 'reflection', 'regulation', 'distress'];
+
+  const isOverloaded = overloadedStates.includes(cognitiveState);
+  const isForgettingRisk = forgettingStates.includes(cognitiveState);
+  const isPlanning = planningStates.includes(cognitiveState);
+  const isEmotional = emotionalStates.includes(cognitiveState) || hasEmotion;
+
+  let dominantNeed = 'preserve_context';
+
+  if (isOverloaded) dominantNeed = 'reduce_cognitive_load';
+  else if (isForgettingRisk || primaryIntent === 'create_reminder') dominantNeed = 'prevent_forgetting';
+  else if (isEmotional) dominantNeed = 'support_regulation';
+  else if (hasUncertainty) dominantNeed = 'clarify_uncertainty';
+  else if (domain === 'idea' || domain === 'project') dominantNeed = 'structure_idea';
+  else if (domain === 'collection') dominantNeed = 'organize_information';
+  else if (domain === 'task' || primaryIntent === 'create_task') dominantNeed = 'prepare_action';
+
+  const shouldClarifyFirst = Boolean(
+    isOverloaded ||
+    hasUncertainty ||
+    cognitiveState === 'clarification_needed' ||
+    cognitiveState === 'uncertain'
+  );
+
+  return {
+    version: 'situation-profile-v1',
+    domain,
+    cognitive_state: cognitiveState,
+    primary_intent: primaryIntent,
+    dominant_need: dominantNeed,
+    uncertainty_level: hasUncertainty || shouldClarifyFirst ? 'medium' : 'low',
+    should_clarify_first: shouldClarifyFirst,
+    should_externalize: Boolean(!isOverloaded && !isEmotional && (isPlanning || primaryIntent === 'create_task')),
+    should_prepare_reminder: Boolean(isForgettingRisk || primaryIntent === 'create_reminder' || (hasTemporalNeed && primaryIntent === 'create_task')),
+    should_regulate: Boolean(isEmotional || isOverloaded),
+    should_preserve_context: Boolean(domain === 'idea' || domain === 'project' || primaryIntent === 'capture_note'),
+    should_organize_information: Boolean(domain === 'collection' || primaryIntent === 'add_to_collection'),
+    should_defer_action_creation: Boolean(isOverloaded || isEmotional || shouldClarifyFirst),
+    rationale: isOverloaded
+      ? 'La situation ressemble à une surcharge : clarifier et réduire la charge avant de créer une action.'
+      : isForgettingRisk
+        ? 'La situation ressemble à un risque d’oubli : préparer un soutien futur.'
+        : isEmotional
+          ? 'La situation contient un besoin de régulation ou de réflexion avant l’action.'
+          : 'Profil cognitif construit à partir du domaine, de l’état cognitif, des hypothèses et des signaux disponibles.',
+  };
+}
+
 function buildReasoningBasis(understanding) {
   const layers = getCognitiveLayers(understanding);
   const primaryIntent = getPrimaryIntent(understanding);
@@ -379,9 +584,33 @@ function buildReasoningBasis(understanding) {
     facts: layers.facts,
   });
   const hypothesisReasoningState = buildHypothesisReasoningState(evaluatedHypotheses);
+  const provisionalBasis = {
+    primary_intent: primaryIntent,
+    confidence,
+    temporal_scope: temporalScope,
+    emotional_intensity: emotionalIntensity,
+    observations: layers.observations,
+    facts: layers.facts,
+    hypotheses: evaluatedHypotheses,
+    active_hypotheses: hypothesisReasoningState.active_hypotheses,
+    rejected_hypotheses: hypothesisReasoningState.rejected_hypotheses,
+    competing_hypotheses: hypothesisReasoningState.competing_hypotheses,
+    has_competing_hypotheses: hypothesisReasoningState.has_competing_hypotheses,
+    has_active_hypotheses: hypothesisReasoningState.has_active_hypotheses,
+    raw_hypotheses: layers.hypotheses,
+    observation_types: getLayerTypes(layers.observations),
+    fact_types: getLayerTypes(layers.facts),
+    hypothesis_types: getLayerTypes(evaluatedHypotheses),
+    has_cognitive_layers: layers.observations.length > 0 || layers.facts.length > 0 || layers.hypotheses.length > 0,
+  };
+  const situationProfile = buildSituationProfile({ understanding, basis: provisionalBasis });
 
   return {
-    primary_intent: primaryIntent,
+    ...provisionalBasis,
+    domain: situationProfile.domain,
+    cognitive_state: situationProfile.cognitive_state,
+    dominant_cognitive_need: situationProfile.dominant_need,
+    situation_profile: situationProfile,
     confidence,
     temporal_scope: temporalScope,
     emotional_intensity: emotionalIntensity,
@@ -725,33 +954,83 @@ function buildStrategiesFromCognitiveLayers({ understanding, basis }) {
     : basis.hypotheses.filter(isUsableHypothesis);
   const facts = basis.facts;
   const observations = basis.observations;
+  const profile = normalizeObject(basis.situation_profile);
 
   const actionHypothesis = getHypothesisByType(hypotheses, 'action_need_hypothesis');
+  const reminderHypothesis = getHypothesisByType(hypotheses, 'reminder_need_hypothesis');
+  const collectionHypothesis = getHypothesisByType(hypotheses, 'collection_hypothesis');
+  const emotionalHypothesis = getHypothesisByType(hypotheses, 'emotional_support_hypothesis');
+  const projectOrIdeaHypothesis = getHypothesisByType(hypotheses, 'project_or_idea_hypothesis');
+  const contextNoteHypothesis = getHypothesisByType(hypotheses, 'context_note_hypothesis');
+
+  // Situation Profile V1
+  // Responsabilité : décider quels builders de stratégies sont pertinents
+  // à partir de l'état cognitif détecté, sans décider ni exécuter.
+  // Les builders existants restent la source unique des Strategy.
+  if (profile.should_clarify_first) {
+    addStrategyOnce(strategies, buildClarifyUnderstandingStrategy({ basis }));
+  }
+
+  if (profile.should_regulate) {
+    addStrategyOnce(strategies, buildRegulationStrategy({
+      basis,
+      hypothesis: emotionalHypothesis,
+    }));
+  }
+
+  if (profile.should_prepare_reminder) {
+    addStrategyOnce(strategies, buildFuturePromptStrategy({
+      basis,
+      hypothesis: reminderHypothesis,
+    }));
+  }
+
+  if (profile.should_organize_information && collectionHypothesis) {
+    addStrategyOnce(strategies, buildCollectionStrategy({
+      basis,
+      understanding,
+      hypothesis: collectionHypothesis,
+    }));
+  }
+
+  if (profile.should_preserve_context) {
+    addStrategyOnce(strategies, projectOrIdeaHypothesis
+      ? buildPreserveThoughtStrategy({ basis, hypothesis: projectOrIdeaHypothesis })
+      : buildContextCaptureStrategy({ basis, hypothesis: contextNoteHypothesis })
+    );
+  }
+
+  if (profile.should_externalize && actionHypothesis) {
+    addStrategyOnce(strategies, buildExternalizeActionStrategy({
+      basis,
+      hypothesis: actionHypothesis,
+    }));
+  }
+
+  if (strategies.length > 0) {
+    return strategies;
+  }
+
   if (actionHypothesis) {
     addStrategyOnce(strategies, buildExternalizeActionStrategy({ basis, hypothesis: actionHypothesis }));
   }
 
-  const reminderHypothesis = getHypothesisByType(hypotheses, 'reminder_need_hypothesis');
   if (reminderHypothesis) {
     addStrategyOnce(strategies, buildFuturePromptStrategy({ basis, hypothesis: reminderHypothesis }));
   }
 
-  const collectionHypothesis = getHypothesisByType(hypotheses, 'collection_hypothesis');
   if (collectionHypothesis) {
     addStrategyOnce(strategies, buildCollectionStrategy({ basis, understanding, hypothesis: collectionHypothesis }));
   }
 
-  const emotionalHypothesis = getHypothesisByType(hypotheses, 'emotional_support_hypothesis');
   if (emotionalHypothesis) {
     addStrategyOnce(strategies, buildRegulationStrategy({ basis, hypothesis: emotionalHypothesis }));
   }
 
-  const projectOrIdeaHypothesis = getHypothesisByType(hypotheses, 'project_or_idea_hypothesis');
   if (projectOrIdeaHypothesis) {
     addStrategyOnce(strategies, buildPreserveThoughtStrategy({ basis, hypothesis: projectOrIdeaHypothesis }));
   }
 
-  const contextNoteHypothesis = getHypothesisByType(hypotheses, 'context_note_hypothesis');
   if (contextNoteHypothesis) {
     addStrategyOnce(strategies, buildContextCaptureStrategy({ basis, hypothesis: contextNoteHypothesis }));
   }
@@ -785,6 +1064,35 @@ function buildStrategiesFromCognitiveLayers({ understanding, basis }) {
 
 function buildStrategiesFromFallbackSignals({ understanding, basis }) {
   const strategies = [];
+  const profile = normalizeObject(basis.situation_profile);
+
+  if (profile.should_clarify_first) {
+    addStrategyOnce(strategies, buildClarifyUnderstandingStrategy({ basis }));
+  }
+
+  if (profile.should_regulate) {
+    addStrategyOnce(strategies, buildRegulationStrategy({ basis }));
+  }
+
+  if (profile.should_prepare_reminder) {
+    addStrategyOnce(strategies, buildFuturePromptStrategy({ basis }));
+  }
+
+  if (profile.should_organize_information) {
+    addStrategyOnce(strategies, buildCollectionStrategy({ basis, understanding }));
+  }
+
+  if (profile.should_preserve_context) {
+    addStrategyOnce(strategies, buildContextCaptureStrategy({ basis }));
+  }
+
+  if (profile.should_externalize) {
+    addStrategyOnce(strategies, buildExternalizeActionStrategy({ basis }));
+  }
+
+  if (strategies.length > 0) {
+    return strategies;
+  }
 
   if (basis.primary_intent === 'create_task') {
     addStrategyOnce(strategies, buildExternalizeActionStrategy({ basis }));
@@ -847,6 +1155,7 @@ function enrichWithAlternativeStrategies({ understanding, basis, strategies = []
   const enrichedStrategies = [...normalizeArray(strategies)];
   const addedAlternatives = [];
   const primaryIntent = normalizeText(basis.primary_intent || 'capture_note');
+  const profile = normalizeObject(basis.situation_profile);
   const hasEmotion = basis.emotional_intensity !== 'none';
   const hasTemporalNeed = basis.temporal_scope !== 'unspecified';
   const hasProjectOrIdeaSignal = (
@@ -865,6 +1174,15 @@ function enrichWithAlternativeStrategies({ understanding, basis, strategies = []
     });
   }
 
+  if (profile.should_clarify_first && !hasStrategyId(enrichedStrategies, 'clarify_understanding')) {
+    addAlternativeStrategy({
+      strategies: enrichedStrategies,
+      strategy: buildClarifyUnderstandingStrategy({ basis }),
+      reason: 'Profil de situation : clarifier avant toute action automatique.',
+      addedAlternatives,
+    });
+  }
+
   if (shouldAddClarificationAlternative({ basis, strategies: enrichedStrategies })) {
     addAlternativeStrategy({
       strategies: enrichedStrategies,
@@ -874,7 +1192,7 @@ function enrichWithAlternativeStrategies({ understanding, basis, strategies = []
     });
   }
 
-  if (primaryIntent === 'create_task' && !hasStrategyId(enrichedStrategies, 'externalize_action')) {
+  if (primaryIntent === 'create_task' && !profile.should_defer_action_creation && !hasStrategyId(enrichedStrategies, 'externalize_action')) {
     addAlternativeStrategy({
       strategies: enrichedStrategies,
       strategy: buildExternalizeActionStrategy({ basis }),
@@ -1383,6 +1701,10 @@ function buildReasoningOutput({ thought, understanding, basis, strategies, alter
       observation_types: basis.observation_types,
       fact_types: basis.fact_types,
       hypothesis_types: basis.hypothesis_types,
+      domain: basis.domain || null,
+      cognitive_state: basis.cognitive_state || null,
+      dominant_cognitive_need: basis.dominant_cognitive_need || null,
+      situation_profile: basis.situation_profile || null,
       hypothesis_evaluation_summary: hypothesisEvaluationSummary,
     },
     evaluated_hypotheses: basis.hypotheses.map(hypothesis => ({
@@ -1463,7 +1785,7 @@ function reasonAboutThought({ thought, context = {} } = {}) {
       nextEngine: null,
       behaviorChanged: false,
       metadata: {
-        internal_analyzers: ['hypothesis_evaluator_v2', 'hypothesis_arbitration_v1', 'cognitive_layer_strategy_generator_v1', 'alternative_strategy_analyzer_v1', 'cognitive_need_strategy_annotation_v1', 'strategy_evaluator_v1', 'cognitive_questions_v1'],
+        internal_analyzers: ['hypothesis_evaluator_v2', 'hypothesis_arbitration_v1', 'situation_profile_v1', 'cognitive_layer_strategy_generator_v1', 'alternative_strategy_analyzer_v1', 'cognitive_need_strategy_annotation_v1', 'strategy_evaluator_v1', 'cognitive_questions_v1'],
         foundation_role: 'construct_strategies_without_deciding',
         reasoning_priority: ['evaluated_hypotheses', 'facts', 'observations', 'fallback_signals'],
       },
