@@ -17,6 +17,10 @@ function normalizeArray(value) {
   return Array.isArray(value) ? value.filter(Boolean) : [];
 }
 
+function uniqueArray(value) {
+  return [...new Set(normalizeArray(value))];
+}
+
 function normalizeObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
