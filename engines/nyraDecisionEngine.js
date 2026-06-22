@@ -128,6 +128,19 @@ function buildDecisionInput(candidateDecision, cognitiveContext = {}) {
     cognitiveContext?.latest_user_state ||
     cognitiveContext?.analysis?.cognitive_state
   );
+  const strongestStrategyCognitiveNeed = normalizeObject(strongestStrategy?.cognitive_need);
+  const reasoningBasisSituationProfile = normalizeObject(reasoningBasis.situation_profile);
+  const reasoningBasisCognitiveIntervention = normalizeObject(reasoningBasis.cognitive_intervention);
+  const propagatedCognitiveNeed = normalizeText(
+    strongestStrategyCognitiveNeed.primary ||
+    strongestStrategy.primary_cognitive_need ||
+    decisionPreparation.cognitive_need ||
+    reasoningBasis.dominant_cognitive_need ||
+    reasoningBasisSituationProfile.dominant_need ||
+    reasoningBasisCognitiveIntervention.goal ||
+    reasoningOutput.dominant_cognitive_need ||
+    ''
+  );
 
   return {
     contract: 'decision-input-v1',
@@ -139,6 +152,7 @@ function buildDecisionInput(candidateDecision, cognitiveContext = {}) {
       rankedStrategies.length > 0 ||
       Object.keys(decisionPreparation).length > 0
     ),
+    cognitive_need: propagatedCognitiveNeed || null,
     reasoning_version: reasoningOutput.reasoning_version || null,
     ranked_strategies: rankedStrategies,
     strategies,
