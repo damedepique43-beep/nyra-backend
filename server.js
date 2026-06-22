@@ -5145,16 +5145,6 @@ function buildSystemPrompt(analysis, memorySummary, cognitivePromptContext = nul
     strongestConversationStyle === 'guided_dump'
   );
 
-  console.log('===== NYRA DEBUG BUILD SYSTEM PROMPT =====');
-  console.log('selected_intervention:', JSON.stringify(cognitivePromptContext?.reasoning?.selected_intervention || null, null, 2));
-  console.log('cognitive_intervention:', JSON.stringify(cognitivePromptContext?.reasoning?.cognitive_intervention || null, null, 2));
-  console.log('strongest_strategy:', JSON.stringify(cognitivePromptContext?.reasoning?.strongest_strategy || null, null, 2));
-  console.log('selectedInterventionId:', selectedInterventionId);
-  console.log('strongestStrategyId:', strongestStrategyId);
-  console.log('strongestConversationStyle:', strongestConversationStyle);
-  console.log('isBrainDumpProtocol:', isBrainDumpProtocol);
-  console.log('==========================================');
-
   const executionContract = isBrainDumpProtocol
     ? [
         'CONTRAT D’EXÉCUTION PRIORITAIRE',
@@ -10430,6 +10420,16 @@ app.post('/chat', async (req, res) => {
     });
     const action = resolveExecutableActionFromCandidateDecision(chosenDecision);
     const suggestions = buildSuggestions(analysis, action);
+
+    const reasoningDebugOutput = thoughtOrchestration?.reasoning?.output || thoughtOrchestration?.reasoning || null;
+    console.log('===== NYRA DEBUG REASONING OUTPUT =====');
+    console.log(JSON.stringify({
+      understanding: thoughtOrchestration?.understanding?.output || thoughtOrchestration?.understanding || null,
+      reasoning: reasoningDebugOutput,
+      pipeline: thoughtOrchestration?.pipeline || null,
+      pipeline_step: thoughtOrchestration?.pipeline_step || null,
+    }, null, 2));
+    console.log('=======================================');
 
     const replyResult = typeof buildChatReply === 'function'
       ? await buildChatReply({
