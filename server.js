@@ -1238,10 +1238,10 @@ function buildNextStep(actionType, datetimeHint) {
   if (actionType === 'add_to_today') return 'Traiter cette priorité aujourd’hui.';
   if (actionType === 'plan_now') return 'Faire la plus petite première action maintenant.';
   if (actionType === 'process_now') return 'Commencer par une étape simple et immédiate.';
-  if (actionType === 'classify_as_idea') return 'Garder cette idée pour la développer plus tard.';
+  if (actionType === 'classify_as_idea') return 'Développer cette idée dans la conversation tant qu’un espace Idées dédié n’est pas visible dans l’application.';
   if (actionType === 'idea_to_task') return 'Faire cette tâche quand elle devient prioritaire.';
-  if (actionType === 'add_to_roadmap') return 'Revoir cette entrée lors de la prochaine session projet.';
-  if (actionType === 'create_project_spec') return 'Structurer cette idée en cahier des charges.';
+  if (actionType === 'add_to_roadmap') return 'Développer cette entrée dans la conversation tant qu’une roadmap projet dédiée n’est pas visible dans l’application.';
+  if (actionType === 'create_project_spec') return 'Structurer cette idée en cahier des charges quand le support projet est prêt.';
 
   return 'Action enregistrée.';
 }
@@ -5163,41 +5163,165 @@ function getStoreSummary(userId) {
   };
 }
 
-function buildActionReply(action) {
-  if (!action) return null;
+function buildExecutionResult(action) {
+  if (!action) {
+    return {
+      success: false,
+      persisted: false,
+      visible: false,
+      action_type: null,
+      message: null,
+    };
+  }
+
+  const actionType = normalizeText(action.action_type || action.type || '');
+  const title = action.title || action.target;
 
   if (action.requires_connection) {
     if (action.connection_type === 'google_calendar') {
-      return '✔ Action préparée. Il faudra connecter Google Agenda pour la synchroniser.';
+      return {
+        success: true,
+        persisted: true,
+        visible: false,
+        action_type: actionType,
+        message: '✔ Action préparée. Il faudra connecter Google Agenda pour la synchroniser.',
+      };
     }
 
     if (action.connection_type === 'google_tasks') {
-      return '✔ Action préparée. Il faudra connecter Google Tasks pour la synchroniser.';
+      return {
+        success: true,
+        persisted: true,
+        visible: false,
+        action_type: actionType,
+        message: '✔ Action préparée. Il faudra connecter Google Tasks pour la synchroniser.',
+      };
     }
 
     if (action.connection_type === 'google_drive') {
-      return '✔ Action préparée. Il faudra connecter Google Drive pour l’exporter.';
+      return {
+        success: true,
+        persisted: true,
+        visible: false,
+        action_type: actionType,
+        message: '✔ Action préparée. Il faudra connecter Google Drive pour l’exporter.',
+      };
     }
 
-    return '✔ Action préparée. Une connexion externe sera nécessaire pour la synchroniser.';
+    return {
+      success: true,
+      persisted: true,
+      visible: false,
+      action_type: actionType,
+      message: '✔ Action préparée. Une connexion externe sera nécessaire pour la synchroniser.',
+    };
   }
 
-  if (action.action_type === 'add_to_today') return `✔ Ajouté à aujourd’hui : ${action.title || action.target}.`;
-  if (action.action_type === 'add_to_shopping_list') return `✔ Ajouté à ta liste de courses : ${action.title || action.target}.`;
-  if (action.action_type === 'create_reminder') {
-    if (action.scheduled_at) return '✔ Rappel créé et programmé.';
-    return '✔ Rappel enregistré sans date. Tu pourras lui ajouter une date plus tard.';
-  }
-  if (action.action_type === 'plan_now') return '✔ Plan créé : fais une seule action simple maintenant.';
-  if (action.action_type === 'process_now') return '✔ On traite maintenant : commence par la plus petite action possible.';
-  if (action.action_type === 'classify_as_idea') return '✔ Classé dans tes idées.';
-  if (action.action_type === 'idea_to_task') return '✔ Transformé en tâche concrète.';
-  if (action.action_type === 'add_to_roadmap') return '✔ Ajouté à la roadmap projet.';
-  if (action.action_type === 'create_project_spec') {
-    return '✔ Idée capturée. Prochaine étape : la transformer en cahier des charges structuré.';
+  if (actionType === 'add_to_today') {
+    return {
+      success: true,
+      persisted: true,
+      visible: true,
+      action_type: actionType,
+      message: `✔ Ajouté à aujourd’hui : ${title}.`,
+    };
   }
 
-  return '✔ Action enregistrée.';
+  if (actionType === 'add_to_shopping_list') {
+    return {
+      success: true,
+      persisted: true,
+      visible: true,
+      action_type: actionType,
+      message: `✔ Ajouté à ta liste de courses : ${title}.`,
+    };
+  }
+
+  if (actionType === 'create_reminder') {
+    return {
+      success: true,
+      persisted: true,
+      visible: true,
+      action_type: actionType,
+      message: action.scheduled_at
+        ? '✔ Rappel créé et programmé.'
+        : '✔ Rappel enregistré sans date. Tu pourras lui ajouter une date plus tard.',
+    };
+  }
+
+  if (actionType === 'plan_now') {
+    return {
+      success: true,
+      persisted: true,
+      visible: false,
+      action_type: actionType,
+      message: 'Je peux t’aider à faire un mini-plan ici. Pour l’instant, ce plan n’apparaît pas encore dans un espace dédié de l’application.',
+    };
+  }
+
+  if (actionType === 'process_now') {
+    return {
+      success: true,
+      persisted: true,
+      visible: false,
+      action_type: actionType,
+      message: 'On peut le traiter ici, étape par étape. Pour l’instant, ce traitement n’apparaît pas encore dans un espace dédié de l’application.',
+    };
+  }
+
+  if (actionType === 'classify_as_idea') {
+    return {
+      success: true,
+      persisted: true,
+      visible: false,
+      action_type: actionType,
+      message: 'Je vois cette idée. Pour l’instant, elle n’apparaît pas encore dans un espace Idées ou Projet visible dans l’application, mais on peut la développer ici.',
+    };
+  }
+
+  if (actionType === 'idea_to_task') {
+    return {
+      success: true,
+      persisted: true,
+      visible: true,
+      action_type: actionType,
+      message: '✔ Transformé en tâche concrète.',
+    };
+  }
+
+  if (actionType === 'add_to_roadmap') {
+    return {
+      success: true,
+      persisted: true,
+      visible: false,
+      action_type: actionType,
+      message: 'Je vois cette entrée de roadmap. Pour l’instant, elle n’apparaît pas encore dans une roadmap projet visible dans l’application.',
+    };
+  }
+
+  if (actionType === 'create_project_spec') {
+    return {
+      success: true,
+      persisted: true,
+      visible: false,
+      action_type: actionType,
+      message: 'Je peux t’aider à structurer cette idée ici. Pour l’instant, aucun cahier des charges visible n’a encore été créé dans l’application.',
+    };
+  }
+
+  return {
+    success: true,
+    persisted: true,
+    visible: false,
+    action_type: actionType,
+    message: 'Action préparée dans Nyra.',
+  };
+}
+
+function buildActionReply(action) {
+  const executionResult = buildExecutionResult(action);
+
+  return executionResult.message;
 }
 
 
@@ -5618,6 +5742,9 @@ RÈGLES DE RÉPONSE
 - pas de long pavé
 - si un CONTRAT D’EXÉCUTION PRIORITAIRE est présent, il passe avant toutes les autres règles
 - si response_level = capture : réponds très court, comme une confirmation utile
+- ne dis jamais qu’une idée, un projet, une roadmap ou un cahier des charges est noté, enregistré, classé, sauvegardé ou créé si l’action n’a pas réellement produit un élément visible dans l’application
+- pour une idée simple sans action explicite, dis plutôt que tu vois l’idée et que tu peux aider à la développer ici, sans prétendre l’avoir enregistrée dans un espace dédié
+- si l’application ne possède pas encore d’espace visible pour ce contenu, dis-le clairement et simplement
 - si response_level = reflection : fais 1 observation courte + 1 question utile
 - si response_level = project : relie clairement au projet concerné et propose la prochaine clarification utile
 - si l’utilisateur demande à comprendre une émotion, ne dis pas "c’est capturé" comme réponse principale
