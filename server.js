@@ -5126,6 +5126,57 @@ function buildActionReply(action) {
   return '✔ Action enregistrée.';
 }
 
+
+function isBrainDumpCollectRequest(message, protocolContext = {}) {
+  const normalizedMessage = normalizeText(message).toLowerCase();
+  const serializedContext = (() => {
+    try {
+      return JSON.stringify(protocolContext || {}).toLowerCase();
+    } catch (error) {
+      return '';
+    }
+  })();
+
+  const hasBrainDumpSignal = (
+    serializedContext.includes('brain_dump') ||
+    serializedContext.includes('guided_brain_dump') ||
+    serializedContext.includes('guided_dump') ||
+    serializedContext.includes('vide-moi ton cerveau')
+  );
+
+  if (!hasBrainDumpSignal) return false;
+
+  const hasOverloadExpression = [
+    'tellement de choses',
+    'trop de choses',
+    'trop de trucs',
+    'plein de choses',
+    'beaucoup de choses',
+    'dans la tête',
+    'en tête',
+    'je ne sais plus par quoi commencer',
+    'je sais plus par quoi commencer',
+    'je ne sais même plus quoi faire en premier',
+    'je sais même plus quoi faire en premier',
+    'quoi faire en premier',
+    'par quoi commencer',
+    'complètement dépassée',
+    'complètement dépassé',
+    'dépassée',
+    'dépassé',
+    'submergée',
+    'submergé',
+    'surcharge mentale',
+    'charge mentale',
+  ].some(pattern => normalizedMessage.includes(pattern));
+
+  return hasOverloadExpression;
+}
+
+function buildBrainDumpCollectReply() {
+  return 'Ok. Déverse tout ici, en vrac. Ne trie pas, ne priorise pas, ne cherche pas à être claire. Écris tout ce qui te prend de la place dans la tête, même dans le désordre. Je m’occupe ensuite de regrouper et de t’aider à choisir la première chose à faire.';
+}
+
 function buildSystemPrompt(analysis, memorySummary, cognitivePromptContext = null) {
   const selectedInterventionId = normalizeText(
     cognitivePromptContext?.reasoning?.selected_intervention?.id ||
@@ -5176,6 +5227,11 @@ function buildSystemPrompt(analysis, memorySummary, cognitivePromptContext = nul
         '',
         'CRITÈRE DE SUCCÈS :',
         'L’utilisateur répond avec une liste brute ou un vrac mental.',
+        '',
+        'RÉPONSE ATTENDUE :',
+        'Tu dois formuler une invitation directe à tout déverser en vrac.',
+        'Une réponse correcte ressemble à : "Ok. Déverse tout ici, en vrac. Ne trie pas. Je m’occupe ensuite de regrouper."',
+        'Toute question de priorité, d’urgence ou de première action est une erreur de protocole.',
       ].join('\n')
     : [
         'CONTRAT D’EXÉCUTION GÉNÉRAL',
@@ -10435,7 +10491,16 @@ app.post('/chat', async (req, res) => {
         })
       : null;
 
-    const reply = normalizeText(replyResult?.reply) || buildActionReply(action) || 'Je l’ai capté. Je le range dans Nyra.';
+    const brainDumpCollectReply = isBrainDumpCollectRequest(thought.content, {
+      thoughtOrchestration,
+      pipelineContext: buildPipelineAnalysisContext(thoughtOrchestration) || null,
+      chosenDecision,
+      replyResult,
+    })
+      ? buildBrainDumpCollectReply()
+      : '';
+
+    const reply = brainDumpCollectReply || normalizeText(replyResult?.reply) || buildActionReply(action) || 'Je l’ai capté. Je le range dans Nyra.';
 
     const saved = dispatchChatExecution({
       userId,
