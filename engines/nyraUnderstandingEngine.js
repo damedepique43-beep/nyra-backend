@@ -38,12 +38,119 @@ function normalizeThought(thought) {
   };
 }
 
+
+function detectTaskCognitiveState(text) {
+  const lower = normalizeText(text).toLowerCase();
+
+  const hasTaskDomain = includesAny(lower, [
+    'je dois',
+    'il faut',
+    'pense à',
+    'penser à',
+    'à faire',
+    'a faire',
+    'ne pas oublier',
+    'tâche',
+    'tache',
+    'trucs à faire',
+    'trucs a faire',
+    'choses à faire',
+    'choses a faire',
+  ]) || /^(appeler|envoyer|répondre|repondre|payer|faire|passer|ranger|nettoyer|laver|acheter|prendre|préparer|preparer|terminer|finir|relancer|contacter|réserver|reserver|annuler|programmer|vérifier|verifier|imprimer|poster|déposer|deposer|chercher|commander|remplir|mettre|sortir)\b/i.test(text);
+
+  const overloadSignals = [
+    'trop de choses',
+    'trop de trucs',
+    'plein de choses',
+    'plein de trucs',
+    'beaucoup de choses',
+    'beaucoup de trucs',
+    'dix trucs',
+    '10 trucs',
+    'dix choses',
+    '10 choses',
+    'je ne sais pas par quoi commencer',
+    'je sais pas par quoi commencer',
+    'je ne sais pas par ou commencer',
+    'je sais pas par ou commencer',
+    'par quoi commencer',
+    'par ou commencer',
+    'tout se mélange',
+    'tout se melange',
+    'je suis perdu',
+    'je suis perdue',
+    'charge mentale',
+    'surcharge',
+    'submergé',
+    'submerge',
+    'submergée',
+    'submergee',
+    'débordé',
+    'deborde',
+    'débordée',
+    'debordee',
+  ];
+
+  const preventForgettingSignals = [
+    'pense à',
+    'pense a',
+    'penser à',
+    'penser a',
+    'ne pas oublier',
+    'pas oublier',
+    'faut que je pense',
+    'il faut que je pense',
+    'que je pense à',
+    'que je pense a',
+  ];
+
+  if (includesAny(lower, overloadSignals)) {
+    return {
+      domain: hasTaskDomain ? 'task' : 'cognitive_load',
+      primary: 'cognitive_overload',
+      confidence: 0.9,
+      signals: ['cognitive_overload_language'],
+      recommended_handling: 'clarify_and_reduce_load_before_action',
+    };
+  }
+
+  if (includesAny(lower, preventForgettingSignals)) {
+    return {
+      domain: 'task',
+      primary: 'prevent_forgetting',
+      confidence: 0.88,
+      signals: ['forgetting_prevention_language'],
+      recommended_handling: 'prefer_future_prompt_or_reminder',
+    };
+  }
+
+  if (hasTaskDomain) {
+    return {
+      domain: 'task',
+      primary: 'simple_action',
+      confidence: 0.82,
+      signals: ['task_language'],
+      recommended_handling: 'prepare_action_if_decision_allows',
+    };
+  }
+
+  return {
+    domain: 'unknown',
+    primary: 'unspecified',
+    confidence: 0.5,
+    signals: [],
+    recommended_handling: 'continue_understanding',
+  };
+}
+
 function detectPrimaryIntent(text) {
   const lower = normalizeText(text).toLowerCase();
 
   if (!lower) {
     return {
       primary: 'empty',
+      domain: 'empty',
+      cognitive_state: 'unspecified',
       confidence: 1,
       signals: [],
     };
@@ -61,8 +168,12 @@ function detectPrimaryIntent(text) {
   ) {
     return {
       primary: 'create_reminder',
+      domain: 'time_support',
+      cognitive_state: 'prevent_forgetting',
+      cognitive_state_confidence: 0.9,
       confidence: 0.92,
-      signals: ['reminder_language'],
+      signals: ['reminder_language', 'forgetting_prevention_language'],
+      recommended_handling: 'prepare_future_prompt_or_reminder',
     };
   }
 
@@ -72,9 +183,13 @@ function detectPrimaryIntent(text) {
   ) {
     return {
       primary: 'add_to_collection',
+      domain: 'collection',
+      cognitive_state: 'organize_information',
+      cognitive_state_confidence: 0.86,
       collection_hint: 'courses',
       confidence: 0.94,
       signals: ['collection_language', 'shopping_list_language'],
+      recommended_handling: 'organize_into_collection',
     };
   }
 
@@ -92,10 +207,42 @@ function detectPrimaryIntent(text) {
     ]) ||
     /^(appeler|envoyer|répondre|repondre|payer|faire|passer|ranger|nettoyer|laver|acheter|prendre|préparer|preparer|terminer|finir|relancer|contacter|réserver|reserver|annuler|programmer|vérifier|verifier|imprimer|poster|déposer|deposer|chercher|commander|remplir|mettre|sortir)\b/i.test(text)
   ) {
+    const taskCognitiveState = detectTaskCognitiveState(text);
+
+    if (taskCognitiveState.primary === 'cognitive_overload') {
+      return {
+        primary: 'reflect_emotion',
+        domain: taskCognitiveState.domain,
+        cognitive_state: 'cognitive_overload',
+        cognitive_state_confidence: taskCognitiveState.confidence,
+        confidence: 0.88,
+        signals: ['task_language', ...taskCognitiveState.signals],
+        original_primary_intent: 'create_task',
+        recommended_handling: taskCognitiveState.recommended_handling,
+      };
+    }
+
+    if (taskCognitiveState.primary === 'prevent_forgetting') {
+      return {
+        primary: 'create_reminder',
+        domain: 'task',
+        cognitive_state: 'prevent_forgetting',
+        cognitive_state_confidence: taskCognitiveState.confidence,
+        confidence: 0.88,
+        signals: ['task_language', ...taskCognitiveState.signals],
+        original_primary_intent: 'create_task',
+        recommended_handling: taskCognitiveState.recommended_handling,
+      };
+    }
+
     return {
       primary: 'create_task',
+      domain: 'task',
+      cognitive_state: 'simple_action',
+      cognitive_state_confidence: taskCognitiveState.confidence,
       confidence: 0.86,
       signals: ['task_language'],
+      recommended_handling: 'prepare_action_if_decision_allows',
     };
   }
 
@@ -115,8 +262,12 @@ function detectPrimaryIntent(text) {
   ) {
     return {
       primary: 'capture_idea',
+      domain: 'idea',
+      cognitive_state: 'preserve_thought',
+      cognitive_state_confidence: 0.82,
       confidence: 0.84,
       signals: ['idea_language'],
+      recommended_handling: 'preserve_and_structure_thought',
     };
   }
 
@@ -137,8 +288,12 @@ function detectPrimaryIntent(text) {
   ) {
     return {
       primary: 'reflect_emotion',
+      domain: 'emotion',
+      cognitive_state: 'emotional_regulation',
+      cognitive_state_confidence: 0.82,
       confidence: 0.82,
       signals: ['emotion_language'],
+      recommended_handling: 'support_regulation_before_action',
     };
   }
 
@@ -160,15 +315,23 @@ function detectPrimaryIntent(text) {
   ) {
     return {
       primary: 'project_thought',
+      domain: 'project',
+      cognitive_state: 'preserve_project_context',
+      cognitive_state_confidence: 0.78,
       confidence: 0.78,
       signals: ['project_language'],
+      recommended_handling: 'preserve_and_structure_thought',
     };
   }
 
   return {
     primary: 'capture_note',
+    domain: 'note',
+    cognitive_state: 'preserve_context',
+    cognitive_state_confidence: 0.62,
     confidence: 0.62,
     signals: ['fallback_note'],
+    recommended_handling: 'preserve_context',
   };
 }
 
@@ -318,6 +481,8 @@ function detectEmotionalSignals(text) {
 }
 
 function deriveUnderstandingType(intent, temporalHints, projectHints, emotionalSignals) {
+  if (intent.cognitive_state === 'cognitive_overload') return 'task_overload_understanding';
+  if (intent.cognitive_state === 'prevent_forgetting') return 'forgetting_prevention_understanding';
   if (intent.primary === 'create_task') return 'task_understanding';
   if (intent.primary === 'create_reminder') return 'reminder_understanding';
   if (intent.primary === 'add_to_collection') return 'collection_understanding';
@@ -415,9 +580,27 @@ function buildObservations({
     confidence: intent.confidence,
     evidence: intent.signals || [],
     metadata: {
+      domain: intent.domain || null,
+      cognitive_state: intent.cognitive_state || null,
+      original_primary_intent: intent.original_primary_intent || null,
+      recommended_handling: intent.recommended_handling || null,
       collection_hint: intent.collection_hint || null,
     },
   }));
+
+  if (intent.cognitive_state && intent.cognitive_state !== 'unspecified') {
+    observations.push(buildObservation({
+      id: `cognitive_state_signal_${intent.cognitive_state}`,
+      type: 'cognitive_state_signal',
+      value: intent.cognitive_state,
+      confidence: intent.cognitive_state_confidence || intent.confidence || 0.5,
+      evidence: intent.signals || [],
+      metadata: {
+        domain: intent.domain || null,
+        recommended_handling: intent.recommended_handling || null,
+      },
+    }));
+  }
 
   temporalHints.forEach((hint, index) => {
     observations.push(buildObservation({
@@ -505,10 +688,29 @@ function buildFacts({
     confidence: intent.confidence,
     observationIds: observationsByType.intent_signal || [],
     metadata: {
+      domain: intent.domain || null,
+      cognitive_state: intent.cognitive_state || null,
+      original_primary_intent: intent.original_primary_intent || null,
+      recommended_handling: intent.recommended_handling || null,
       signals: intent.signals || [],
       collection_hint: intent.collection_hint || null,
     },
   }));
+
+  if (intent.cognitive_state && intent.cognitive_state !== 'unspecified') {
+    facts.push(buildFact({
+      id: `thought_cognitive_state_is_${intent.cognitive_state}`,
+      type: 'cognitive_state_fact',
+      statement: `The Thought appears to express the cognitive state "${intent.cognitive_state}" within domain "${intent.domain || 'unknown'}".`,
+      confidence: intent.cognitive_state_confidence || intent.confidence || 0.5,
+      observationIds: observationsByType.cognitive_state_signal || [],
+      metadata: {
+        domain: intent.domain || null,
+        cognitive_state: intent.cognitive_state || null,
+        recommended_handling: intent.recommended_handling || null,
+      },
+    }));
+  }
 
   if (temporalHints.length > 0) {
     facts.push(buildFact({
@@ -574,6 +776,50 @@ function buildHypotheses({
 }) {
   const factIds = facts.map(fact => fact.id);
   const hypotheses = [];
+
+  if (intent.cognitive_state === 'cognitive_overload') {
+    hypotheses.push(buildHypothesis({
+      id: 'thought_may_need_load_reduction',
+      type: 'emotional_support_hypothesis',
+      statement: 'The Thought may primarily need cognitive load reduction or regulation before any operational action.',
+      confidence: intent.cognitive_state_confidence || 0.84,
+      factIds,
+      metadata: {
+        domain: intent.domain || 'task',
+        cognitive_state: intent.cognitive_state,
+        recommended_handling: intent.recommended_handling || 'clarify_and_reduce_load_before_action',
+      },
+    }));
+
+    hypotheses.push(buildHypothesis({
+      id: 'thought_may_need_clarification_before_action',
+      type: 'uncertainty_hypothesis',
+      statement: 'The Thought may require clarification before becoming an action because the user expresses overload or not knowing where to start.',
+      confidence: 0.76,
+      factIds,
+      status: 'uncertain',
+      metadata: {
+        domain: intent.domain || 'task',
+        cognitive_state: intent.cognitive_state,
+        recommended_handling: 'clarify_before_action_creation',
+      },
+    }));
+  }
+
+  if (intent.cognitive_state === 'prevent_forgetting' && intent.primary === 'create_reminder') {
+    hypotheses.push(buildHypothesis({
+      id: 'thought_may_need_future_prompt_from_forgetting_prevention',
+      type: 'reminder_need_hypothesis',
+      statement: 'The Thought may need a future prompt because the user is trying to prevent forgetting an action.',
+      confidence: intent.cognitive_state_confidence || intent.confidence || 0.82,
+      factIds,
+      metadata: {
+        domain: intent.domain || 'task',
+        cognitive_state: intent.cognitive_state,
+        temporal_hint_count: temporalHints.length,
+      },
+    }));
+  }
 
   if (intent.primary === 'create_task') {
     hypotheses.push(buildHypothesis({
@@ -755,6 +1001,13 @@ function understandThought(thoughtInput) {
     source: thought.source,
     type: understandingType,
     intent,
+    cognitive_state: {
+      domain: intent.domain || null,
+      primary: intent.cognitive_state || null,
+      confidence: intent.cognitive_state_confidence ?? intent.confidence ?? null,
+      recommended_handling: intent.recommended_handling || null,
+      original_primary_intent: intent.original_primary_intent || null,
+    },
     entities,
     temporal_hints: temporalHints,
     project_hints: projectHints,
@@ -778,6 +1031,7 @@ function understandThought(thoughtInput) {
       metadata: {
         legacy_engine_name: 'nyraUnderstandingEngine',
         cognitive_layers: ['observations', 'facts', 'hypotheses'],
+        internal_analyzers: ['primary_intent_detector_v2', 'task_cognitive_state_detector_v1'],
       },
     }),
     ...output,
