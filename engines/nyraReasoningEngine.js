@@ -9,6 +9,7 @@ const {
 } = require('./reasoning/nyraHypothesisEvaluator');
 const {
   buildExternalizeActionStrategy,
+  buildCreateProjectStrategy,
   buildFuturePromptStrategy,
   buildCollectionStrategy,
   buildRegulationStrategy,
@@ -644,6 +645,13 @@ function buildStrategiesFromCognitiveLayers({ understanding, basis }) {
   const observations = basis.observations;
   const profile = normalizeObject(basis.situation_profile);
   const intervention = normalizeObject(basis.cognitive_intervention);
+  const directive = normalizeObject(basis.directive_detection);
+  const requestedAction = normalizeText(directive.requested_action || '');
+
+  if (requestedAction === 'create_project') {
+    addStrategyOnce(strategies, buildCreateProjectStrategy({ basis }));
+    return strategies;
+  }
 
   const actionHypothesis = getHypothesisByType(hypotheses, 'action_need_hypothesis');
   const reminderHypothesis = getHypothesisByType(hypotheses, 'reminder_need_hypothesis');
@@ -759,6 +767,13 @@ function buildStrategiesFromFallbackSignals({ understanding, basis }) {
   const strategies = [];
   const profile = normalizeObject(basis.situation_profile);
   const intervention = normalizeObject(basis.cognitive_intervention);
+  const directive = normalizeObject(basis.directive_detection);
+  const requestedAction = normalizeText(directive.requested_action || '');
+
+  if (requestedAction === 'create_project') {
+    addStrategyOnce(strategies, buildCreateProjectStrategy({ basis }));
+    return strategies;
+  }
 
   if (intervention.id === 'brain_dump') {
     addStrategyOnce(strategies, buildBrainDumpStrategy({ basis }));

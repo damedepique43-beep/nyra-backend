@@ -142,6 +142,48 @@ function buildExternalizeActionStrategy({ basis, hypothesis = null }) {
 }
 
 
+function buildCreateProjectStrategy({ basis, hypothesis = null }) {
+  const directive = normalizeObject(basis.directive_detection);
+  const confidence = Math.max(
+    hypothesis ? getHypothesisConfidence(hypothesis, basis.confidence) : basis.confidence,
+    0.86
+  );
+
+  return buildStrategy({
+    id: 'create_project',
+    label: 'Créer un projet depuis la conversation',
+    confidence,
+    cognitiveCost: 0.12,
+    expectedBenefit: 0.86,
+    riskLevel: clamp01(0.08 + getHypothesisRiskAdjustment(hypothesis), 0.08),
+    cognitiveNeed: {
+      primary: 'structure_idea',
+      label: 'Structurer une intention explicite en projet',
+      confidence,
+      source: 'explicit_directive',
+      rationale: 'La stratégie répond à une commande explicite de création de projet sans la transformer en Brain Dump.',
+    },
+    reasons: [
+      'Directive explicite détectée : créer un projet.',
+      'Créer un projet est une action structurante distincte de la simple préservation de contexte.',
+    ],
+    constraints: {
+      requires_decision: true,
+      reasoning_source: 'explicit_directive',
+      requested_action: directive.requested_action || 'create_project',
+      directive_type: directive.directive_type || 'explicit_action',
+      hypothesis_status: hypothesis?.evaluation?.status || null,
+      forbid_brain_dump_override: true,
+    },
+    payload: {
+      intent: basis.primary_intent,
+      requested_action: directive.requested_action || 'create_project',
+      hypothesis_id: hypothesis?.id || null,
+    },
+  });
+}
+
+
 function buildFuturePromptStrategy({ basis, hypothesis = null }) {
   const confidence = hypothesis ? getHypothesisConfidence(hypothesis, basis.confidence) : basis.confidence;
 
@@ -400,6 +442,7 @@ function buildBrainDumpStrategy({ basis }) {
 
 module.exports = {
   buildExternalizeActionStrategy,
+  buildCreateProjectStrategy,
   buildFuturePromptStrategy,
   buildCollectionStrategy,
   buildRegulationStrategy,
