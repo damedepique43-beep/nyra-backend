@@ -645,6 +645,103 @@ function summarizeDecisionProfile(decisionProfile) {
   };
 }
 
+function buildDecisionConstraints(decisionProfile = {}) {
+  // Decision Constraints V1
+  // Responsabilité : traduire le DecisionProfile en contraintes décisionnelles explicites.
+  // Le contrat est informatif en V1 : il ne modifie pas encore le score ni le choix final.
+  const safeProfile = normalizeObject(decisionProfile);
+  const cognitiveCost = normalizeObject(safeProfile.cognitive_cost);
+  const situationConstraints = normalizeObject(safeProfile.situation_constraints);
+  const uncertainty = normalizeObject(safeProfile.uncertainty);
+  const forbiddenOperations = normalizeArray(cognitiveCost.forbidden_operations);
+  const allowedOperations = normalizeArray(cognitiveCost.allowed_operations);
+  const maxCognitiveCost = normalizeCognitiveCostLevel(
+    cognitiveCost.max_allowed_level ?? cognitiveCost.level,
+    7
+  );
+  const forbiddenText = forbiddenOperations.join(' ').toLowerCase();
+  const cognitiveCostSource = normalizeText(cognitiveCost.source || '').toLowerCase();
+  const cognitiveCostLabel = normalizeText(cognitiveCost.label || '').toLowerCase();
+  const cognitiveNeed = normalizeText(safeProfile.cognitive_need || '').toLowerCase();
+  const isBrainDumpConstraint = Boolean(
+    cognitiveCostSource.includes('brain_dump') ||
+    cognitiveNeed.includes('brain_dump') ||
+    cognitiveCostLabel === 'externalisation_only' ||
+    maxCognitiveCost <= 1 ||
+    includesAnyText(forbiddenText, [
+      'demander de choisir',
+      'demander de prioriser',
+      'demander de comparer',
+      'demander par quoi commencer',
+      'demander la première chose',
+      'demander la premiere chose',
+    ])
+  );
+
+  const allowSelection = !isBrainDumpConstraint && !includesAnyText(forbiddenText, [
+    'choisir',
+    'sélection',
+    'selection',
+  ]);
+  const allowPrioritization = !isBrainDumpConstraint && !includesAnyText(forbiddenText, [
+    'prioriser',
+    'priorité',
+    'priorite',
+    'urgent',
+  ]);
+  const allowComparison = !isBrainDumpConstraint && !includesAnyText(forbiddenText, [
+    'comparer',
+    'comparaison',
+  ]);
+  const requiresClarification = Boolean(
+    uncertainty.requires_clarification ||
+    situationConstraints.requires_clarification ||
+    normalizeArray(situationConstraints.clarification_candidate_ids).length > 0
+  );
+
+  return {
+    contract: 'decision-constraints-v1',
+    source: 'decision_profile',
+    behavior_impact: 'none',
+    available: Boolean(safeProfile.available || Object.keys(cognitiveCost).length > 0),
+    allow_selection: allowSelection,
+    allow_prioritization: allowPrioritization,
+    allow_comparison: allowComparison,
+    max_cognitive_cost: isBrainDumpConstraint ? 1 : maxCognitiveCost,
+    requires_clarification: requiresClarification,
+    allowed_operations: allowedOperations,
+    forbidden_operations: forbiddenOperations,
+    reason: isBrainDumpConstraint
+      ? 'brain_dump_or_low_cognitive_cost_constraint'
+      : requiresClarification
+        ? 'clarification_required'
+        : 'default_constraints',
+    constraint_flags: {
+      is_brain_dump_constraint: isBrainDumpConstraint,
+      has_forbidden_operations: forbiddenOperations.length > 0,
+      has_allowed_operations: allowedOperations.length > 0,
+      has_cost_limit: cognitiveCost.max_allowed_level !== undefined,
+    },
+    generated_at: new Date().toISOString(),
+  };
+}
+
+function summarizeDecisionConstraints(decisionConstraints) {
+  const safeConstraints = normalizeObject(decisionConstraints);
+
+  return {
+    contract: safeConstraints.contract || 'decision-constraints-v1',
+    available: Boolean(safeConstraints.available),
+    allow_selection: safeConstraints.allow_selection !== false,
+    allow_prioritization: safeConstraints.allow_prioritization !== false,
+    allow_comparison: safeConstraints.allow_comparison !== false,
+    max_cognitive_cost: safeConstraints.max_cognitive_cost ?? null,
+    requires_clarification: Boolean(safeConstraints.requires_clarification),
+    reason: safeConstraints.reason || null,
+    forbidden_operation_count: normalizeArray(safeConstraints.forbidden_operations).length,
+  };
+}
+
 function computeDecisionScore(candidateDecision, cognitiveContext = {}) {
   // Decision Score V1.2
   // Responsabilité : commencer à mesurer la qualité cognitive d'une décision candidate
@@ -654,6 +751,7 @@ function computeDecisionScore(candidateDecision, cognitiveContext = {}) {
   const analysis = candidateDecision?.analysis_summary || cognitiveContext?.analysis || {};
   const decisionInput = buildDecisionInput(candidateDecision, cognitiveContext);
   const decisionProfile = buildDecisionProfile(candidateDecision, cognitiveContext, decisionInput);
+  const decisionConstraints = buildDecisionConstraints(decisionProfile);
   const confidence = getCandidateConfidence(candidateDecision, cognitiveContext);
   const reasoningSignals = detectReasoningSignals(candidateDecision, cognitiveContext);
   const strongestCandidate = normalizeObject(decisionInput.strongest_candidate);
@@ -772,7 +870,8 @@ function computeDecisionScore(candidateDecision, cognitiveContext = {}) {
     reasoning_signals: reasoningSignals,
     decision_input_summary: summarizeDecisionInput(decisionInput),
     decision_profile_summary: summarizeDecisionProfile(decisionProfile),
-    scoring_version: 'decision-score-v1.5',
+    decision_constraints_summary: summarizeDecisionConstraints(decisionConstraints),
+    scoring_version: 'decision-score-v1.6',
     generated_at: new Date().toISOString(),
   };
 }
@@ -784,12 +883,14 @@ function attachDecisionScore(candidateDecision, cognitiveContext = {}) {
 
   const decisionInput = buildDecisionInput(candidateDecision, cognitiveContext);
   const decisionProfile = buildDecisionProfile(candidateDecision, cognitiveContext, decisionInput);
+  const decisionConstraints = buildDecisionConstraints(decisionProfile);
   const decisionScore = computeDecisionScore(candidateDecision, cognitiveContext);
 
   return {
     ...candidateDecision,
     decision_input: decisionInput,
     decision_profile: decisionProfile,
+    decision_constraints: decisionConstraints,
     decision_score: decisionScore,
     selection_metadata: {
       scoring_available: true,
@@ -798,8 +899,10 @@ function attachDecisionScore(candidateDecision, cognitiveContext = {}) {
       decision_input_contract: decisionInput.contract,
       decision_profile_available: Boolean(decisionProfile.available),
       decision_profile_contract: decisionProfile.contract,
+      decision_constraints_available: Boolean(decisionConstraints.available),
+      decision_constraints_contract: decisionConstraints.contract,
       behavior_impact: 'none',
-      note: 'Contrat DecisionInput, DecisionProfile et score calculés sans modifier la stratégie de sélection V1.',
+      note: 'Contrats DecisionInput, DecisionProfile, DecisionConstraints et score calculés sans modifier la stratégie de sélection V1.',
     },
   };
 }
@@ -912,9 +1015,12 @@ function chooseBestDecision(candidateDecisions, cognitiveContext = {}) {
       cognitive_need: candidateDecision.decision_profile?.cognitive_need || null,
       cognitive_cost_level: candidateDecision.decision_profile?.cognitive_cost?.level ?? null,
       cognitive_cost_label: candidateDecision.decision_profile?.cognitive_cost?.label || null,
+      decision_constraints_available: Boolean(candidateDecision.decision_constraints?.available),
+      max_cognitive_cost: candidateDecision.decision_constraints?.max_cognitive_cost ?? null,
+      allow_selection: candidateDecision.decision_constraints?.allow_selection ?? null,
     })),
     selection_strategy: 'first_valid_candidate_with_decision_input',
-    selection_reason: 'Comportement V1 conservé : la première décision candidate valide est choisie. Le DecisionInput, le DecisionProfile, le CognitiveCost et le score sont seulement informatifs en V1.5.',
+    selection_reason: 'Comportement V1 conservé : la première décision candidate valide est choisie. Le DecisionInput, le DecisionProfile, le DecisionConstraints, le CognitiveCost et le score sont seulement informatifs en V1.6.',
     cognitive_context: cognitiveContext || {},
     selected_at: new Date().toISOString(),
   };
@@ -952,4 +1058,5 @@ module.exports = {
   buildDecisionInput,
   buildDecisionProfile,
   buildCognitiveCostProfile,
+  buildDecisionConstraints,
 };
