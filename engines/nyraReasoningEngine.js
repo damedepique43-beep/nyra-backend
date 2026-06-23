@@ -1,6 +1,13 @@
 const { buildEngineResult } = require('./nyraEngineResultContract');
 const { detectDirectiveFromUnderstanding, getDirectiveDominantNeed } = require('./reasoning/nyraDirectiveDetector');
 const {
+  evaluateHypotheses,
+  buildHypothesisReasoningState,
+  getHypothesisByType,
+  isUsableHypothesis,
+  summarizeHypothesisEvaluations,
+} = require('./reasoning/nyraHypothesisEvaluator');
+const {
   buildExternalizeActionStrategy,
   buildFuturePromptStrategy,
   buildCollectionStrategy,
@@ -69,15 +76,563 @@ function normalizeCognitiveNeed(value, fallback = 'preserve_context') {
   return fallback;
 }
 
+function buildCognitiveNeed({ primary, label, confidence = 0.72, source = 'strategy_builder', rationale = '' } = {}) {
+  const normalizedPrimary = normalizeCognitiveNeed(primary);
+
+  const defaultLabels = {
+    reduce_cognitive_load: 'Réduire la charge cognitive',
+    prevent_forgetting: 'Prévenir l’oubli',
+    clarify_uncertainty: 'Clarifier l’incertitude',
+    support_regulation: 'Soutenir la régulation',
+    preserve_context: 'Préserver le contexte',
+    structure_idea: 'Structurer une idée',
+    organize_information: 'Organiser une information',
+    prepare_action: 'Préparer une action',
+    capture_without_action: 'Capturer sans action immédiate',
+  };
+
+  return {
+    primary: normalizedPrimary,
+    label: normalizeText(label || defaultLabels[normalizedPrimary] || defaultLabels.preserve_context),
+    confidence: clamp01(confidence, 0.72),
+    source: normalizeText(source || 'strategy_builder'),
+    rationale: normalizeText(rationale || 'Besoin cognitif associé à cette stratégie.'),
+  };
+}
+
+function getUnderstandingOutput(context = {}) {
+  const safeContext = normalizeObject(context);
+  const engineResults = normalizeObject(safeContext.engine_results);
+  const understandingResult = normalizeObject(engineResults.understanding || safeContext.understanding);
+  const understandingOutput = normalizeObject(understandingResult.output);
+
+  if (Object.keys(understandingOutput).length > 0) {
+    return understandingOutput;
+  }
+
+  return understandingResult;
+}
+
+
+function getPrimaryIntent(understanding) {
+  const intent = normalizeObject(understanding.intent);
+  return normalizeText(intent.primary || understanding.primary_intent || 'capture_note') || 'capture_note';
+}
+
+function getIntentConfidence(understanding) {
+  const intent = normalizeObject(understanding.intent);
+  return clamp01(intent.confidence ?? understanding.confidence, 0.5);
+}
+
+function getTemporalScope(understanding) {
+  const temporalHints = normalizeArray(understanding.temporal_hints);
+  const strongestHint = temporalHints[0] || null;
+
+  if (!strongestHint) return 'unspecified';
+
+  if (strongestHint.type === 'relative_duration') return 'relative_duration';
+  if (strongestHint.type === 'time_of_day') return 'time_of_day';
+
+  return normalizeText(strongestHint.value || strongestHint.type || 'unspecified') || 'unspecified';
+}
+
+function getEmotionalIntensity(understanding) {
+  const emotionalSignals = normalizeArray(understanding.emotional_signals);
+
+  if (emotionalSignals.length === 0) return 'none';
+  if (emotionalSignals.length >= 2) return 'medium';
+
+  const confidence = clamp01(emotionalSignals[0]?.confidence, 0.5);
+  return confidence >= 0.8 ? 'medium' : 'low';
+}
+
+function getCognitiveLayers(understanding) {
+  return {
+    observations: normalizeArray(understanding.observations).map(normalizeObject),
+    facts: normalizeArray(understanding.facts).map(normalizeObject),
+    hypotheses: normalizeArray(understanding.hypotheses).map(normalizeObject),
+  };
+}
+
+function getLayerTypes(items = []) {
+  return [
+    ...new Set(
+      normalizeArray(items)
+        .map(item => normalizeText(item?.type))
+        .filter(Boolean)
+    ),
+  ];
+}
+
+function hasLayerType(items = [], type) {
+  const normalizedType = normalizeText(type);
+  return normalizeArray(items).some(item => normalizeText(item?.type) === normalizedType);
+}
+
+function getUnderstandingDomain(understanding = {}) {
+  const intent = normalizeObject(understanding.intent);
+  const directDomain = normalizeText(
+    understanding.domain ||
+    understanding.cognitive_domain ||
+    intent.domain ||
+    intent.cognitive_domain ||
+    ''
+  )
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  if (directDomain) return directDomain;
+
+  const primaryIntent = getPrimaryIntent(understanding);
+  const intentDomainMap = {
+    create_task: 'task',
+    create_reminder: 'task',
+    add_to_collection: 'collection',
+    capture_idea: 'idea',
+    project_thought: 'project',
+    reflect_emotion: 'emotion',
+    capture_note: 'context',
+  };
+
+  return intentDomainMap[primaryIntent] || 'context';
+}
+
+function inferCognitiveStateFromText(text = '') {
+  const lower = normalizeText(text).toLowerCase();
+
+  if (!lower) return 'neutral';
+
+  if (includesAny(lower, [
+    'je ne sais pas par quoi commencer',
+    'je sais pas par quoi commencer',
+    'je ne sais plus par quoi commencer',
+    'je sais plus par quoi commencer',
+    'je ne sais pas par où commencer',
+    'je sais pas par ou commencer',
+    'je ne sais plus par où commencer',
+    'je sais plus par ou commencer',
+    'trop de choses',
+    'trop de trucs',
+    'plein de choses à faire',
+    'plein de choses a faire',
+    'dix trucs à faire',
+    '10 trucs à faire',
+    'je suis perdue',
+    'je suis perdu',
+    'je suis débordée',
+    'je suis debordee',
+    'je suis débordé',
+    'je suis deborde',
+    'submergée',
+    'submergee',
+    'charge mentale',
+    'surcharge',
+  ])) {
+    return 'overwhelmed';
+  }
+
+  if (includesAny(lower, [
+    'ne pas oublier',
+    'peur d oublier',
+    "peur d'oublier",
+    'j ai peur d oublier',
+    "j'ai peur d'oublier",
+    'il faut que je pense à',
+    'il faut que je pense a',
+    'pense à',
+    'penser à',
+  ])) {
+    return 'prevent_forgetting';
+  }
+
+  if (includesAny(lower, [
+    'je me sens',
+    'angoisse',
+    'stress',
+    'panique',
+    'triste',
+    'peur',
+    'mal',
+    'épuisée',
+    'epuisee',
+    'fatiguée',
+    'fatiguee',
+  ])) {
+    return 'emotional_overload';
+  }
+
+  if (includesAny(lower, [
+    'planifier',
+    'organiser',
+    'préparer',
+    'preparer',
+    'étape par étape',
+    'etape par etape',
+  ])) {
+    return 'planning';
+  }
+
+  return 'neutral';
+}
+
+function normalizeCognitiveStateValue(value) {
+  return normalizeText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function getUnderstandingCognitiveState(understanding = {}) {
+  const intent = normalizeObject(understanding.intent);
+  const metadata = normalizeObject(understanding.metadata);
+  const cognitiveStateObject = normalizeObject(understanding.cognitive_state);
+  const intentCognitiveStateObject = normalizeObject(intent.cognitive_state);
+  const metadataCognitiveStateObject = normalizeObject(metadata.cognitive_state);
+
+  const directState = normalizeCognitiveStateValue(
+    cognitiveStateObject.primary ||
+    cognitiveStateObject.value ||
+    cognitiveStateObject.state ||
+    understanding.primary_cognitive_state ||
+    understanding.task_state ||
+    intentCognitiveStateObject.primary ||
+    intentCognitiveStateObject.value ||
+    intentCognitiveStateObject.state ||
+    intent.cognitive_state ||
+    intent.task_state ||
+    metadataCognitiveStateObject.primary ||
+    metadataCognitiveStateObject.value ||
+    metadataCognitiveStateObject.state ||
+    metadata.cognitive_state ||
+    ''
+  );
+
+  if (directState) return directState;
+
+  const stateFromFacts = normalizeArray(understanding.facts).find(fact => {
+    return ['cognitive_state_fact', 'task_state_fact'].includes(normalizeText(fact?.type));
+  });
+
+  const factCognitiveState = normalizeObject(stateFromFacts?.metadata?.cognitive_state);
+
+  if (stateFromFacts?.metadata?.cognitive_state) {
+    const factState = normalizeCognitiveStateValue(
+      factCognitiveState.primary ||
+      factCognitiveState.value ||
+      factCognitiveState.state ||
+      stateFromFacts.metadata.cognitive_state
+    );
+
+    if (factState) return factState;
+  }
+
+  return inferCognitiveStateFromText(understanding.raw_text || understanding.text || '');
+}
+
+function buildSituationProfile({ understanding = {}, basis = {}, directiveDetection = {} } = {}) {
+  const domain = getUnderstandingDomain(understanding);
+  const cognitiveState = getUnderstandingCognitiveState(understanding);
+  const primaryIntent = normalizeText(basis.primary_intent || getPrimaryIntent(understanding));
+  const directive = normalizeObject(directiveDetection);
+  const hasExplicitActionDirective = directive.directive_type === 'explicit_action' && directive.allow_brain_dump === false;
+  const directiveDominantNeed = hasExplicitActionDirective ? getDirectiveDominantNeed(directive) : null;
+  const hasTemporalNeed = basis.temporal_scope && basis.temporal_scope !== 'unspecified';
+  const hasEmotion = basis.emotional_intensity && basis.emotional_intensity !== 'none';
+  const hasUncertainty = Boolean(
+    basis.has_competing_hypotheses ||
+    normalizeArray(basis.rejected_hypotheses).length > 0 ||
+    normalizeArray(basis.hypotheses).some(hypothesis => {
+      return ['weak', 'contradicted', 'needs_verification'].includes(normalizeText(hypothesis?.evaluation?.status));
+    })
+  );
+
+  const overloadedStates = ['overwhelmed', 'cognitive_overload', 'overload', 'surcharge', 'task_overload'];
+  const forgettingStates = ['prevent_forgetting', 'forgetting_risk', 'memory_support', 'remember_later'];
+  const planningStates = ['planning', 'action_ready', 'execution_ready', 'ready_to_act', 'simple_task'];
+  const emotionalStates = ['emotional_overload', 'reflection', 'regulation', 'distress'];
+
+  const isOverloaded = overloadedStates.includes(cognitiveState);
+  const isForgettingRisk = forgettingStates.includes(cognitiveState);
+  const isPlanning = planningStates.includes(cognitiveState);
+  const isEmotional = emotionalStates.includes(cognitiveState) || hasEmotion;
+
+  let dominantNeed = 'preserve_context';
+
+  if (directiveDominantNeed) dominantNeed = directiveDominantNeed;
+  else if (isOverloaded) dominantNeed = 'reduce_cognitive_load';
+  else if (isForgettingRisk || primaryIntent === 'create_reminder') dominantNeed = 'prevent_forgetting';
+  else if (isEmotional) dominantNeed = 'support_regulation';
+  else if (hasUncertainty) dominantNeed = 'clarify_uncertainty';
+  else if (domain === 'idea' || domain === 'project') dominantNeed = 'structure_idea';
+  else if (domain === 'collection') dominantNeed = 'organize_information';
+  else if (domain === 'task' || primaryIntent === 'create_task') dominantNeed = 'prepare_action';
+
+  const shouldClarifyFirst = Boolean(
+    (!hasExplicitActionDirective && isOverloaded) ||
+    hasUncertainty ||
+    cognitiveState === 'clarification_needed' ||
+    cognitiveState === 'uncertain'
+  );
+
+  return {
+    version: 'situation-profile-v1',
+    domain,
+    cognitive_state: cognitiveState,
+    primary_intent: primaryIntent,
+    dominant_need: dominantNeed,
+    uncertainty_level: hasUncertainty || shouldClarifyFirst ? 'medium' : 'low',
+    should_clarify_first: shouldClarifyFirst,
+    should_externalize: Boolean(
+      (!isOverloaded && !isEmotional && (isPlanning || primaryIntent === 'create_task')) ||
+      directive.requested_action === 'create_task'
+    ),
+    should_prepare_reminder: Boolean(
+      isForgettingRisk ||
+      primaryIntent === 'create_reminder' ||
+      directive.requested_action === 'create_reminder' ||
+      (hasTemporalNeed && primaryIntent === 'create_task')
+    ),
+    should_regulate: Boolean(!hasExplicitActionDirective && (isEmotional || isOverloaded)),
+    should_preserve_context: Boolean(
+      domain === 'idea' ||
+      domain === 'project' ||
+      primaryIntent === 'capture_note' ||
+      directive.requested_action === 'create_project'
+    ),
+    should_organize_information: Boolean(
+      domain === 'collection' ||
+      primaryIntent === 'add_to_collection' ||
+      directive.requested_action === 'add_to_collection'
+    ),
+    should_defer_action_creation: Boolean(!hasExplicitActionDirective && (isOverloaded || isEmotional || shouldClarifyFirst)),
+    explicit_directive: directive,
+    rationale: isOverloaded
+      ? 'La situation ressemble à une surcharge : clarifier et réduire la charge avant de créer une action.'
+      : isForgettingRisk
+        ? 'La situation ressemble à un risque d’oubli : préparer un soutien futur.'
+        : isEmotional
+          ? 'La situation contient un besoin de régulation ou de réflexion avant l’action.'
+          : 'Profil cognitif construit à partir du domaine, de l’état cognitif, des hypothèses et des signaux disponibles.',
+  };
+}
+
+
+function normalizeCognitiveInterventionId(value, fallback = 'none') {
+  const normalized = normalizeText(value || fallback)
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  const allowedInterventions = [
+    'brain_dump',
+    'secure_capture',
+    'progressive_clarification',
+    'emotional_regulation',
+    'structured_execution',
+    'context_preservation',
+    'none',
+  ];
+
+  if (allowedInterventions.includes(normalized)) return normalized;
+  return fallback;
+}
+
+function buildCognitiveIntervention({
+  id,
+  label,
+  goal,
+  confidence = 0.72,
+  conversationStyle = 'standard_support',
+  recommendedBuilders = [],
+  nextPromptGoal = '',
+  rationale = '',
+} = {}) {
+  const interventionId = normalizeCognitiveInterventionId(id);
+
+  const defaultLabels = {
+    brain_dump: 'Brain Dump guidé',
+    secure_capture: 'Capture sécurisée',
+    progressive_clarification: 'Clarification progressive',
+    emotional_regulation: 'Régulation cognitive et émotionnelle',
+    structured_execution: 'Exécution structurée',
+    context_preservation: 'Préservation du contexte',
+    none: 'Aucune intervention spécialisée',
+  };
+
+  return {
+    id: interventionId,
+    label: normalizeText(label || defaultLabels[interventionId] || defaultLabels.none),
+    goal: normalizeCognitiveNeed(goal || 'preserve_context'),
+    confidence: clamp01(confidence, 0.72),
+    conversation_style: normalizeText(conversationStyle || 'standard_support'),
+    recommended_builders: uniqueArray(normalizeArray(recommendedBuilders).map(item => normalizeText(item)).filter(Boolean)),
+    next_prompt_goal: normalizeText(nextPromptGoal || ''),
+    rationale: normalizeText(rationale || 'Intervention cognitive sélectionnée à partir du profil de situation.'),
+  };
+}
+
+function selectCognitiveIntervention({ profile = {}, basis = {}, directiveDetection = {} } = {}) {
+  // Cognitive Intervention Selector V1
+  // Responsabilité : choisir une méthode d'accompagnement du fonctionnement mental
+  // avant de choisir les stratégies techniques qui la mettront en œuvre.
+  // Ce composant reste interne au Reasoning Engine et ne décide ni n'exécute.
+  const safeProfile = normalizeObject(profile);
+  const directive = normalizeObject(directiveDetection || safeProfile.explicit_directive);
+  const cognitiveState = normalizeText(safeProfile.cognitive_state || basis.cognitive_state || 'neutral');
+  const dominantNeed = normalizeCognitiveNeed(safeProfile.dominant_need || basis.dominant_cognitive_need || 'preserve_context');
+  const canUseBrainDump = directive.allow_brain_dump !== false;
+
+  if (canUseBrainDump && (dominantNeed === 'reduce_cognitive_load' || ['overwhelmed', 'cognitive_overload', 'overload', 'surcharge', 'task_overload'].includes(cognitiveState))) {
+    return buildCognitiveIntervention({
+      id: 'brain_dump',
+      label: 'Brain Dump guidé',
+      goal: 'reduce_cognitive_load',
+      confidence: 0.88,
+      conversationStyle: 'guided_dump',
+      recommendedBuilders: ['guided_brain_dump', 'clarify_understanding'],
+      nextPromptGoal: 'Inviter l’utilisateur à vider tout ce qu’il a en tête sans trier, puis organiser ensuite.',
+      rationale: 'La surcharge cognitive demande d’abord de vider la mémoire de travail avant de prioriser ou de créer des tâches.',
+    });
+  }
+
+  if (dominantNeed === 'prevent_forgetting' || safeProfile.should_prepare_reminder) {
+    return buildCognitiveIntervention({
+      id: 'secure_capture',
+      label: 'Capture sécurisée',
+      goal: 'prevent_forgetting',
+      confidence: 0.84,
+      conversationStyle: 'secure_capture',
+      recommendedBuilders: ['schedule_future_prompt', 'externalize_action'],
+      nextPromptGoal: 'Sécuriser l’information pour que l’utilisateur n’ait plus à la garder en tête.',
+      rationale: 'Le risque d’oubli demande une capture fiable avant toute organisation plus fine.',
+    });
+  }
+
+  if (dominantNeed === 'support_regulation' || safeProfile.should_regulate) {
+    return buildCognitiveIntervention({
+      id: 'emotional_regulation',
+      label: 'Régulation cognitive et émotionnelle',
+      goal: 'support_regulation',
+      confidence: 0.82,
+      conversationStyle: 'regulation_first',
+      recommendedBuilders: ['support_regulation', 'clarify_understanding'],
+      nextPromptGoal: 'Réduire la pression interne avant toute demande d’organisation ou d’exécution.',
+      rationale: 'Une charge émotionnelle ou cognitive forte rend l’action directe moins adaptée.',
+    });
+  }
+
+  if (dominantNeed === 'clarify_uncertainty' || safeProfile.should_clarify_first) {
+    return buildCognitiveIntervention({
+      id: 'progressive_clarification',
+      label: 'Clarification progressive',
+      goal: 'clarify_uncertainty',
+      confidence: 0.78,
+      conversationStyle: 'progressive_clarification',
+      recommendedBuilders: ['clarify_understanding'],
+      nextPromptGoal: 'Clarifier une seule information utile avant de choisir une action.',
+      rationale: 'L’incertitude doit être réduite avant de transformer la pensée en action.',
+    });
+  }
+
+  if (dominantNeed === 'prepare_action' || safeProfile.should_externalize) {
+    return buildCognitiveIntervention({
+      id: 'structured_execution',
+      label: 'Exécution structurée',
+      goal: 'prepare_action',
+      confidence: 0.76,
+      conversationStyle: 'action_preparation',
+      recommendedBuilders: ['externalize_action'],
+      nextPromptGoal: 'Transformer la pensée en action claire et supportable.',
+      rationale: 'Le profil indique une action suffisamment claire pour être préparée.',
+    });
+  }
+
+  return buildCognitiveIntervention({
+    id: 'context_preservation',
+    label: 'Préservation du contexte',
+    goal: 'preserve_context',
+    confidence: 0.68,
+    conversationStyle: 'context_capture',
+    recommendedBuilders: ['capture_for_context'],
+    nextPromptGoal: 'Conserver l’information sans ajouter de pression opérationnelle.',
+    rationale: 'Aucune intervention spécialisée plus forte n’est justifiée par le profil actuel.',
+  });
+}
+
+function buildReasoningBasis(understanding) {
+  const layers = getCognitiveLayers(understanding);
+  const primaryIntent = getPrimaryIntent(understanding);
+  const confidence = getIntentConfidence(understanding);
+  const temporalScope = getTemporalScope(understanding);
+  const emotionalIntensity = getEmotionalIntensity(understanding);
+  const evaluatedHypotheses = evaluateHypotheses({
+    hypotheses: layers.hypotheses,
+    facts: layers.facts,
+  });
+  const hypothesisReasoningState = buildHypothesisReasoningState(evaluatedHypotheses);
+  const provisionalBasis = {
+    primary_intent: primaryIntent,
+    confidence,
+    temporal_scope: temporalScope,
+    emotional_intensity: emotionalIntensity,
+    observations: layers.observations,
+    facts: layers.facts,
+    hypotheses: evaluatedHypotheses,
+    active_hypotheses: hypothesisReasoningState.active_hypotheses,
+    rejected_hypotheses: hypothesisReasoningState.rejected_hypotheses,
+    competing_hypotheses: hypothesisReasoningState.competing_hypotheses,
+    has_competing_hypotheses: hypothesisReasoningState.has_competing_hypotheses,
+    has_active_hypotheses: hypothesisReasoningState.has_active_hypotheses,
+    raw_hypotheses: layers.hypotheses,
+    observation_types: getLayerTypes(layers.observations),
+    fact_types: getLayerTypes(layers.facts),
+    hypothesis_types: getLayerTypes(evaluatedHypotheses),
+    has_cognitive_layers: layers.observations.length > 0 || layers.facts.length > 0 || layers.hypotheses.length > 0,
+  };
+  const directiveDetection = detectDirectiveFromUnderstanding(understanding);
+  const situationProfile = buildSituationProfile({
+    understanding,
+    basis: provisionalBasis,
+    directiveDetection,
+  });
+  const cognitiveIntervention = selectCognitiveIntervention({
+    profile: situationProfile,
+    basis: provisionalBasis,
+    directiveDetection,
+  });
+
+  return {
+    ...provisionalBasis,
+    domain: situationProfile.domain,
+    cognitive_state: situationProfile.cognitive_state,
+    dominant_cognitive_need: situationProfile.dominant_need,
+    directive_detection: directiveDetection,
+    situation_profile: situationProfile,
+    cognitive_intervention: cognitiveIntervention,
+    confidence,
+    temporal_scope: temporalScope,
+    emotional_intensity: emotionalIntensity,
+    observations: layers.observations,
+    facts: layers.facts,
+    hypotheses: evaluatedHypotheses,
+    active_hypotheses: hypothesisReasoningState.active_hypotheses,
+    rejected_hypotheses: hypothesisReasoningState.rejected_hypotheses,
+    competing_hypotheses: hypothesisReasoningState.competing_hypotheses,
+    has_competing_hypotheses: hypothesisReasoningState.has_competing_hypotheses,
+    has_active_hypotheses: hypothesisReasoningState.has_active_hypotheses,
+    raw_hypotheses: layers.hypotheses,
+    observation_types: getLayerTypes(layers.observations),
+    fact_types: getLayerTypes(layers.facts),
+    hypothesis_types: getLayerTypes(evaluatedHypotheses),
+    has_cognitive_layers: layers.observations.length > 0 || layers.facts.length > 0 || layers.hypotheses.length > 0,
+  };
+}
+
 function addStrategyOnce(strategies, strategy) {
   if (!strategy?.id) return;
   const exists = strategies.some(existingStrategy => existingStrategy.id === strategy.id);
   if (!exists) strategies.push(strategy);
-}
-
-function isUsableHypothesis(hypothesis) {
-  const status = normalizeText(hypothesis?.evaluation?.status || 'provisional');
-  return !['contradicted', 'weak'].includes(status);
 }
 
 function buildStrategiesFromCognitiveLayers({ understanding, basis }) {
@@ -788,25 +1343,6 @@ function buildCognitiveQuestionReview({ strategy, basis, cognitiveContext }) {
           : 'prepare_for_decision',
     },
   };
-}
-
-function summarizeHypothesisEvaluations(hypotheses = []) {
-  const summary = {
-    strong: 0,
-    plausible: 0,
-    provisional: 0,
-    needs_verification: 0,
-    weak: 0,
-    contradicted: 0,
-  };
-
-  normalizeArray(hypotheses).forEach(hypothesis => {
-    const status = normalizeText(hypothesis?.evaluation?.status || 'provisional') || 'provisional';
-    if (summary[status] === undefined) summary[status] = 0;
-    summary[status] += 1;
-  });
-
-  return summary;
 }
 
 function buildReasoningOutput({ thought, understanding, basis, strategies, alternativeStrategyAnalysis = null, context = {} }) {
