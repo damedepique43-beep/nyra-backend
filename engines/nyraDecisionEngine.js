@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { arbitrateDecisionCandidates } = require('./decision/nyraDecisionArbitrator');
 
 function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
@@ -966,10 +967,11 @@ function normalizeCandidateDecisionList(candidateDecisions) {
 
 
 function buildDecisionSelector(scoredCandidates = []) {
-  // Decision Selector V1
+  // Decision Selector V1.1
   // Responsabilité : produire une trace explicite de sélection sans piloter
-  // encore le choix final. En V1, chooseBestDecision conserve le comportement
-  // validé : première décision candidate valide.
+  // encore le choix final. En V1.1, le DecisionArbitrator prépare une
+  // recommandation informative, tandis que chooseBestDecision conserve le
+  // comportement validé : première décision candidate valide.
   const candidates = normalizeCandidateDecisionList(scoredCandidates);
   const selectionTrace = candidates.map((candidateDecision, index) => {
     const decisionConstraints = normalizeObject(candidateDecision.decision_constraints);
@@ -1015,9 +1017,12 @@ function buildDecisionSelector(scoredCandidates = []) {
     };
   });
 
+  const decisionArbitration = arbitrateDecisionCandidates({
+    candidates,
+    selectionTrace,
+  });
   const eligibleTraces = selectionTrace.filter(trace => trace.eligible);
-  const informativeSelectedTrace = [...eligibleTraces]
-    .sort((a, b) => b.score - a.score)[0] || selectionTrace[0] || null;
+  const informativeSelectedTrace = decisionArbitration.best_candidate_trace || selectionTrace[0] || null;
   const legacySelectedTrace = selectionTrace[0] || null;
 
   return {
@@ -1035,6 +1040,16 @@ function buildDecisionSelector(scoredCandidates = []) {
     selection_reason: informativeSelectedTrace
       ? 'Sélecteur informatif : meilleure candidate éligible selon le score, sans impact sur le choix runtime.'
       : 'Aucune candidate disponible pour la sélection informative.',
+    decision_arbitration: decisionArbitration,
+    decision_arbitration_summary: {
+      contract: decisionArbitration.contract || 'decision-arbitrator-v1',
+      mode: decisionArbitration.mode || 'informative_only',
+      behavior_impact: decisionArbitration.behavior_impact || 'none',
+      best_candidate_id: decisionArbitration.best_candidate_id || null,
+      legacy_candidate_id: decisionArbitration.legacy_candidate_id || null,
+      recommended_runtime_switch: Boolean(decisionArbitration.recommended_runtime_switch),
+      ranking_count: normalizeArray(decisionArbitration.ranking).length,
+    },
     selection_trace: selectionTrace,
     generated_at: new Date().toISOString(),
   };
