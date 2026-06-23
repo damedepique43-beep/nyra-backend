@@ -1089,10 +1089,11 @@ function resolveReminderSchedule(text, datetimeHint) {
     };
   }
 
-  if (datetimeHint === 'tomorrow' && explicitTime) {
+  if (datetimeHint === 'tomorrow') {
+    const time = explicitTime || { hour: 9, minute: 0 };
     return {
-      scheduled_at: buildParisDateAt(explicitTime.hour, explicitTime.minute, 1),
-      precision: 'exact',
+      scheduled_at: buildParisDateAt(time.hour, time.minute, 1),
+      precision: explicitTime ? 'exact' : 'default_time',
       has_exact_date: true,
     };
   }
