@@ -964,34 +964,131 @@ function normalizeCandidateDecisionList(candidateDecisions) {
   });
 }
 
+
+function buildDecisionSelector(scoredCandidates = []) {
+  // Decision Selector V1
+  // Responsabilité : produire une trace explicite de sélection sans piloter
+  // encore le choix final. En V1, chooseBestDecision conserve le comportement
+  // validé : première décision candidate valide.
+  const candidates = normalizeCandidateDecisionList(scoredCandidates);
+  const selectionTrace = candidates.map((candidateDecision, index) => {
+    const decisionConstraints = normalizeObject(candidateDecision.decision_constraints);
+    const decisionScore = normalizeObject(candidateDecision.decision_score);
+    const score = normalizeNumber(decisionScore.score, 0);
+    const shouldExecute = candidateDecision.should_execute !== false;
+    const requiresClarification = Boolean(decisionConstraints.requires_clarification);
+    const maxCognitiveCost = normalizeCognitiveCostLevel(decisionConstraints.max_cognitive_cost, 7);
+    const cognitiveCostLevel = normalizeCognitiveCostLevel(
+      candidateDecision.decision_profile?.cognitive_cost?.level,
+      3
+    );
+    const exceedsCognitiveCost = cognitiveCostLevel > maxCognitiveCost;
+    const eligible = Boolean(
+      shouldExecute &&
+      !requiresClarification &&
+      !exceedsCognitiveCost
+    );
+
+    const rejectionReasons = [];
+
+    if (!shouldExecute) rejectionReasons.push('should_execute_false');
+    if (requiresClarification) rejectionReasons.push('requires_clarification');
+    if (exceedsCognitiveCost) rejectionReasons.push('cognitive_cost_exceeded');
+
+    return {
+      candidate_id: candidateDecision.id || null,
+      index,
+      decision_type: candidateDecision.decision_type || null,
+      should_execute: shouldExecute,
+      score,
+      score_level: decisionScore.level || null,
+      eligible,
+      rejection_reasons: rejectionReasons,
+      constraints: {
+        allow_selection: decisionConstraints.allow_selection ?? null,
+        allow_prioritization: decisionConstraints.allow_prioritization ?? null,
+        allow_comparison: decisionConstraints.allow_comparison ?? null,
+        max_cognitive_cost: maxCognitiveCost,
+        requires_clarification: requiresClarification,
+        reason: decisionConstraints.reason || null,
+      },
+    };
+  });
+
+  const eligibleTraces = selectionTrace.filter(trace => trace.eligible);
+  const informativeSelectedTrace = [...eligibleTraces]
+    .sort((a, b) => b.score - a.score)[0] || selectionTrace[0] || null;
+  const legacySelectedTrace = selectionTrace[0] || null;
+
+  return {
+    contract: 'decision-selector-v1',
+    source: 'nyra_decision_engine',
+    behavior_impact: 'none',
+    mode: 'informative_only',
+    evaluated_candidates: candidates.length,
+    eligible_candidates: eligibleTraces.length,
+    rejected_candidates: Math.max(0, selectionTrace.length - eligibleTraces.length),
+    selected_candidate_id: informativeSelectedTrace?.candidate_id || null,
+    legacy_selected_candidate_id: legacySelectedTrace?.candidate_id || null,
+    selection_strategy: 'informative_best_eligible_score',
+    runtime_selection_strategy: 'first_valid_candidate_preserved',
+    selection_reason: informativeSelectedTrace
+      ? 'Sélecteur informatif : meilleure candidate éligible selon le score, sans impact sur le choix runtime.'
+      : 'Aucune candidate disponible pour la sélection informative.',
+    selection_trace: selectionTrace,
+    generated_at: new Date().toISOString(),
+  };
+}
+
+function summarizeDecisionSelector(decisionSelector) {
+  const safeSelector = normalizeObject(decisionSelector);
+
+  return {
+    contract: safeSelector.contract || 'decision-selector-v1',
+    mode: safeSelector.mode || 'informative_only',
+    evaluated_candidates: safeSelector.evaluated_candidates ?? 0,
+    eligible_candidates: safeSelector.eligible_candidates ?? 0,
+    rejected_candidates: safeSelector.rejected_candidates ?? 0,
+    selected_candidate_id: safeSelector.selected_candidate_id || null,
+    legacy_selected_candidate_id: safeSelector.legacy_selected_candidate_id || null,
+    runtime_selection_strategy: safeSelector.runtime_selection_strategy || null,
+  };
+}
+
 function chooseBestDecision(candidateDecisions, cognitiveContext = {}) {
-  // Nyra Decision Engine V1.5
-  // Responsabilité : consommer un contrat DecisionInput issu du Reasoning Engine
-  // et enrichir les décisions candidates avec un score cognitif.
-  // Important : le contrat et le score sont calculés, mais ils ne pilotent pas encore le choix.
+  // Nyra Decision Engine V1.7
+  // Responsabilité : enrichir les décisions candidates avec DecisionInput,
+  // DecisionProfile, DecisionConstraints, DecisionScore et DecisionSelector.
+  // Important : le DecisionSelector est informatif ; le choix runtime conserve
+  // le comportement validé en V1 : première décision candidate valide.
   const candidates = normalizeCandidateDecisionList(candidateDecisions);
   const scoredCandidates = candidates.map(candidateDecision => {
     return attachDecisionScore(candidateDecision, cognitiveContext);
   }).filter(Boolean);
+  const decisionSelector = buildDecisionSelector(scoredCandidates);
   const chosenDecision = scoredCandidates[0] || null;
 
   if (!chosenDecision) {
     return {
       id: crypto.randomUUID(),
       source: 'chat',
-      decision_layer: 'nyra_decision_engine_v1_5',
+      decision_layer: 'nyra_decision_engine_v1_7',
       decision_type: 'no_action',
       should_execute: false,
       candidate_action: null,
       normalized_decision: null,
       candidate_count: 0,
       scored_candidate_count: 0,
-      selection_strategy: 'first_valid_candidate_with_decision_input',
+      decision_selector: decisionSelector,
+      decision_selector_summary: summarizeDecisionSelector(decisionSelector),
+      selection_strategy: 'first_valid_candidate_with_decision_selector_trace',
       selection_reason: 'Aucune décision candidate disponible.',
       selection_metadata: {
         scoring_available: true,
+        decision_selector_available: true,
+        decision_selector_contract: decisionSelector.contract,
         behavior_impact: 'none',
-        note: 'Aucun score utile sans décision candidate.',
+        note: 'Aucun score utile sans décision candidate. DecisionSelector produit uniquement une trace informative.',
       },
       cognitive_context: cognitiveContext || {},
       created_at: new Date().toISOString(),
@@ -1000,9 +1097,11 @@ function chooseBestDecision(candidateDecisions, cognitiveContext = {}) {
 
   return {
     ...chosenDecision,
-    decision_layer: 'nyra_decision_engine_v1_5',
+    decision_layer: 'nyra_decision_engine_v1_7',
     candidate_count: candidates.length,
     scored_candidate_count: scoredCandidates.length,
+    decision_selector: decisionSelector,
+    decision_selector_summary: summarizeDecisionSelector(decisionSelector),
     scored_candidates: scoredCandidates.map(candidateDecision => ({
       id: candidateDecision.id || null,
       decision_type: candidateDecision.decision_type || null,
@@ -1019,8 +1118,8 @@ function chooseBestDecision(candidateDecisions, cognitiveContext = {}) {
       max_cognitive_cost: candidateDecision.decision_constraints?.max_cognitive_cost ?? null,
       allow_selection: candidateDecision.decision_constraints?.allow_selection ?? null,
     })),
-    selection_strategy: 'first_valid_candidate_with_decision_input',
-    selection_reason: 'Comportement V1 conservé : la première décision candidate valide est choisie. Le DecisionInput, le DecisionProfile, le DecisionConstraints, le CognitiveCost et le score sont seulement informatifs en V1.6.',
+    selection_strategy: 'first_valid_candidate_with_decision_selector_trace',
+    selection_reason: 'Comportement V1 conservé : la première décision candidate valide est choisie. Le DecisionSelector V1 produit seulement une trace informative en V1.7.',
     cognitive_context: cognitiveContext || {},
     selected_at: new Date().toISOString(),
   };
@@ -1059,4 +1158,5 @@ module.exports = {
   buildDecisionProfile,
   buildCognitiveCostProfile,
   buildDecisionConstraints,
+  buildDecisionSelector,
 };
