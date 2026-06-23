@@ -1057,6 +1057,8 @@ function buildDecisionSelector(scoredCandidates = []) {
 
 function summarizeDecisionSelector(decisionSelector) {
   const safeSelector = normalizeObject(decisionSelector);
+  const arbitrationSummary = normalizeObject(safeSelector.decision_arbitration_summary);
+  const runtimeGuardrailSummary = normalizeObject(safeSelector.runtime_guardrail_summary);
 
   return {
     contract: safeSelector.contract || 'decision-selector-v1',
@@ -1067,27 +1069,161 @@ function summarizeDecisionSelector(decisionSelector) {
     selected_candidate_id: safeSelector.selected_candidate_id || null,
     legacy_selected_candidate_id: safeSelector.legacy_selected_candidate_id || null,
     runtime_selection_strategy: safeSelector.runtime_selection_strategy || null,
+    arbitration_best_candidate_id: arbitrationSummary.best_candidate_id || null,
+    runtime_arbitration_enabled: Boolean(runtimeGuardrailSummary.enabled),
+    runtime_arbitration_reason: runtimeGuardrailSummary.reason || null,
+  };
+}
+
+function findScoredCandidateById(scoredCandidates = [], candidateId = '') {
+  const normalizedCandidateId = normalizeText(candidateId);
+
+  if (!normalizedCandidateId) return null;
+
+  return normalizeArray(scoredCandidates).find(candidateDecision => {
+    return normalizeText(candidateDecision?.id || '') === normalizedCandidateId;
+  }) || null;
+}
+
+function buildRuntimeArbitrationDecision({ scoredCandidates = [], decisionSelector = {} } = {}) {
+  // Decision Selector V2
+  // Responsabilité : autoriser une bascule runtime très contrôlée vers
+  // l'arbitrage uniquement lorsque les garde-fous cognitifs sont satisfaits.
+  // En cas de doute, le comportement historique reste prioritaire.
+  const candidates = normalizeCandidateDecisionList(scoredCandidates);
+  const legacyCandidate = candidates[0] || null;
+  const arbitration = normalizeObject(decisionSelector.decision_arbitration);
+  const ranking = normalizeArray(arbitration.ranking);
+  const bestRanking = ranking[0] || null;
+  const bestCandidate = findScoredCandidateById(candidates, bestRanking?.candidate_id) || legacyCandidate;
+  const legacyRanking = legacyCandidate
+    ? ranking.find(item => item.candidate_id === legacyCandidate.id) || null
+    : null;
+  const bestScore = normalizeNumber(bestRanking?.score ?? bestCandidate?.decision_score?.score, 0);
+  const legacyScore = normalizeNumber(legacyRanking?.score ?? legacyCandidate?.decision_score?.score, 0);
+  const bestPriority = normalizeNumber(bestRanking?.arbitration_priority, bestScore);
+  const legacyPriority = normalizeNumber(legacyRanking?.arbitration_priority, legacyScore);
+  const priorityGap = bestPriority - legacyPriority;
+  const bestConstraints = normalizeObject(bestCandidate?.decision_constraints);
+  const bestProfile = normalizeObject(bestCandidate?.decision_profile);
+  const bestCognitiveCost = normalizeObject(bestProfile.cognitive_cost);
+  const bestCognitiveCostLevel = normalizeCognitiveCostLevel(bestCognitiveCost.level, 3);
+  const bestMaxCognitiveCost = normalizeCognitiveCostLevel(bestConstraints.max_cognitive_cost, 7);
+  const sameAsLegacy = Boolean(legacyCandidate && bestCandidate && legacyCandidate.id === bestCandidate.id);
+  const bestIsEligible = Boolean(bestRanking?.eligible);
+  const bestRequiresClarification = Boolean(bestConstraints.requires_clarification);
+  const bestExceedsCognitiveCost = bestCognitiveCostLevel > bestMaxCognitiveCost;
+  const legacyIsWeakOrBlocked = Boolean(
+    legacyRanking?.eligible === false ||
+    normalizeArray(legacyRanking?.rejection_reasons).length > 0 ||
+    legacyScore < 55
+  );
+  const bestIsStrongEnough = bestScore >= 80 && bestPriority >= 82;
+  const safeToSwitchFromLegacy = Boolean(
+    sameAsLegacy ||
+    (bestIsStrongEnough && priorityGap >= 12 && legacyIsWeakOrBlocked)
+  );
+  const enabled = Boolean(
+    bestCandidate &&
+    bestIsEligible &&
+    !bestRequiresClarification &&
+    !bestExceedsCognitiveCost &&
+    bestCandidate.should_execute !== false &&
+    safeToSwitchFromLegacy
+  );
+  const rejectionReasons = [];
+
+  if (!bestCandidate) rejectionReasons.push('no_arbitrated_candidate');
+  if (!bestIsEligible) rejectionReasons.push('best_candidate_not_eligible');
+  if (bestRequiresClarification) rejectionReasons.push('best_candidate_requires_clarification');
+  if (bestExceedsCognitiveCost) rejectionReasons.push('best_candidate_cognitive_cost_exceeded');
+  if (bestCandidate?.should_execute === false) rejectionReasons.push('best_candidate_should_execute_false');
+  if (!safeToSwitchFromLegacy) rejectionReasons.push('runtime_switch_not_safe_enough');
+
+  return {
+    contract: 'decision-selector-v2-runtime-guardrails',
+    behavior_impact: enabled && !sameAsLegacy ? 'controlled_runtime_selection' : 'legacy_runtime_preserved',
+    enabled,
+    selected_candidate_id: enabled ? bestCandidate?.id || null : legacyCandidate?.id || null,
+    arbitrated_candidate_id: bestCandidate?.id || null,
+    legacy_candidate_id: legacyCandidate?.id || null,
+    same_as_legacy: sameAsLegacy,
+    runtime_selection_strategy: enabled
+      ? sameAsLegacy
+        ? 'arbitration_confirms_legacy_candidate'
+        : 'guarded_arbitration_candidate'
+      : 'legacy_first_candidate_fallback',
+    reason: enabled
+      ? sameAsLegacy
+        ? 'L’arbitrage confirme la candidate historique ; aucun changement de comportement réel.'
+        : 'L’arbitrage runtime est autorisé car la candidate est éligible, forte, peu risquée et la candidate historique est fragile ou bloquée.'
+      : 'Le comportement historique est conservé car au moins un garde-fou de bascule n’est pas satisfait.',
+    guardrails: {
+      best_candidate_eligible: bestIsEligible,
+      best_candidate_score: bestScore,
+      best_candidate_priority: bestPriority,
+      best_candidate_cognitive_cost_level: bestCognitiveCostLevel,
+      best_candidate_max_cognitive_cost: bestMaxCognitiveCost,
+      best_candidate_requires_clarification: bestRequiresClarification,
+      best_candidate_exceeds_cognitive_cost: bestExceedsCognitiveCost,
+      legacy_candidate_score: legacyScore,
+      legacy_candidate_priority: legacyPriority,
+      priority_gap: priorityGap,
+      legacy_is_weak_or_blocked: legacyIsWeakOrBlocked,
+      same_as_legacy: sameAsLegacy,
+      best_is_strong_enough: bestIsStrongEnough,
+      safe_to_switch_from_legacy: safeToSwitchFromLegacy,
+    },
+    rejection_reasons: enabled ? [] : rejectionReasons,
+    generated_at: new Date().toISOString(),
+  };
+}
+
+function summarizeRuntimeArbitrationDecision(runtimeArbitrationDecision) {
+  const safeDecision = normalizeObject(runtimeArbitrationDecision);
+
+  return {
+    contract: safeDecision.contract || 'decision-selector-v2-runtime-guardrails',
+    enabled: Boolean(safeDecision.enabled),
+    behavior_impact: safeDecision.behavior_impact || 'legacy_runtime_preserved',
+    selected_candidate_id: safeDecision.selected_candidate_id || null,
+    arbitrated_candidate_id: safeDecision.arbitrated_candidate_id || null,
+    legacy_candidate_id: safeDecision.legacy_candidate_id || null,
+    runtime_selection_strategy: safeDecision.runtime_selection_strategy || null,
+    reason: safeDecision.reason || null,
+    rejection_reasons: normalizeArray(safeDecision.rejection_reasons),
   };
 }
 
 function chooseBestDecision(candidateDecisions, cognitiveContext = {}) {
-  // Nyra Decision Engine V1.7
+  // Nyra Decision Engine V1.8
   // Responsabilité : enrichir les décisions candidates avec DecisionInput,
-  // DecisionProfile, DecisionConstraints, DecisionScore et DecisionSelector.
-  // Important : le DecisionSelector est informatif ; le choix runtime conserve
-  // le comportement validé en V1 : première décision candidate valide.
+  // DecisionProfile, DecisionConstraints, DecisionScore, DecisionSelector et
+  // DecisionArbitrator. Le DecisionSelector V2 peut autoriser une bascule runtime
+  // uniquement lorsque des garde-fous très stricts sont satisfaits.
   const candidates = normalizeCandidateDecisionList(candidateDecisions);
   const scoredCandidates = candidates.map(candidateDecision => {
     return attachDecisionScore(candidateDecision, cognitiveContext);
   }).filter(Boolean);
   const decisionSelector = buildDecisionSelector(scoredCandidates);
-  const chosenDecision = scoredCandidates[0] || null;
+  const runtimeArbitrationDecision = buildRuntimeArbitrationDecision({
+    scoredCandidates,
+    decisionSelector,
+  });
+  const chosenDecision = runtimeArbitrationDecision.enabled
+    ? findScoredCandidateById(scoredCandidates, runtimeArbitrationDecision.selected_candidate_id) || scoredCandidates[0] || null
+    : scoredCandidates[0] || null;
+  const runtimeArbitrationSummary = summarizeRuntimeArbitrationDecision(runtimeArbitrationDecision);
+
+  decisionSelector.runtime_guardrail_decision = runtimeArbitrationDecision;
+  decisionSelector.runtime_guardrail_summary = runtimeArbitrationSummary;
+  decisionSelector.runtime_selection_strategy = runtimeArbitrationDecision.runtime_selection_strategy;
 
   if (!chosenDecision) {
     return {
       id: crypto.randomUUID(),
       source: 'chat',
-      decision_layer: 'nyra_decision_engine_v1_7',
+      decision_layer: 'nyra_decision_engine_v1_8',
       decision_type: 'no_action',
       should_execute: false,
       candidate_action: null,
@@ -1096,14 +1232,18 @@ function chooseBestDecision(candidateDecisions, cognitiveContext = {}) {
       scored_candidate_count: 0,
       decision_selector: decisionSelector,
       decision_selector_summary: summarizeDecisionSelector(decisionSelector),
-      selection_strategy: 'first_valid_candidate_with_decision_selector_trace',
+      runtime_arbitration_decision: runtimeArbitrationDecision,
+      runtime_arbitration_summary: runtimeArbitrationSummary,
+      selection_strategy: 'decision_selector_v2_guarded_arbitration',
       selection_reason: 'Aucune décision candidate disponible.',
       selection_metadata: {
         scoring_available: true,
         decision_selector_available: true,
         decision_selector_contract: decisionSelector.contract,
+        runtime_arbitration_available: true,
+        runtime_arbitration_enabled: false,
         behavior_impact: 'none',
-        note: 'Aucun score utile sans décision candidate. DecisionSelector produit uniquement une trace informative.',
+        note: 'Aucun score utile sans décision candidate. DecisionSelector V2 conserve un fallback historique.',
       },
       cognitive_context: cognitiveContext || {},
       created_at: new Date().toISOString(),
@@ -1112,11 +1252,13 @@ function chooseBestDecision(candidateDecisions, cognitiveContext = {}) {
 
   return {
     ...chosenDecision,
-    decision_layer: 'nyra_decision_engine_v1_7',
+    decision_layer: 'nyra_decision_engine_v1_8',
     candidate_count: candidates.length,
     scored_candidate_count: scoredCandidates.length,
     decision_selector: decisionSelector,
     decision_selector_summary: summarizeDecisionSelector(decisionSelector),
+    runtime_arbitration_decision: runtimeArbitrationDecision,
+    runtime_arbitration_summary: runtimeArbitrationSummary,
     scored_candidates: scoredCandidates.map(candidateDecision => ({
       id: candidateDecision.id || null,
       decision_type: candidateDecision.decision_type || null,
@@ -1133,8 +1275,8 @@ function chooseBestDecision(candidateDecisions, cognitiveContext = {}) {
       max_cognitive_cost: candidateDecision.decision_constraints?.max_cognitive_cost ?? null,
       allow_selection: candidateDecision.decision_constraints?.allow_selection ?? null,
     })),
-    selection_strategy: 'first_valid_candidate_with_decision_selector_trace',
-    selection_reason: 'Comportement V1 conservé : la première décision candidate valide est choisie. Le DecisionSelector V1 produit seulement une trace informative en V1.7.',
+    selection_strategy: runtimeArbitrationDecision.runtime_selection_strategy,
+    selection_reason: runtimeArbitrationDecision.reason,
     cognitive_context: cognitiveContext || {},
     selected_at: new Date().toISOString(),
   };
