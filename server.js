@@ -1225,6 +1225,7 @@ function actionToBucket(actionType) {
   if (actionType === 'classify_as_idea') return 'ideas';
   if (actionType === 'idea_to_task') return 'tasks';
   if (actionType === 'add_to_roadmap') return 'projects';
+  if (actionType === 'create_project') return 'projects';
   if (actionType === 'create_project_spec') return 'projects';
   return 'actions';
 }
@@ -1242,6 +1243,7 @@ function buildNextStep(actionType, datetimeHint) {
   if (actionType === 'classify_as_idea') return 'Garder cette idée pour la développer plus tard.';
   if (actionType === 'idea_to_task') return 'Faire cette tâche quand elle devient prioritaire.';
   if (actionType === 'add_to_roadmap') return 'Revoir cette entrée lors de la prochaine session projet.';
+  if (actionType === 'create_project') return 'Projet créé. Tu pourras ensuite y ajouter des idées, tâches et documents.';
   if (actionType === 'create_project_spec') return 'Structurer cette idée en cahier des charges.';
 
   return 'Action enregistrée.';
@@ -1725,12 +1727,68 @@ function retryActionInStore({ store, userId, actionId, reason, metadata }) {
   });
 }
 
+function extractProjectNameFromProjectCreationRequest(text) {
+  const normalizedText = normalizeText(text);
+
+  if (!normalizedText) return '';
+
+  const patterns = [
+    /(?:crée|cree|créé|creer|créer|ajoute|ouvrir|ouvre)\s+(?:un\s+|une\s+)?projet\s+(?:pour\s+|sur\s+|concernant\s+|autour\s+de\s+|à propos de\s+|a propos de\s+)?(.+)$/i,
+    /(?:nouveau\s+projet|nouvelle\s+idée\s+de\s+projet)\s*(?:pour\s+|sur\s+|concernant\s+|autour\s+de\s+|à propos de\s+|a propos de\s+)?(.+)$/i,
+    /projet\s*[:—-]\s*(.+)$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalizedText.match(pattern);
+
+    if (match?.[1]) {
+      const candidate = normalizeText(match[1])
+        .replace(/^(?:pour\s+|sur\s+|concernant\s+|autour\s+de\s+|à propos de\s+|a propos de\s+)/i, '')
+        .replace(/[.,!?;:]+$/g, '')
+        .trim();
+
+      if (candidate && !isReservedAutoProjectName(candidate)) {
+        return candidate.length > 80 ? `${candidate.slice(0, 80)}…` : candidate;
+      }
+    }
+  }
+
+  return '';
+}
+
+function isProjectCreationRequest(text) {
+  const lower = normalizeText(text).toLowerCase();
+
+  return Boolean(
+    extractProjectNameFromProjectCreationRequest(text) ||
+    (
+      includesAny(lower, [
+        'crée un projet',
+        'cree un projet',
+        'créé un projet',
+        'créer un projet',
+        'creer un projet',
+        'nouveau projet',
+        'ouvre un projet',
+        'ouvrir un projet',
+      ]) && includesAny(lower, ['pour', 'sur', 'concernant', 'autour de', 'à propos', 'a propos'])
+    )
+  );
+}
+
 function detectKnownProjectName(text) {
+  const projectCreationName = extractProjectNameFromProjectCreationRequest(text);
+
+  if (projectCreationName) {
+    return projectCreationName;
+  }
+
   const lower = normalizeText(text).toLowerCase();
   const explicitProjectMatch = lower.match(/projet\s+([a-z0-9àâçéèêëîïôûùüÿñæœ' -]{2,40})/i);
 
   if (explicitProjectMatch && explicitProjectMatch[1]) {
     const explicitProjectName = normalizeText(explicitProjectMatch[1])
+      .replace(/^(?:pour\s+|sur\s+|concernant\s+|autour\s+de\s+|à propos de\s+|a propos de\s+)/i, '')
       .replace(/[.,!?;:]+$/g, '')
       .trim();
 
@@ -2114,31 +2172,36 @@ function normalizeAIUnderstanding(localAnalysis, aiUnderstanding) {
     !hasOperationalRequest &&
     (suggestedBucket === 'journal' || type === 'emotion' || aiUnderstanding.response_level === 'reflection')
   );
+  const isExplicitProjectCreation = isProjectCreationRequest(localAnalysis.raw_text || '');
 
   return {
     ...localAnalysis,
-    type: shouldKeepReflectionFirst ? 'emotion' : type,
-    is_task: shouldKeepReflectionFirst ? false : Boolean(aiUnderstanding.is_task ?? localAnalysis.is_task),
+    type: isExplicitProjectCreation ? 'project_note' : (shouldKeepReflectionFirst ? 'emotion' : type),
+    is_task: shouldKeepReflectionFirst || isExplicitProjectCreation ? false : Boolean(aiUnderstanding.is_task ?? localAnalysis.is_task),
     is_idea: Boolean(aiUnderstanding.is_idea ?? localAnalysis.is_idea),
     is_emotion: isEmotion,
-    is_project: Boolean(aiUnderstanding.is_project ?? localAnalysis.is_project ?? projectName),
+    is_project: isExplicitProjectCreation || Boolean(aiUnderstanding.is_project ?? localAnalysis.is_project ?? projectName),
     project_name: projectName,
     urgency: ['low', 'normal', 'high'].includes(aiUnderstanding.urgency)
       ? aiUnderstanding.urgency
       : localAnalysis.urgency,
-    suggested_bucket: shouldKeepReflectionFirst ? 'journal' : suggestedBucket,
+    suggested_bucket: isExplicitProjectCreation ? 'projects' : (shouldKeepReflectionFirst ? 'journal' : suggestedBucket),
     datetime_hint: normalizeText(aiUnderstanding.datetime_hint || '') || localAnalysis.datetime_hint || null,
-    response_level: shouldKeepReflectionFirst
-      ? 'reflection'
+    response_level: isExplicitProjectCreation
+      ? 'project'
       : (
-          ['capture', 'reflection', 'project'].includes(aiUnderstanding.response_level)
-            ? aiUnderstanding.response_level
+          shouldKeepReflectionFirst
+            ? 'reflection'
             : (
-                localAnalysis.is_emotion
-                  ? 'reflection'
-                  : localAnalysis.is_project
-                    ? 'project'
-                    : 'capture'
+                ['capture', 'reflection', 'project'].includes(aiUnderstanding.response_level)
+                  ? aiUnderstanding.response_level
+                  : (
+                      localAnalysis.is_emotion
+                        ? 'reflection'
+                        : localAnalysis.is_project
+                          ? 'project'
+                          : 'capture'
+                    )
               )
         ),
     user_intent: normalizeText(aiUnderstanding.user_intent || ''),
@@ -2258,6 +2321,14 @@ function analyzeMessage(message) {
     conversation_intent: detectConversationIntent(text),
     raw_text: text,
   };
+
+  if (isProjectCreationRequest(text)) {
+    analysis.type = 'project_note';
+    analysis.is_project = true;
+    analysis.suggested_bucket = 'projects';
+    analysis.response_level = 'project';
+    analysis.tags.push('projet', 'création-projet');
+  }
 
   if (isReflectionResumeRequest(text)) {
     analysis.type = 'emotion';
@@ -2403,6 +2474,14 @@ function hasExplicitOperationalRequest(text) {
     'rappelle moi',
     'crée un rappel',
     'créer un rappel',
+    'crée un projet',
+    'cree un projet',
+    'créé un projet',
+    'créer un projet',
+    'creer un projet',
+    'nouveau projet',
+    'ouvre un projet',
+    'ouvrir un projet',
     'ajoute ça à mes priorités',
     'ajoute ça à aujourd’hui',
     "ajoute ça à aujourd'hui",
@@ -2449,6 +2528,34 @@ function detectAction(message, userId, analysis) {
 
   if (shouldPreventAutomaticActionForReflection(text, analysis)) {
     return null;
+  }
+
+  if (isProjectCreationRequest(text)) {
+    const projectName = extractProjectNameFromProjectCreationRequest(text) || analysis?.project_name || cleanActionTitle(text);
+
+    if (projectName && !isReservedAutoProjectName(projectName)) {
+      analysis.is_project = true;
+      analysis.type = 'project_note';
+      analysis.suggested_bucket = 'projects';
+      analysis.response_level = 'project';
+      analysis.project_name = projectName;
+      analysis.tags = uniqueArray([
+        ...(Array.isArray(analysis.tags) ? analysis.tags : []),
+        'projet',
+        'création-projet',
+        normalizeKey(projectName),
+      ]);
+
+      return buildStructuredAction({
+        userId,
+        message,
+        targetOverride: projectName,
+        actionType: 'create_project',
+        label: 'Créer un projet',
+        status: 'done',
+        analysis,
+      });
+    }
   }
 
   if (isShoppingListRequest(lower)) {
@@ -2715,6 +2822,7 @@ function getStoredItemStatusForAction(action) {
   if (actionType === 'add_to_shopping_list') return 'active';
   if (actionType === 'create_reminder') return 'active';
   if (actionType === 'add_to_today') return 'active';
+  if (actionType === 'create_project') return 'active';
   if (actionType === 'idea_to_task') return 'active';
 
   return action?.status || 'captured';
@@ -5211,6 +5319,7 @@ function buildActionReply(action) {
   if (action.action_type === 'classify_as_idea') return '✔ Classé dans tes idées.';
   if (action.action_type === 'idea_to_task') return '✔ Transformé en tâche concrète.';
   if (action.action_type === 'add_to_roadmap') return '✔ Ajouté à la roadmap projet.';
+  if (action.action_type === 'create_project') return `✔ Projet créé : ${action.title || action.target}.`;
   if (action.action_type === 'create_project_spec') {
     return '✔ Idée capturée. Prochaine étape : la transformer en cahier des charges structuré.';
   }
