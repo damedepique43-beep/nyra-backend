@@ -2,7 +2,6 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
-const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -89,8 +88,6 @@ const openai = new OpenAI({
 
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
-const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
-const MAX_ATTACHMENT_UPLOAD_BYTES = Number(process.env.MAX_ATTACHMENT_UPLOAD_BYTES || 50 * 1024 * 1024);
 
 const STORE_VERSION = 'proactive-assistant-v2';
 
@@ -99,82 +96,6 @@ function ensureDir(dirPath) {
     fs.mkdirSync(dirPath, { recursive: true });
   }
 }
-
-function getFileExtensionFromName(value) {
-  const fileName = String(value || '').trim();
-  const lastDotIndex = fileName.lastIndexOf('.');
-
-  if (lastDotIndex >= 0 && lastDotIndex < fileName.length - 1) {
-    return fileName.slice(lastDotIndex + 1).toLowerCase().replace(/[^a-z0-9]+/g, '');
-  }
-
-  return '';
-}
-
-function buildSafeUploadFileName(originalName) {
-  const extension = getFileExtensionFromName(originalName);
-  const baseName = path.basename(String(originalName || 'fichier'))
-    .replace(/\.[^.]+$/, '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-zA-Z0-9-_]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80) || 'fichier';
-
-  const uniqueSuffix = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
-
-  return extension
-    ? `${baseName}-${uniqueSuffix}.${extension}`
-    : `${baseName}-${uniqueSuffix}`;
-}
-
-function normalizeUploadedAttachment(file, userId) {
-  const safeFile = file && typeof file === 'object' ? file : {};
-  const attachmentId = crypto.randomUUID();
-  const originalName = String(safeFile.originalname || safeFile.filename || 'fichier');
-  const mimeType = String(safeFile.mimetype || 'application/octet-stream');
-  const extension = getFileExtensionFromName(originalName) || getFileExtensionFromName(safeFile.filename || '');
-  const relativePath = safeFile.filename ? path.join('data', 'uploads', safeFile.filename) : null;
-
-  return {
-    id: attachmentId,
-    user_id: userId || 'local-user',
-    name: originalName,
-    stored_name: safeFile.filename || null,
-    mimeType,
-    mime_type: mimeType,
-    extension: extension || null,
-    size: Number(safeFile.size || 0),
-    storedPath: relativePath,
-    stored_path: relativePath,
-    source: 'conversation_upload',
-    storage: 'local_backend',
-    status: 'uploaded',
-    created_at: nowIso(),
-  };
-}
-
-const attachmentUploadStorage = multer.diskStorage({
-  destination: (req, file, callback) => {
-    try {
-      ensureDir(UPLOADS_DIR);
-      callback(null, UPLOADS_DIR);
-    } catch (error) {
-      callback(error);
-    }
-  },
-  filename: (req, file, callback) => {
-    callback(null, buildSafeUploadFileName(file.originalname));
-  },
-});
-
-const uploadAttachmentMiddleware = multer({
-  storage: attachmentUploadStorage,
-  limits: {
-    fileSize: MAX_ATTACHMENT_UPLOAD_BYTES,
-    files: 1,
-  },
-});
 
 function nowIso() {
   return new Date().toISOString();
@@ -5694,13 +5615,33 @@ function buildSystemPrompt(analysis, memorySummary, cognitivePromptContext = nul
   const strongestGuidance = normalizeText(strongestStrategy?.guidance || '');
   const decisionProfile = extractDecisionProfileFromContext(cognitivePromptContext || {}) || {};
   const cognitiveCost = extractCognitiveCostFromDecisionProfile(decisionProfile);
-  const lowCognitiveCostCollect = isLowCognitiveCostCollectContext(cognitivePromptContext || {});
+  const currentMessageForProtocol = normalizeText(
+    analysis?.raw_text ||
+    analysis?.message ||
+    cognitivePromptContext?.message ||
+    cognitivePromptContext?.thought?.content ||
+    ''
+  );
+  const promptProtocolContext = {
+    ...(cognitivePromptContext || {}),
+    decision_profile: cognitivePromptContext?.decision_profile || decisionProfile || null,
+    analysis: analysis || cognitivePromptContext?.analysis || null,
+  };
+  const matchedBrainDumpProtocol = currentMessageForProtocol
+    ? isBrainDumpCollectRequest(currentMessageForProtocol, promptProtocolContext)
+    : false;
+  const lowCognitiveCostCollect = matchedBrainDumpProtocol
+    ? isLowCognitiveCostCollectContext(promptProtocolContext)
+    : false;
 
-  const isBrainDumpProtocol = (
-    selectedInterventionId === 'brain_dump' ||
-    strongestStrategyId === 'guided_brain_dump' ||
-    strongestConversationStyle === 'guided_dump' ||
-    lowCognitiveCostCollect
+  const isBrainDumpProtocol = Boolean(
+    matchedBrainDumpProtocol &&
+    (
+      selectedInterventionId === 'brain_dump' ||
+      strongestStrategyId === 'guided_brain_dump' ||
+      strongestConversationStyle === 'guided_dump' ||
+      lowCognitiveCostCollect
+    )
   );
 
   const executionContract = isBrainDumpProtocol
@@ -10939,58 +10880,6 @@ app.post('/store/reset', (req, res) => {
   res.json({
     ok: true,
     message: 'Mémoire locale Nyra réinitialisée',
-  });
-});
-
-
-app.post('/attachments/upload', (req, res) => {
-  uploadAttachmentMiddleware.single('file')(req, res, error => {
-    if (error) {
-      const isLimitError = error.code === 'LIMIT_FILE_SIZE';
-
-      return res.status(isLimitError ? 413 : 400).json({
-        ok: false,
-        error: isLimitError ? 'FILE_TOO_LARGE' : 'ATTACHMENT_UPLOAD_FAILED',
-        message: isLimitError
-          ? `Fichier trop volumineux. Limite actuelle : ${MAX_ATTACHMENT_UPLOAD_BYTES} octets.`
-          : 'Impossible de recevoir le fichier.',
-        details: error.message,
-      });
-    }
-
-    try {
-    const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
-
-    if (!req.file) {
-      return res.status(400).json({
-        ok: false,
-        error: 'FILE_MISSING',
-        message: 'Aucun fichier reçu.',
-      });
-    }
-
-    const attachment = normalizeUploadedAttachment(req.file, userId);
-
-    return res.json({
-      ok: true,
-      attachment,
-      upload: {
-        contract: 'attachment-upload-v1',
-        behavior_impact: 'none',
-        max_size_bytes: MAX_ATTACHMENT_UPLOAD_BYTES,
-        storage: 'local_backend',
-      },
-    });
-    } catch (error) {
-      console.error('❌ /attachments/upload error:', error.message);
-
-      return res.status(500).json({
-        ok: false,
-        error: 'ATTACHMENT_UPLOAD_FAILED',
-        message: 'Impossible de recevoir le fichier.',
-        details: error.message,
-      });
-    }
   });
 });
 
