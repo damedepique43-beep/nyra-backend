@@ -16,6 +16,7 @@
     "express": "^4.21.2",
     "google-auth-library": "^10.6.2",
     "googleapis": "^171.4.0",
+    "multer": "^2.2.0",
     "openai": "^5.12.2",
     "react-native-tts": "^4.1.1"
   },
