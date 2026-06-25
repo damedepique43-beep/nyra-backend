@@ -11771,7 +11771,6 @@ app.post('/chat', async (req, res) => {
 
     const reply = normalizeText(replyResult?.reply) || buildActionReply(action) || 'Je l’ai capté. Je le range dans Nyra.';
 
-    const saveChatExecutionStartedAt = Date.now();
     const saved = dispatchChatExecution({
       userId,
       message: thought.content,
@@ -11781,12 +11780,7 @@ app.post('/chat', async (req, res) => {
       decision,
       candidateDecision: chosenDecision,
     });
-    perf.mark('save_chat_execution', saveChatExecutionStartedAt, {
-      has_saved_item: Boolean(saved?.item),
-      has_saved_action: Boolean(saved?.action),
-    });
 
-    const buildResponseStartedAt = Date.now();
     const chatResponse = buildChatCognitiveResponse({
       thoughtOrchestration,
       reply,
