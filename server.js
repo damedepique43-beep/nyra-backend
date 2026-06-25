@@ -11110,6 +11110,81 @@ function saveChatAttachmentCapture({ userId, message, fileMetadata }) {
 
 
 
+function formatAttachmentPerformanceDuration(durationMs) {
+  const safeDuration = Number(durationMs || 0);
+
+  if (safeDuration >= 1000) {
+    return `${(safeDuration / 1000).toFixed(2)} s`;
+  }
+
+  return `${Math.round(safeDuration)} ms`;
+}
+
+function formatAttachmentPerformanceFileSize(sizeBytes) {
+  const safeSize = Number(sizeBytes || 0);
+
+  if (!safeSize) return 'inconnue';
+  if (safeSize >= 1024 * 1024) return `${(safeSize / (1024 * 1024)).toFixed(2)} Mo`;
+  if (safeSize >= 1024) return `${Math.round(safeSize / 1024)} Ko`;
+
+  return `${safeSize} octets`;
+}
+
+function findAttachmentPerformanceStep(steps, stepName) {
+  return (Array.isArray(steps) ? steps : []).find(step => step?.step === stepName) || null;
+}
+
+function buildAttachmentPerformanceReport(performanceSummary = {}) {
+  const steps = Array.isArray(performanceSummary.steps) ? performanceSummary.steps : [];
+  const segmentSteps = steps.filter(step => /^knowledge_extractor_segment_/.test(step?.step || ''));
+  const segmentLines = segmentSteps.length
+    ? segmentSteps.map(step => {
+        const label = String(step.step || '').replace('knowledge_extractor_segment_', 'Segment #');
+        const extractedCount = Number(step.extracted_objects_count || 0);
+        const status = step.ok ? 'ok' : (step.status || 'échec');
+        return `- ${label.padEnd(16, '.')} ${formatAttachmentPerformanceDuration(step.duration_ms)} (${status}, ${extractedCount} objets)`;
+      })
+    : ['- Aucun segment analysé'];
+
+  const keySteps = [
+    ['Extraction texte', findAttachmentPerformanceStep(steps, 'attachment_engine_build_thought')],
+    ['Segmentation', findAttachmentPerformanceStep(steps, 'document_segmenter')],
+    ['Fusion connaissances', findAttachmentPerformanceStep(steps, 'knowledge_merge')],
+    ['Sauvegarde connaissances', findAttachmentPerformanceStep(steps, 'save_knowledge_objects')],
+    ['Compréhension IA', findAttachmentPerformanceStep(steps, 'ai_understanding')],
+    ['Réponse finale', findAttachmentPerformanceStep(steps, 'reply_generation')],
+    ['Sauvegarde chat', findAttachmentPerformanceStep(steps, 'save_chat_execution')],
+  ];
+
+  const measuredSteps = steps.filter(step => typeof step?.duration_ms === 'number');
+  const slowestStep = measuredSteps
+    .slice()
+    .sort((a, b) => Number(b.duration_ms || 0) - Number(a.duration_ms || 0))[0] || null;
+
+  return [
+    '===== NYRA ATTACHMENT PERFORMANCE SUMMARY =====',
+    '',
+    'Document :',
+    `- Nom : ${performanceSummary.file_name || 'inconnu'}`,
+    `- Taille : ${formatAttachmentPerformanceFileSize(performanceSummary.file_size_bytes)}`,
+    `- Type : ${performanceSummary.mime_type || 'inconnu'}`,
+    `- Segments document : ${Number(performanceSummary.document_segment_count || 0)}`,
+    `- Connaissances sauvegardées : ${Number(performanceSummary.saved_knowledge_count || 0)}`,
+    '',
+    'Temps clés :',
+    ...keySteps.map(([label, step]) => {
+      return `- ${label.padEnd(24, '.')} ${step ? formatAttachmentPerformanceDuration(step.duration_ms) : 'non mesuré'}`;
+    }),
+    '',
+    'Segments analysés :',
+    ...segmentLines,
+    '',
+    `Étape la plus lente : ${slowestStep ? `${slowestStep.step} (${formatAttachmentPerformanceDuration(slowestStep.duration_ms)})` : 'non mesurée'}`,
+    `TOTAL : ${formatAttachmentPerformanceDuration(performanceSummary.total_ms)}`,
+    '===============================================',
+  ].join('\n');
+}
+
 function createAttachmentPerformanceTracker({ startedAt, fileMetadata, message }) {
   const requestStartedAt = Number(startedAt || Date.now());
   const steps = [];
@@ -11140,9 +11215,10 @@ function createAttachmentPerformanceTracker({ startedAt, fileMetadata, message }
   function log(extra = {}) {
     const payload = summary(extra);
 
-    console.log('===== NYRA ATTACHMENT PERF =====');
+    console.log(buildAttachmentPerformanceReport(payload));
+    console.log('===== NYRA ATTACHMENT PERF RAW =====');
     console.log(JSON.stringify(payload, null, 2));
-    console.log('================================');
+    console.log('====================================');
 
     return payload;
   }
@@ -11441,9 +11517,21 @@ async function extractKnowledgeObjectsFromDocumentSegments({
     }
   }
 
+  const mergeStartedAt = Date.now();
   const merged = mergeKnowledgeExtractionResults(segmentResults, {
     maxObjects: maxSegmentsToAnalyze * 12,
   });
+
+  if (perf?.mark) {
+    perf.mark('knowledge_merge', mergeStartedAt, {
+      ok: Boolean(merged?.ok),
+      status: merged?.status || null,
+      strategy: merged?.metadata?.strategy || null,
+      raw_extracted_count: Number(merged?.metadata?.raw_extracted_count || 0),
+      merged_count: Number(merged?.metadata?.merged_count || 0),
+      duplicate_count: Number(merged?.metadata?.duplicate_count || 0),
+    });
+  }
 
   return {
     ...merged,
