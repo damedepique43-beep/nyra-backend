@@ -6797,9 +6797,9 @@ app.post('/speak', async (req, res) => {
         message: speechResult.message,
         fallback_recommended: true,
         provider: 'elevenlabs',
-        perf: {
-          total_ms: Date.now() - startedAt,
-        },
+        perf: perf.log({
+          status: 'attachment_engine_failed_or_empty',
+        }),
       });
     }
 
@@ -11109,12 +11109,57 @@ function saveChatAttachmentCapture({ userId, message, fileMetadata }) {
 
 
 
+function createAttachmentPerformanceTracker({ startedAt, fileMetadata, message }) {
+  const requestStartedAt = Number(startedAt || Date.now());
+  const steps = [];
+
+  function mark(step, stepStartedAt, extra = {}) {
+    const durationMs = Date.now() - Number(stepStartedAt || Date.now());
+    steps.push({
+      step,
+      duration_ms: durationMs,
+      ...(extra && typeof extra === 'object' ? extra : {}),
+    });
+
+    return durationMs;
+  }
+
+  function summary(extra = {}) {
+    return {
+      total_ms: Date.now() - requestStartedAt,
+      file_name: fileMetadata?.name || null,
+      file_size_bytes: fileMetadata?.size_bytes || fileMetadata?.size || null,
+      mime_type: fileMetadata?.mime_type || fileMetadata?.mimeType || null,
+      has_user_instruction: Boolean(normalizeText(message || '')),
+      steps,
+      ...(extra && typeof extra === 'object' ? extra : {}),
+    };
+  }
+
+  function log(extra = {}) {
+    const payload = summary(extra);
+
+    console.log('===== NYRA ATTACHMENT PERF =====');
+    console.log(JSON.stringify(payload, null, 2));
+    console.log('================================');
+
+    return payload;
+  }
+
+  return {
+    mark,
+    summary,
+    log,
+  };
+}
+
 function shouldUseFastAttachmentReply(message) {
   const instruction = normalizeText(message || '');
 
-  if (!instruction) return true;
-
-  return !hasExplicitOperationalRequest(instruction);
+  // Fast reply uniquement quand l'utilisateur envoie un fichier seul.
+  // Dès qu'une consigne accompagne le fichier, Nyra doit répondre à cette consigne
+  // et ne pas se contenter d'une confirmation d'intégration.
+  return !instruction;
 }
 
 function buildFastAttachmentReply({ fileMetadata, savedKnowledge }) {
@@ -11130,10 +11175,22 @@ function buildFastAttachmentReply({ fileMetadata, savedKnowledge }) {
 
 
 async function processAttachmentJob({ userId, message, fileMetadata, buffer, startedAt }) {
+    const perf = createAttachmentPerformanceTracker({
+      startedAt,
+      fileMetadata,
+      message,
+    });
+
+    const attachmentThoughtStartedAt = Date.now();
     const attachmentThought = await buildAttachmentThought({
       buffer,
       fileMetadata,
       userMessage: message,
+    });
+    perf.mark('attachment_engine_build_thought', attachmentThoughtStartedAt, {
+      ok: Boolean(attachmentThought?.ok),
+      extracted_text_characters: Number(attachmentThought?.text?.length || 0),
+      has_thought_content: Boolean(attachmentThought?.thought_content),
     });
 
     if (!attachmentThought.ok || !attachmentThought.thought_content) {
@@ -11159,12 +11216,13 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
         item: saved.item,
         user_state: saved.user_state,
         attachment_engine: attachmentThought,
-        perf: {
-          total_ms: Date.now() - startedAt,
-        },
+        perf: perf.log({
+          status: 'attachment_engine_failed_or_empty',
+        }),
       }
     }
 
+    const knowledgeExtractionStartedAt = Date.now();
     const knowledgeExtraction = await extractKnowledgeObjectsFromText({
       openaiClient: openai,
       model: OPENAI_MODEL,
@@ -11178,7 +11236,14 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       maxTextCharacters: 12000,
       maxObjects: 12,
     });
+    perf.mark('knowledge_extractor', knowledgeExtractionStartedAt, {
+      ok: Boolean(knowledgeExtraction?.ok),
+      extracted_objects_count: Array.isArray(knowledgeExtraction?.objects) ? knowledgeExtraction.objects.length : 0,
+      max_text_characters: 12000,
+      max_objects: 12,
+    });
 
+    const saveKnowledgeStartedAt = Date.now();
     const savedKnowledge = knowledgeExtraction.ok && knowledgeExtraction.objects.length
       ? saveKnowledgeObjectsForUser({
           userId,
@@ -11193,6 +11258,9 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
           saved_count: 0,
           objects: [],
         };
+    perf.mark('save_knowledge_objects', saveKnowledgeStartedAt, {
+      saved_count: Number(savedKnowledge?.saved_count || 0),
+    });
 
     const thought = createThought({
       userId,
@@ -11208,6 +11276,7 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       },
     });
 
+    const thoughtOrchestrationStartedAt = Date.now();
     const thoughtOrchestration = await orchestrateThought({
       thought,
       source: 'chat_attachment',
@@ -11220,6 +11289,7 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
         knowledge_objects_saved: savedKnowledge.saved_count,
       },
     });
+    perf.mark('thought_orchestration', thoughtOrchestrationStartedAt);
 
     const memorySummary = getStoreSummary(userId);
 
@@ -11235,12 +11305,14 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       source: 'chat_attachment_instruction',
     };
 
+    const initialAnalysisStartedAt = Date.now();
     const initialAnalysis = typeof buildInitialChatAnalysis === 'function'
       ? buildInitialChatAnalysis({
           thought: attachmentAnalysisThought,
           buildLegacyAnalysis: analyzeMessage,
         })
       : analyzeMessage(attachmentAnalysisMessage);
+    perf.mark('initial_analysis', initialAnalysisStartedAt);
 
     const localAnalysis = enrichAnalysisWithPipelineContext(
       {
@@ -11265,12 +11337,19 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       thoughtOrchestration
     );
     const shouldUseFastReply = shouldUseFastAttachmentReply(attachmentInstruction);
+    const aiUnderstandingStartedAt = Date.now();
+    const aiUnderstandingAnalysis = shouldUseFastReply
+      ? localAnalysis
+      : await analyzeMessageWithAI(attachmentAnalysisMessage, localAnalysis, memorySummary);
+    perf.mark('ai_understanding', aiUnderstandingStartedAt, {
+      skipped: shouldUseFastReply,
+    });
+    const enrichAnalysisStartedAt = Date.now();
     const analysis = enrichAnalysisWithPipelineContext(
-      shouldUseFastReply
-        ? localAnalysis
-        : await analyzeMessageWithAI(attachmentAnalysisMessage, localAnalysis, memorySummary),
+      aiUnderstandingAnalysis,
       thoughtOrchestration
     );
+    perf.mark('enrich_analysis_context', enrichAnalysisStartedAt);
     analysis.source = 'file_attachment';
     analysis.attachment = fileMetadata;
     analysis.attachment_engine = attachmentThought.metadata;
@@ -11294,6 +11373,7 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
 
     // Une action ne peut venir que du message explicite accompagnant le fichier.
     // Les verbes présents dans le PDF ne doivent jamais déclencher create_project, rappel, tâche, etc.
+    const decisionPipelineStartedAt = Date.now();
     const detectedAction = attachmentInstruction && hasExplicitOperationalRequest(attachmentInstruction)
       ? detectAction(attachmentInstruction, userId, analysis)
       : null;
@@ -11320,7 +11400,12 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
     });
     const action = resolveExecutableActionFromCandidateDecision(chosenDecision);
     const suggestions = buildSuggestions(analysis, action);
+    perf.mark('decision_pipeline', decisionPipelineStartedAt, {
+      has_detected_action: Boolean(detectedAction),
+      has_executable_action: Boolean(action),
+    });
 
+    const executionPolicyStartedAt = Date.now();
     const executionPolicy = buildChatExecutionPolicy({
       message: attachmentAnalysisMessage,
       thoughtOrchestration,
@@ -11328,7 +11413,12 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       chosenDecision,
       analysis,
     });
+    perf.mark('execution_policy', executionPolicyStartedAt, {
+      mode: executionPolicy?.mode || null,
+      protocol: executionPolicy?.protocol || null,
+    });
 
+    const replyGenerationStartedAt = Date.now();
     const replyResult = shouldUseFastReply
       ? {
           reply: buildFastAttachmentReply({ fileMetadata, savedKnowledge }),
@@ -11367,9 +11457,15 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
                   },
                 })
               : null));
+    perf.mark('reply_generation', replyGenerationStartedAt, {
+      fast_reply_used: shouldUseFastReply,
+      deterministic_policy_used: !shouldUseFastReply && executionPolicy?.mode === 'deterministic',
+      llm_reply_attempted: !shouldUseFastReply && executionPolicy?.mode !== 'deterministic' && typeof buildChatReply === 'function',
+    });
 
     const reply = normalizeText(replyResult?.reply) || buildActionReply(action) || `J’ai lu le fichier ${fileMetadata.name} et je l’ai intégré à Nyra.`;
 
+    const saveChatExecutionStartedAt = Date.now();
     const saved = dispatchChatExecution({
       userId,
       message: thought.content,
@@ -11378,6 +11474,10 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       action,
       decision,
       candidateDecision: chosenDecision,
+    });
+    perf.mark('save_chat_execution', saveChatExecutionStartedAt, {
+      has_saved_item: Boolean(saved?.item),
+      has_saved_action: Boolean(saved?.action),
     });
 
     if (saved?.item) {
@@ -11390,6 +11490,7 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       saved.item.source_attachment_message = message || null;
     }
 
+    const buildResponseStartedAt = Date.now();
     const chatResponse = buildChatCognitiveResponse({
       thoughtOrchestration,
       reply,
@@ -11401,6 +11502,15 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       memorySummary: getStoreSummary(userId),
       startedAt,
     });
+    perf.mark('build_chat_response', buildResponseStartedAt);
+
+    const attachmentPerformance = perf.log({
+      status: 'completed',
+      fast_reply_used: shouldUseFastReply,
+      skipped_ai_understanding: shouldUseFastReply,
+      skipped_chat_reply_generation: shouldUseFastReply,
+      saved_knowledge_count: Number(savedKnowledge?.saved_count || 0),
+    });
 
     return {
       ...chatResponse,
@@ -11408,11 +11518,7 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       attachment_engine: attachmentThought,
       knowledge_extraction: knowledgeExtraction,
       knowledge_objects: savedKnowledge.objects,
-      attachment_performance: {
-        fast_reply_used: shouldUseFastReply,
-        skipped_ai_understanding: shouldUseFastReply,
-        skipped_chat_reply_generation: shouldUseFastReply,
-      },
+      attachment_performance: attachmentPerformance,
       living_model_update: {
         status: savedKnowledge.saved_count > 0 ? 'updated' : 'no_structured_knowledge',
         saved_count: savedKnowledge.saved_count,
@@ -11571,12 +11677,17 @@ app.post('/chat', async (req, res) => {
     const action = resolveExecutableActionFromCandidateDecision(chosenDecision);
     const suggestions = buildSuggestions(analysis, action);
 
+    const executionPolicyStartedAt = Date.now();
     const executionPolicy = buildChatExecutionPolicy({
       message: attachmentAnalysisMessage,
       thoughtOrchestration,
       pipelineContext: buildPipelineAnalysisContext(thoughtOrchestration) || null,
       chosenDecision,
       analysis,
+    });
+    perf.mark('execution_policy', executionPolicyStartedAt, {
+      mode: executionPolicy?.mode || null,
+      protocol: executionPolicy?.protocol || null,
     });
 
     console.log('===== NYRA CHAT REPLY ROUTING =====');
@@ -11619,6 +11730,7 @@ app.post('/chat', async (req, res) => {
 
     const reply = normalizeText(replyResult?.reply) || buildActionReply(action) || 'Je l’ai capté. Je le range dans Nyra.';
 
+    const saveChatExecutionStartedAt = Date.now();
     const saved = dispatchChatExecution({
       userId,
       message: thought.content,
@@ -11628,7 +11740,12 @@ app.post('/chat', async (req, res) => {
       decision,
       candidateDecision: chosenDecision,
     });
+    perf.mark('save_chat_execution', saveChatExecutionStartedAt, {
+      has_saved_item: Boolean(saved?.item),
+      has_saved_action: Boolean(saved?.action),
+    });
 
+    const buildResponseStartedAt = Date.now();
     const chatResponse = buildChatCognitiveResponse({
       thoughtOrchestration,
       reply,
@@ -11639,6 +11756,15 @@ app.post('/chat', async (req, res) => {
       saved,
       memorySummary: getStoreSummary(userId),
       startedAt,
+    });
+    perf.mark('build_chat_response', buildResponseStartedAt);
+
+    const attachmentPerformance = perf.log({
+      status: 'completed',
+      fast_reply_used: shouldUseFastReply,
+      skipped_ai_understanding: shouldUseFastReply,
+      skipped_chat_reply_generation: shouldUseFastReply,
+      saved_knowledge_count: Number(savedKnowledge?.saved_count || 0),
     });
 
     res.json(chatResponse);
