@@ -11211,15 +11211,155 @@ function getMaxAttachmentKnowledgeExtractionSegments() {
   return Math.max(1, Math.min(configuredValue, 8));
 }
 
+function normalizeKnowledgeMergeKeyPart(value, fallback = 'unknown') {
+  const normalized = normalizeKey(value || fallback);
+  return normalized || normalizeKey(fallback || 'unknown') || 'unknown';
+}
+
+function normalizeKnowledgeMergeText(value) {
+  return normalizeText(value || '').slice(0, 1200);
+}
+
+function normalizeKnowledgeEvidenceList(value) {
+  if (Array.isArray(value)) {
+    return value
+      .flatMap(item => normalizeKnowledgeEvidenceList(item))
+      .filter(Boolean);
+  }
+
+  const normalized = normalizeText(value || '');
+  return normalized ? [normalized.slice(0, 260)] : [];
+}
+
+function addUniqueKnowledgeMergeValue(target, value) {
+  const normalized = normalizeText(value || '');
+
+  if (!normalized) return;
+
+  if (!target.some(existing => normalizeText(existing).toLowerCase() === normalized.toLowerCase())) {
+    target.push(normalized);
+  }
+}
+
+function buildKnowledgeMergeGroupKey(object = {}) {
+  const type = normalizeKnowledgeMergeKeyPart(object.type || 'observation', 'observation');
+  const key = normalizeKnowledgeMergeKeyPart(object.key || object.label || object.value || 'unknown', 'unknown');
+  const stability = normalizeKnowledgeMergeKeyPart(object.stability || 'unknown', 'unknown');
+
+  return [type, key, stability].join('|');
+}
+
+function createMergedKnowledgeObjectSeed(object = {}) {
+  const seed = {
+    ...object,
+    type: normalizeText(object.type || 'observation') || 'observation',
+    key: normalizeText(object.key || ''),
+    label: normalizeKnowledgeMergeText(object.label || object.key || ''),
+    value: normalizeKnowledgeMergeText(object.value || ''),
+    confidence: Math.max(0, Math.min(1, Number(object.confidence ?? 0.5))),
+    stability: normalizeText(object.stability || 'unknown') || 'unknown',
+    evidence: [],
+    evidences: [],
+    source_segments: [],
+    segment_ids: [],
+    segment_indexes: [],
+    segment_titles: [],
+    source_files: [],
+    source_attachment_ids: [],
+    occurrences: 0,
+  };
+
+  return seed;
+}
+
+function mergeKnowledgeObjectIntoGroup(group, object = {}) {
+  const label = normalizeKnowledgeMergeText(object.label || object.key || '');
+  const value = normalizeKnowledgeMergeText(object.value || '');
+  const confidence = Math.max(0, Math.min(1, Number(object.confidence ?? 0.5)));
+
+  group.occurrences = Number(group.occurrences || 0) + 1;
+
+  if (label.length > normalizeText(group.label || '').length) {
+    group.label = label;
+  }
+
+  if (value.length > normalizeText(group.value || '').length) {
+    group.value = value;
+  }
+
+  group.confidence = Math.max(Number(group.confidence || 0), confidence);
+
+  normalizeKnowledgeEvidenceList(object.evidence || object.evidences).forEach(evidence => {
+    addUniqueKnowledgeMergeValue(group.evidences, evidence);
+  });
+
+  addUniqueKnowledgeMergeValue(group.source_segments, object.source_segment || object.segment_id || object.source_segment_id || '');
+  addUniqueKnowledgeMergeValue(group.segment_ids, object.segment_id || object.source_segment_id || '');
+  addUniqueKnowledgeMergeValue(group.segment_titles, object.segment_title || object.source_segment_title || '');
+  addUniqueKnowledgeMergeValue(group.source_files, object.source_file || object.file_name || '');
+  addUniqueKnowledgeMergeValue(group.source_attachment_ids, object.source_attachment_id || object.attachment_id || '');
+
+  const segmentIndex = object.segment_index ?? object.source_segment_index ?? null;
+  if (segmentIndex !== null && segmentIndex !== undefined && segmentIndex !== '') {
+    const numericIndex = Number(segmentIndex);
+    if (!Number.isNaN(numericIndex) && !group.segment_indexes.includes(numericIndex)) {
+      group.segment_indexes.push(numericIndex);
+    }
+  }
+
+  group.segment_indexes.sort((a, b) => a - b);
+
+  return group;
+}
+
+function finalizeMergedKnowledgeObject(group) {
+  const evidences = Array.isArray(group.evidences) ? group.evidences.slice(0, 8) : [];
+
+  return {
+    ...group,
+    evidence: evidences[0] || normalizeText(group.evidence || ''),
+    evidences,
+    source_segments: Array.isArray(group.source_segments) ? group.source_segments.slice(0, 12) : [],
+    segment_ids: Array.isArray(group.segment_ids) ? group.segment_ids.slice(0, 12) : [],
+    segment_indexes: Array.isArray(group.segment_indexes) ? group.segment_indexes.slice(0, 12) : [],
+    segment_titles: Array.isArray(group.segment_titles) ? group.segment_titles.slice(0, 12) : [],
+    source_files: Array.isArray(group.source_files) ? group.source_files.slice(0, 8) : [],
+    source_attachment_ids: Array.isArray(group.source_attachment_ids) ? group.source_attachment_ids.slice(0, 8) : [],
+    merged: Number(group.occurrences || 0) > 1,
+    merge_strategy: 'type_key_stability',
+  };
+}
+
 function mergeKnowledgeExtractionResults(segmentResults, options = {}) {
   const safeResults = Array.isArray(segmentResults) ? segmentResults : [];
   const maxObjects = Math.max(1, Math.min(Number(options.maxObjects || 48), 120));
-  const objects = safeResults
+  const rawObjects = safeResults
     .flatMap(result => Array.isArray(result?.objects) ? result.objects : [])
-    .filter(Boolean)
-    .slice(0, maxObjects);
+    .filter(Boolean);
   const successfulResults = safeResults.filter(result => result?.ok);
   const failedResults = safeResults.filter(result => result && !result.ok);
+  const groups = new Map();
+
+  rawObjects.forEach(rawObject => {
+    if (!rawObject || typeof rawObject !== 'object') return;
+
+    const groupKey = buildKnowledgeMergeGroupKey(rawObject);
+
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, createMergedKnowledgeObjectSeed(rawObject));
+    }
+
+    mergeKnowledgeObjectIntoGroup(groups.get(groupKey), rawObject);
+  });
+
+  const objects = Array.from(groups.values())
+    .map(finalizeMergedKnowledgeObject)
+    .sort((a, b) => {
+      const occurrenceDelta = Number(b.occurrences || 0) - Number(a.occurrences || 0);
+      if (occurrenceDelta !== 0) return occurrenceDelta;
+      return Number(b.confidence || 0) - Number(a.confidence || 0);
+    })
+    .slice(0, maxObjects);
 
   return {
     ok: successfulResults.length > 0,
@@ -11227,10 +11367,13 @@ function mergeKnowledgeExtractionResults(segmentResults, options = {}) {
     objects,
     metadata: {
       engine: 'nyra-knowledge-extraction-merge-v1',
-      strategy: 'simple_concat',
+      strategy: 'type_key_stability_deterministic_merge',
       segment_results_count: safeResults.length,
       successful_segment_count: successfulResults.length,
       failed_segment_count: failedResults.length,
+      raw_extracted_count: rawObjects.length,
+      merged_count: objects.length,
+      duplicate_count: Math.max(0, rawObjects.length - objects.length),
       extracted_count: objects.length,
       max_objects: maxObjects,
       generated_at: nowIso(),
