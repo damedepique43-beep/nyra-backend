@@ -15,6 +15,7 @@ const { buildCognitiveMemoryGraph, buildMemoryGraphInsights } = require('./engin
 const { analyzePriorities } = require('./engines/cognitivePriorityEngine');
 const { compressTask } = require('./engines/actionCompressionEngine');
 const { analyzeMomentumRecovery } = require('./engines/momentumRecoveryEngine');
+const { buildAttachmentThought } = require('./engines/nyraAttachmentEngine');
 const {
   buildNyraCognitiveOrchestration,
   buildInitialChatAnalysis,
@@ -11061,24 +11062,197 @@ app.post('/chat/attachment', async (req, res) => {
       uploaded_at: nowIso(),
     };
 
-    const saved = saveChatAttachmentCapture({
-      userId,
-      message,
+    const attachmentThought = await buildAttachmentThought({
+      buffer,
       fileMetadata,
+      userMessage: message,
+    });
+
+    if (!attachmentThought.ok || !attachmentThought.thought_content) {
+      const saved = saveChatAttachmentCapture({
+        userId,
+        message,
+        fileMetadata: {
+          ...fileMetadata,
+          extraction: attachmentThought,
+        },
+      });
+
+      return res.json({
+        ok: true,
+        userId,
+        message: saved.reply,
+        reply: saved.reply,
+        attachment: {
+          ...fileMetadata,
+          extraction: attachmentThought,
+        },
+        stored_item: saved.item,
+        item: saved.item,
+        user_state: saved.user_state,
+        attachment_engine: attachmentThought,
+        perf: {
+          total_ms: Date.now() - startedAt,
+        },
+      });
+    }
+
+    const thought = createThought({
+      userId,
+      content: attachmentThought.thought_content,
+      source: 'chat_attachment',
+      metadata: {
+        route: '/chat/attachment',
+        interface: 'mobile',
+        attachment: fileMetadata,
+        attachment_engine: attachmentThought.metadata,
+      },
+    });
+
+    const thoughtOrchestration = await orchestrateThought({
+      thought,
+      source: 'chat_attachment',
+      metadata: {
+        route: '/chat/attachment',
+        interface: 'mobile',
+        attachment: fileMetadata,
+        attachment_engine: attachmentThought.metadata,
+      },
+    });
+
+    const memorySummary = getStoreSummary(userId);
+    const initialAnalysis = typeof buildInitialChatAnalysis === 'function'
+      ? buildInitialChatAnalysis({
+          thought,
+          buildLegacyAnalysis: analyzeMessage,
+        })
+      : analyzeMessage(thought.content);
+
+    const localAnalysis = enrichAnalysisWithPipelineContext(
+      {
+        ...initialAnalysis,
+        source: 'file_attachment',
+        attachment: fileMetadata,
+        attachment_engine: attachmentThought.metadata,
+        tags: uniqueArray([
+          ...(Array.isArray(initialAnalysis.tags) ? initialAnalysis.tags : []),
+          'fichier',
+          'attachment',
+          'pdf',
+        ]),
+      },
+      thoughtOrchestration
+    );
+    const analysis = enrichAnalysisWithPipelineContext(
+      await analyzeMessageWithAI(thought.content, localAnalysis, memorySummary),
+      thoughtOrchestration
+    );
+    analysis.source = 'file_attachment';
+    analysis.attachment = fileMetadata;
+    analysis.attachment_engine = attachmentThought.metadata;
+    analysis.tags = uniqueArray([
+      ...(Array.isArray(analysis.tags) ? analysis.tags : []),
+      'fichier',
+      'attachment',
+      'pdf',
+    ]);
+
+    const detectedAction = detectAction(thought.content, userId, analysis);
+    const decision = typeof buildChatActionDecision === 'function'
+      ? buildChatActionDecision({
+          action: detectedAction,
+          analysis,
+          thoughtOrchestration,
+        })
+      : null;
+    const candidateDecision = buildChatCandidateDecision({
+      thought,
+      analysis,
+      detectedAction,
+      decision,
+      pipelineContext: buildPipelineAnalysisContext(thoughtOrchestration) || null,
+    });
+    const chosenDecision = chooseBestDecision([candidateDecision], {
+      thought,
+      analysis,
+      decision,
+      thoughtOrchestration,
+      pipelineContext: buildPipelineAnalysisContext(thoughtOrchestration) || null,
+    });
+    const action = resolveExecutableActionFromCandidateDecision(chosenDecision);
+    const suggestions = buildSuggestions(analysis, action);
+
+    const executionPolicy = buildChatExecutionPolicy({
+      message: thought.content,
+      thoughtOrchestration,
+      pipelineContext: buildPipelineAnalysisContext(thoughtOrchestration) || null,
+      chosenDecision,
+      analysis,
+    });
+
+    const replyResult = executionPolicy.mode === 'deterministic'
+      ? {
+          reply: executionPolicy.reply,
+          execution_policy: executionPolicy,
+        }
+      : (typeof buildChatReply === 'function'
+          ? await buildChatReply({
+              openaiClient: openai,
+              model: OPENAI_MODEL,
+              analysis,
+              memorySummary,
+              thought,
+              action,
+              thoughtOrchestration,
+              buildActionReply,
+              buildSystemPrompt: (promptAnalysis, promptMemorySummary, cognitivePromptContext = {}) => {
+                return buildSystemPrompt(promptAnalysis, promptMemorySummary, {
+                  ...(cognitivePromptContext || {}),
+                  chosenDecision,
+                  decision_profile: chosenDecision?.decision_profile || null,
+                  cognitive_cost: chosenDecision?.decision_profile?.cognitive_cost || null,
+                  execution_policy: executionPolicy,
+                });
+              },
+            })
+          : null);
+
+    const reply = normalizeText(replyResult?.reply) || buildActionReply(action) || `J’ai lu le fichier ${fileMetadata.name} et je l’ai intégré à Nyra.`;
+
+    const saved = dispatchChatExecution({
+      userId,
+      message: thought.content,
+      reply,
+      analysis,
+      action,
+      decision,
+      candidateDecision: chosenDecision,
+    });
+
+    if (saved?.item) {
+      saved.item.type = saved.item.type || 'file_attachment';
+      saved.item.attachment = fileMetadata;
+      saved.item.attachments = [fileMetadata];
+      saved.item.attachment_engine = attachmentThought.metadata;
+      saved.item.source_attachment_message = message || null;
+    }
+
+    const chatResponse = buildChatCognitiveResponse({
+      thoughtOrchestration,
+      reply,
+      analysis,
+      action,
+      decision,
+      suggestions,
+      saved,
+      memorySummary: getStoreSummary(userId),
+      startedAt,
     });
 
     return res.json({
-      ok: true,
-      userId,
-      message: saved.reply,
-      reply: saved.reply,
+      ...chatResponse,
       attachment: fileMetadata,
-      stored_item: saved.item,
-      item: saved.item,
-      user_state: saved.user_state,
-      perf: {
-        total_ms: Date.now() - startedAt,
-      },
+      attachment_engine: attachmentThought,
     });
   } catch (error) {
     console.error('❌ /chat/attachment error:', error.message);
