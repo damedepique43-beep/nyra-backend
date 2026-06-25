@@ -11238,9 +11238,12 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
     });
     perf.mark('knowledge_extractor', knowledgeExtractionStartedAt, {
       ok: Boolean(knowledgeExtraction?.ok),
+      status: knowledgeExtraction?.status || null,
+      model: knowledgeExtraction?.metadata?.model || OPENAI_MODEL,
       extracted_objects_count: Array.isArray(knowledgeExtraction?.objects) ? knowledgeExtraction.objects.length : 0,
       max_text_characters: 12000,
       max_objects: 12,
+      internal_timing: knowledgeExtraction?.metadata?.timing || null,
     });
 
     const saveKnowledgeStartedAt = Date.now();

@@ -41,6 +41,35 @@ function safeParseJsonObject(value) {
   }
 }
 
+
+function createKnowledgeExtractionProfiler() {
+  const startedAt = Date.now();
+  const steps = [];
+
+  function mark(step, stepStartedAt, extra = {}) {
+    const durationMs = Date.now() - Number(stepStartedAt || Date.now());
+    steps.push({
+      step,
+      duration_ms: durationMs,
+      ...(extra && typeof extra === 'object' ? extra : {}),
+    });
+    return durationMs;
+  }
+
+  function summary(extra = {}) {
+    return {
+      total_ms: Date.now() - startedAt,
+      steps,
+      ...(extra && typeof extra === 'object' ? extra : {}),
+    };
+  }
+
+  return {
+    mark,
+    summary,
+  };
+}
+
 function clampConfidence(value) {
   const numeric = Number(value);
 
@@ -159,7 +188,13 @@ async function extractKnowledgeObjectsFromText({
   maxTextCharacters = 12000,
   maxObjects = 12,
 }) {
+  const profiler = createKnowledgeExtractionProfiler();
+
+  const normalizeStartedAt = Date.now();
   const normalizedText = normalizeMultilineText(text || '');
+  profiler.mark('normalize_input_text', normalizeStartedAt, {
+    source_text_length: normalizedText.length,
+  });
 
   if (!normalizedText) {
     return {
@@ -169,6 +204,10 @@ async function extractKnowledgeObjectsFromText({
       metadata: {
         engine: 'nyra-knowledge-extractor-v1',
         reason: 'NO_TEXT_TO_ANALYZE',
+        timing: profiler.summary({
+          status: 'empty_text',
+          model: normalizeText(model || ''),
+        }),
       },
     };
   }
@@ -181,16 +220,38 @@ async function extractKnowledgeObjectsFromText({
       metadata: {
         engine: 'nyra-knowledge-extractor-v1',
         reason: 'OPENAI_CLIENT_MISSING',
+        timing: profiler.summary({
+          status: 'missing_openai_client',
+          model: normalizeText(model || ''),
+        }),
       },
     };
   }
 
+  const prepareTextStartedAt = Date.now();
   const safeMaxCharacters = Math.max(2000, Number(maxTextCharacters || 12000));
   const textForExtraction = normalizedText.length > safeMaxCharacters
     ? `${normalizedText.slice(0, safeMaxCharacters).trim()}\n\n[Texte tronqué pour extraction V1 : ${normalizedText.length} caractères au total.]`
     : normalizedText;
+  profiler.mark('prepare_extraction_text', prepareTextStartedAt, {
+    safe_max_characters: safeMaxCharacters,
+    analyzed_text_length: textForExtraction.length,
+    truncated: normalizedText.length > safeMaxCharacters,
+  });
+
+  const buildPromptStartedAt = Date.now();
+  const systemPrompt = buildKnowledgeExtractionPrompt({
+    text: textForExtraction,
+    sourceMetadata,
+    maxObjects,
+  });
+  profiler.mark('build_extraction_prompt', buildPromptStartedAt, {
+    prompt_characters: systemPrompt.length,
+    max_objects: Math.max(1, Math.min(Number(maxObjects || 12), 20)),
+  });
 
   try {
+    const openaiCallStartedAt = Date.now();
     const completion = await openaiClient.chat.completions.create({
       model,
       temperature: 0.1,
@@ -198,11 +259,7 @@ async function extractKnowledgeObjectsFromText({
       messages: [
         {
           role: 'system',
-          content: buildKnowledgeExtractionPrompt({
-            text: textForExtraction,
-            sourceMetadata,
-            maxObjects,
-          }),
+          content: systemPrompt,
         },
         {
           role: 'user',
@@ -210,14 +267,34 @@ async function extractKnowledgeObjectsFromText({
         },
       ],
     });
+    profiler.mark('openai_chat_completion', openaiCallStartedAt, {
+      model: normalizeText(model || ''),
+      requested_max_tokens: 1400,
+      response_id: normalizeText(completion?.id || ''),
+      finish_reason: normalizeText(completion?.choices?.[0]?.finish_reason || ''),
+      prompt_tokens: completion?.usage?.prompt_tokens ?? null,
+      completion_tokens: completion?.usage?.completion_tokens ?? null,
+      total_tokens: completion?.usage?.total_tokens ?? null,
+    });
 
+    const parseStartedAt = Date.now();
     const raw = completion.choices?.[0]?.message?.content || '';
     const parsed = safeParseJsonObject(raw);
     const rawObjects = Array.isArray(parsed?.objects) ? parsed.objects : [];
+    profiler.mark('parse_completion_json', parseStartedAt, {
+      raw_response_characters: raw.length,
+      parsed_objects_count: rawObjects.length,
+      parse_ok: Boolean(parsed),
+    });
+
+    const normalizeObjectsStartedAt = Date.now();
     const objects = rawObjects
       .map(item => normalizeKnowledgeObject(item, sourceMetadata))
       .filter(Boolean)
       .slice(0, Math.max(1, Math.min(Number(maxObjects || 12), 20)));
+    profiler.mark('normalize_knowledge_objects', normalizeObjectsStartedAt, {
+      normalized_objects_count: objects.length,
+    });
 
     return {
       ok: true,
@@ -232,9 +309,19 @@ async function extractKnowledgeObjectsFromText({
         source_text_length: normalizedText.length,
         analyzed_text_length: textForExtraction.length,
         truncated: normalizedText.length > safeMaxCharacters,
+        model: normalizeText(model || ''),
+        timing: profiler.summary({
+          status: 'knowledge_extracted',
+          model: normalizeText(model || ''),
+          extracted_count: objects.length,
+        }),
       },
     };
   } catch (error) {
+    profiler.mark('openai_or_parsing_error', Date.now(), {
+      error_message: normalizeText(error?.message || ''),
+    });
+
     return {
       ok: false,
       status: 'extraction_failed',
@@ -246,6 +333,12 @@ async function extractKnowledgeObjectsFromText({
         source: sourceMetadata.source || 'unknown',
         file_name: sourceMetadata.file_name || null,
         attachment_id: sourceMetadata.attachment_id || null,
+        model: normalizeText(model || ''),
+        timing: profiler.summary({
+          status: 'extraction_failed',
+          model: normalizeText(model || ''),
+          error_message: normalizeText(error?.message || ''),
+        }),
       },
     };
   }
