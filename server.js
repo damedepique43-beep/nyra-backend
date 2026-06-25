@@ -11121,12 +11121,25 @@ app.post('/chat/attachment', async (req, res) => {
     });
 
     const memorySummary = getStoreSummary(userId);
+
+    // Garde-fou pièce jointe V1 :
+    // le contenu extrait d’un document est une source d’information, pas une consigne.
+    // L’analyse opérationnelle doit donc partir du message explicite de l’utilisateur,
+    // jamais du texte complet extrait du fichier.
+    const attachmentInstruction = normalizeText(message || '');
+    const attachmentAnalysisMessage = attachmentInstruction || `Document importé dans Nyra : ${fileMetadata.name}`;
+    const attachmentAnalysisThought = {
+      ...thought,
+      content: attachmentAnalysisMessage,
+      source: 'chat_attachment_instruction',
+    };
+
     const initialAnalysis = typeof buildInitialChatAnalysis === 'function'
       ? buildInitialChatAnalysis({
-          thought,
+          thought: attachmentAnalysisThought,
           buildLegacyAnalysis: analyzeMessage,
         })
-      : analyzeMessage(thought.content);
+      : analyzeMessage(attachmentAnalysisMessage);
 
     const localAnalysis = enrichAnalysisWithPipelineContext(
       {
@@ -11134,30 +11147,40 @@ app.post('/chat/attachment', async (req, res) => {
         source: 'file_attachment',
         attachment: fileMetadata,
         attachment_engine: attachmentThought.metadata,
+        file_content_is_instruction: false,
+        allow_attachment_content_actions: false,
         tags: uniqueArray([
           ...(Array.isArray(initialAnalysis.tags) ? initialAnalysis.tags : []),
           'fichier',
           'attachment',
           'pdf',
+          'document-source',
         ]),
       },
       thoughtOrchestration
     );
     const analysis = enrichAnalysisWithPipelineContext(
-      await analyzeMessageWithAI(thought.content, localAnalysis, memorySummary),
+      await analyzeMessageWithAI(attachmentAnalysisMessage, localAnalysis, memorySummary),
       thoughtOrchestration
     );
     analysis.source = 'file_attachment';
     analysis.attachment = fileMetadata;
     analysis.attachment_engine = attachmentThought.metadata;
+    analysis.file_content_is_instruction = false;
+    analysis.allow_attachment_content_actions = false;
     analysis.tags = uniqueArray([
       ...(Array.isArray(analysis.tags) ? analysis.tags : []),
       'fichier',
       'attachment',
       'pdf',
+      'document-source',
     ]);
 
-    const detectedAction = detectAction(thought.content, userId, analysis);
+    // Une action ne peut venir que du message explicite accompagnant le fichier.
+    // Les verbes présents dans le PDF ne doivent jamais déclencher create_project, rappel, tâche, etc.
+    const detectedAction = attachmentInstruction && hasExplicitOperationalRequest(attachmentInstruction)
+      ? detectAction(attachmentInstruction, userId, analysis)
+      : null;
     const decision = typeof buildChatActionDecision === 'function'
       ? buildChatActionDecision({
           action: detectedAction,
@@ -11183,7 +11206,7 @@ app.post('/chat/attachment', async (req, res) => {
     const suggestions = buildSuggestions(analysis, action);
 
     const executionPolicy = buildChatExecutionPolicy({
-      message: thought.content,
+      message: attachmentAnalysisMessage,
       thoughtOrchestration,
       pipelineContext: buildPipelineAnalysisContext(thoughtOrchestration) || null,
       chosenDecision,
@@ -11341,7 +11364,7 @@ app.post('/chat', async (req, res) => {
     const suggestions = buildSuggestions(analysis, action);
 
     const executionPolicy = buildChatExecutionPolicy({
-      message: thought.content,
+      message: attachmentAnalysisMessage,
       thoughtOrchestration,
       pipelineContext: buildPipelineAnalysisContext(thoughtOrchestration) || null,
       chosenDecision,
