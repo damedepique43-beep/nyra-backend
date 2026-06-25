@@ -11451,17 +11451,12 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       has_executable_action: Boolean(action),
     });
 
-    const executionPolicyStartedAt = Date.now();
     const executionPolicy = buildChatExecutionPolicy({
-      message: attachmentAnalysisMessage,
+      message: thought.content,
       thoughtOrchestration,
       pipelineContext: buildPipelineAnalysisContext(thoughtOrchestration) || null,
       chosenDecision,
       analysis,
-    });
-    perf.mark('execution_policy', executionPolicyStartedAt, {
-      mode: executionPolicy?.mode || null,
-      protocol: executionPolicy?.protocol || null,
     });
 
     const replyGenerationStartedAt = Date.now();
@@ -11728,17 +11723,12 @@ app.post('/chat', async (req, res) => {
     const action = resolveExecutableActionFromCandidateDecision(chosenDecision);
     const suggestions = buildSuggestions(analysis, action);
 
-    const executionPolicyStartedAt = Date.now();
     const executionPolicy = buildChatExecutionPolicy({
-      message: attachmentAnalysisMessage,
+      message: thought.content,
       thoughtOrchestration,
       pipelineContext: buildPipelineAnalysisContext(thoughtOrchestration) || null,
       chosenDecision,
       analysis,
-    });
-    perf.mark('execution_policy', executionPolicyStartedAt, {
-      mode: executionPolicy?.mode || null,
-      protocol: executionPolicy?.protocol || null,
     });
 
     console.log('===== NYRA CHAT REPLY ROUTING =====');
@@ -11808,16 +11798,6 @@ app.post('/chat', async (req, res) => {
       memorySummary: getStoreSummary(userId),
       startedAt,
     });
-    perf.mark('build_chat_response', buildResponseStartedAt);
-
-    const attachmentPerformance = perf.log({
-      status: 'completed',
-      fast_reply_used: shouldUseFastReply,
-      skipped_ai_understanding: shouldUseFastReply,
-      skipped_chat_reply_generation: shouldUseFastReply,
-      saved_knowledge_count: Number(savedKnowledge?.saved_count || 0),
-    });
-
     res.json(chatResponse);
   } catch (error) {
     console.error('❌ /chat error:', error.message);
