@@ -11175,6 +11175,158 @@ function buildFastAttachmentReply({ fileMetadata, savedKnowledge }) {
 }
 
 
+function getAttachmentKnowledgeExtractionSegments(documentSegmentation, attachmentText) {
+  const segmentedItems = documentSegmentation?.ok && Array.isArray(documentSegmentation.segments)
+    ? documentSegmentation.segments.filter(segment => normalizeText(segment?.text || ''))
+    : [];
+
+  if (segmentedItems.length) return segmentedItems;
+
+  const fallbackText = normalizeMultilineText(attachmentText || '');
+
+  if (!fallbackText) return [];
+
+  return [
+    {
+      id: 'document_full_text',
+      index: 0,
+      title: 'Document complet',
+      text: fallbackText,
+      character_count: fallbackText.length,
+      estimated_tokens: Math.ceil(fallbackText.length / 4),
+      fallback: true,
+    },
+  ];
+}
+
+function getMaxAttachmentKnowledgeExtractionSegments() {
+  const configuredValue = Number(
+    process.env.NYRA_ATTACHMENT_MAX_KNOWLEDGE_SEGMENTS ||
+    process.env.ATTACHMENT_MAX_KNOWLEDGE_SEGMENTS ||
+    4
+  );
+
+  if (Number.isNaN(configuredValue)) return 4;
+
+  return Math.max(1, Math.min(configuredValue, 8));
+}
+
+function mergeKnowledgeExtractionResults(segmentResults, options = {}) {
+  const safeResults = Array.isArray(segmentResults) ? segmentResults : [];
+  const maxObjects = Math.max(1, Math.min(Number(options.maxObjects || 48), 120));
+  const objects = safeResults
+    .flatMap(result => Array.isArray(result?.objects) ? result.objects : [])
+    .filter(Boolean)
+    .slice(0, maxObjects);
+  const successfulResults = safeResults.filter(result => result?.ok);
+  const failedResults = safeResults.filter(result => result && !result.ok);
+
+  return {
+    ok: successfulResults.length > 0,
+    status: successfulResults.length > 0 ? 'knowledge_extracted_from_segments' : 'no_segment_knowledge_extracted',
+    objects,
+    metadata: {
+      engine: 'nyra-knowledge-extraction-merge-v1',
+      strategy: 'simple_concat',
+      segment_results_count: safeResults.length,
+      successful_segment_count: successfulResults.length,
+      failed_segment_count: failedResults.length,
+      extracted_count: objects.length,
+      max_objects: maxObjects,
+      generated_at: nowIso(),
+    },
+  };
+}
+
+async function extractKnowledgeObjectsFromDocumentSegments({
+  openaiClient,
+  model,
+  documentSegmentation,
+  attachmentText,
+  fileMetadata,
+  perf,
+}) {
+  const startedAt = Date.now();
+  const allSegments = getAttachmentKnowledgeExtractionSegments(documentSegmentation, attachmentText);
+  const maxSegmentsToAnalyze = getMaxAttachmentKnowledgeExtractionSegments();
+  const segmentsToAnalyze = allSegments.slice(0, maxSegmentsToAnalyze);
+  const segmentResults = [];
+
+  for (const segment of segmentsToAnalyze) {
+    const segmentStartedAt = Date.now();
+    const segmentResult = await extractKnowledgeObjectsFromText({
+      openaiClient,
+      model,
+      text: segment.text,
+      sourceMetadata: {
+        source: 'chat_attachment',
+        file_name: fileMetadata.name,
+        attachment_id: fileMetadata.id,
+        mime_type: fileMetadata.mime_type,
+        segment_id: segment.id || null,
+        segment_index: segment.index ?? null,
+        segment_title: segment.title || null,
+        segment_count: allSegments.length,
+      },
+      maxTextCharacters: 12000,
+      maxObjects: 12,
+      extractionMode: segment.fallback ? 'standard' : 'fast_segment',
+    });
+
+    segmentResults.push({
+      ...segmentResult,
+      segment: {
+        id: segment.id || null,
+        index: segment.index ?? null,
+        title: segment.title || null,
+        character_count: Number(segment.character_count || segment.text?.length || 0),
+        estimated_tokens: Number(segment.estimated_tokens || 0),
+        fallback: Boolean(segment.fallback),
+      },
+    });
+
+    if (perf?.mark) {
+      perf.mark(`knowledge_extractor_segment_${Number(segment.index ?? segmentResults.length - 1) + 1}`, segmentStartedAt, {
+        ok: Boolean(segmentResult?.ok),
+        status: segmentResult?.status || null,
+        segment_id: segment.id || null,
+        segment_title: segment.title || null,
+        extracted_objects_count: Array.isArray(segmentResult?.objects) ? segmentResult.objects.length : 0,
+        extraction_mode: segmentResult?.metadata?.extraction_mode || (segment.fallback ? 'standard' : 'fast_segment'),
+        internal_timing: segmentResult?.metadata?.timing || null,
+      });
+    }
+  }
+
+  const merged = mergeKnowledgeExtractionResults(segmentResults, {
+    maxObjects: maxSegmentsToAnalyze * 12,
+  });
+
+  return {
+    ...merged,
+    segment_results: segmentResults,
+    active_segment: segmentsToAnalyze[0] || null,
+    analyzed_segments: segmentsToAnalyze,
+    metadata: {
+      ...merged.metadata,
+      engine: 'nyra-knowledge-extractor-v1',
+      orchestration: 'multi_segment_v1',
+      merge_engine: merged.metadata,
+      model: normalizeText(model || ''),
+      source: 'chat_attachment',
+      file_name: fileMetadata.name || null,
+      attachment_id: fileMetadata.id || null,
+      document_segment_count: allSegments.length,
+      analyzed_segment_count: segmentsToAnalyze.length,
+      skipped_segment_count: Math.max(0, allSegments.length - segmentsToAnalyze.length),
+      max_analyzed_segments: maxSegmentsToAnalyze,
+      extracted_count: merged.objects.length,
+      duration_ms: Date.now() - startedAt,
+    },
+  };
+}
+
+
 async function processAttachmentJob({ userId, message, fileMetadata, buffer, startedAt }) {
     const perf = createAttachmentPerformanceTracker({
       startedAt,
@@ -11229,54 +11381,47 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       minSegmentCharacters: 900,
       maxSegments: 40,
     });
-    const firstDocumentSegment = documentSegmentation?.ok && Array.isArray(documentSegmentation.segments)
-      ? documentSegmentation.segments[0] || null
-      : null;
-    const textForKnowledgeExtraction = firstDocumentSegment?.text || attachmentThought.text || '';
+    const documentSegments = documentSegmentation?.ok && Array.isArray(documentSegmentation.segments)
+      ? documentSegmentation.segments
+      : [];
     perf.mark('document_segmenter', documentSegmentationStartedAt, {
       ok: Boolean(documentSegmentation?.ok),
       status: documentSegmentation?.status || null,
-      segment_count: Array.isArray(documentSegmentation?.segments) ? documentSegmentation.segments.length : 0,
-      first_segment_id: firstDocumentSegment?.id || null,
-      first_segment_title: firstDocumentSegment?.title || null,
-      first_segment_characters: Number(firstDocumentSegment?.character_count || 0),
-      first_segment_estimated_tokens: Number(firstDocumentSegment?.estimated_tokens || 0),
+      segment_count: documentSegments.length,
+      first_segment_id: documentSegments[0]?.id || null,
+      first_segment_title: documentSegments[0]?.title || null,
+      first_segment_characters: Number(documentSegments[0]?.character_count || 0),
+      first_segment_estimated_tokens: Number(documentSegments[0]?.estimated_tokens || 0),
       source_text_characters: Number(attachmentThought?.text?.length || 0),
       metadata: documentSegmentation?.metadata || null,
     });
 
     const knowledgeExtractionStartedAt = Date.now();
-    const knowledgeExtraction = await extractKnowledgeObjectsFromText({
+    const knowledgeExtraction = await extractKnowledgeObjectsFromDocumentSegments({
       openaiClient: openai,
       model: OPENAI_MODEL,
-      text: textForKnowledgeExtraction,
-      sourceMetadata: {
-        source: 'chat_attachment',
-        file_name: fileMetadata.name,
-        attachment_id: fileMetadata.id,
-        mime_type: fileMetadata.mime_type,
-        segment_id: firstDocumentSegment?.id || null,
-        segment_index: firstDocumentSegment?.index ?? null,
-        segment_title: firstDocumentSegment?.title || null,
-        segment_count: Array.isArray(documentSegmentation?.segments) ? documentSegmentation.segments.length : 0,
-      },
-      maxTextCharacters: 12000,
-      maxObjects: 12,
-      extractionMode: firstDocumentSegment ? 'fast_segment' : 'standard',
+      documentSegmentation,
+      attachmentText: attachmentThought.text || '',
+      fileMetadata,
+      perf,
     });
+    const activeDocumentSegment = knowledgeExtraction?.active_segment || documentSegments[0] || null;
     perf.mark('knowledge_extractor', knowledgeExtractionStartedAt, {
       ok: Boolean(knowledgeExtraction?.ok),
       status: knowledgeExtraction?.status || null,
       model: knowledgeExtraction?.metadata?.model || OPENAI_MODEL,
       extracted_objects_count: Array.isArray(knowledgeExtraction?.objects) ? knowledgeExtraction.objects.length : 0,
       max_text_characters: 12000,
-      max_objects: 12,
-      extraction_mode: knowledgeExtraction?.metadata?.extraction_mode || (firstDocumentSegment ? 'fast_segment' : 'standard'),
-      source_segment_id: firstDocumentSegment?.id || null,
-      source_segment_title: firstDocumentSegment?.title || null,
-      source_segment_characters: Number(firstDocumentSegment?.character_count || 0),
-      document_segment_count: Array.isArray(documentSegmentation?.segments) ? documentSegmentation.segments.length : 0,
-      internal_timing: knowledgeExtraction?.metadata?.timing || null,
+      max_objects_per_segment: 12,
+      extraction_mode: knowledgeExtraction?.metadata?.orchestration || 'multi_segment_v1',
+      source_segment_id: activeDocumentSegment?.id || null,
+      source_segment_title: activeDocumentSegment?.title || null,
+      source_segment_characters: Number(activeDocumentSegment?.character_count || 0),
+      document_segment_count: documentSegments.length,
+      analyzed_segment_count: Number(knowledgeExtraction?.metadata?.analyzed_segment_count || 0),
+      skipped_segment_count: Number(knowledgeExtraction?.metadata?.skipped_segment_count || 0),
+      merge_strategy: knowledgeExtraction?.metadata?.merge_engine?.strategy || null,
+      internal_timing: knowledgeExtraction?.metadata || null,
     });
 
     const saveKnowledgeStartedAt = Date.now();
@@ -11362,7 +11507,7 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
         attachment_engine: attachmentThought.metadata,
         document_segmentation: documentSegmentation.metadata,
         document_segments: documentSegmentation.segments,
-        active_document_segment: firstDocumentSegment,
+        active_document_segment: activeDocumentSegment,
         knowledge_extraction: knowledgeExtraction.metadata,
         knowledge_objects: savedKnowledge.objects,
         file_content_is_instruction: false,
@@ -11398,7 +11543,7 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
     analysis.attachment_engine = attachmentThought.metadata;
     analysis.document_segmentation = documentSegmentation.metadata;
     analysis.document_segments = documentSegmentation.segments;
-    analysis.active_document_segment = firstDocumentSegment;
+    analysis.active_document_segment = activeDocumentSegment;
     analysis.knowledge_extraction = knowledgeExtraction.metadata;
     analysis.knowledge_objects = savedKnowledge.objects;
     analysis.living_model_update = {
@@ -11528,7 +11673,7 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       saved.item.attachment_engine = attachmentThought.metadata;
       saved.item.document_segmentation = documentSegmentation.metadata;
       saved.item.document_segments = documentSegmentation.segments;
-      saved.item.active_document_segment = firstDocumentSegment;
+      saved.item.active_document_segment = activeDocumentSegment;
       saved.item.knowledge_extraction = knowledgeExtraction.metadata;
       saved.item.knowledge_objects = savedKnowledge.objects;
       saved.item.source_attachment_message = message || null;
@@ -11555,7 +11700,7 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       skipped_chat_reply_generation: shouldUseFastReply,
       saved_knowledge_count: Number(savedKnowledge?.saved_count || 0),
       document_segment_count: Array.isArray(documentSegmentation?.segments) ? documentSegmentation.segments.length : 0,
-      active_document_segment_id: firstDocumentSegment?.id || null,
+      active_document_segment_id: activeDocumentSegment?.id || null,
     });
 
     return {
