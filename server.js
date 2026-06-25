@@ -36,7 +36,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '12mb' }));
 
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 
@@ -87,6 +87,7 @@ const openai = new OpenAI({
 });
 
 const DATA_DIR = path.join(__dirname, 'data');
+const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const STORE_FILE = path.join(DATA_DIR, 'nyra_store.json');
 
 const STORE_VERSION = 'proactive-assistant-v2';
@@ -10881,6 +10882,214 @@ app.post('/store/reset', (req, res) => {
     ok: true,
     message: 'Mémoire locale Nyra réinitialisée',
   });
+});
+
+
+function normalizeUploadedFileName(value) {
+  const raw = normalizeText(value || 'fichier-nyra');
+  const extensionMatch = raw.match(/\.([a-z0-9]{1,12})$/i);
+  const extension = extensionMatch ? `.${extensionMatch[1].toLowerCase()}` : '';
+  const base = buildSafeFileName(extension ? raw.slice(0, -extension.length) : raw) || 'fichier-nyra';
+
+  return `${base}${extension}`.slice(0, 120);
+}
+
+function normalizeUploadedMimeType(value) {
+  const mimeType = normalizeText(value || 'application/octet-stream').toLowerCase();
+
+  if (!mimeType || mimeType.length > 120 || !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i.test(mimeType)) {
+    return 'application/octet-stream';
+  }
+
+  return mimeType;
+}
+
+function decodeUploadBase64(base64Value) {
+  const raw = String(base64Value || '').trim();
+  const cleaned = raw.includes(',') ? raw.split(',').pop() : raw;
+
+  if (!cleaned) return null;
+
+  try {
+    const buffer = Buffer.from(cleaned, 'base64');
+
+    if (!buffer.length) return null;
+
+    return buffer;
+  } catch {
+    return null;
+  }
+}
+
+function createAttachmentStoredItem({ userId, message, fileMetadata }) {
+  const safeMessage = normalizeText(message || '');
+  const fileName = normalizeUploadedFileName(fileMetadata?.name || 'fichier-nyra');
+
+  return {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    type: 'file_attachment',
+    bucket: 'inbox',
+    title: `Fichier — ${fileName}`,
+    content: safeMessage || `Fichier reçu : ${fileName}`,
+    urgency: 'normal',
+    priority: 'normal',
+    datetime_hint: null,
+    scheduled_at: null,
+    remind_at: null,
+    reminder_at: null,
+    schedule_precision: null,
+    has_exact_date: false,
+    tags: uniqueArray(['fichier', 'attachment', fileMetadata?.extension || null]),
+    status: 'captured',
+    project_name: null,
+    project_id: null,
+    action_type: null,
+    action_label: null,
+    action_id: null,
+    provider: 'local',
+    sync_status: 'local_only',
+    external_id: null,
+    requires_connection: false,
+    connection_type: null,
+    attachment: fileMetadata,
+    attachments: [fileMetadata],
+    created_at: nowIso(),
+    updated_at: nowIso(),
+  };
+}
+
+function saveChatAttachmentCapture({ userId, message, fileMetadata }) {
+  const store = readStore();
+  const item = createAttachmentStoredItem({ userId, message, fileMetadata });
+  const reply = `Fichier reçu : ${fileMetadata.name}. Je l’ai ajouté à Nyra.`;
+
+  store.items.push(item);
+  store.conversations.push({
+    id: crypto.randomUUID(),
+    user_id: userId,
+    user_message: message || `Fichier envoyé : ${fileMetadata.name}`,
+    nyra_reply: reply,
+    analysis: {
+      type: 'file_attachment',
+      suggested_bucket: 'inbox',
+      is_task: false,
+      is_idea: false,
+      is_emotion: false,
+      is_project: false,
+      urgency: 'normal',
+      tags: ['fichier', 'attachment'],
+      attachment: fileMetadata,
+    },
+    action: null,
+    stored_item_id: item.id,
+    action_id: null,
+    project_id: null,
+    project_name: null,
+    relation_id: null,
+    created_at: nowIso(),
+  });
+
+  store.items = store.items.slice(-500);
+  store.conversations = store.conversations.slice(-200);
+
+  const userState = saveUserStateSnapshot(store, userId);
+
+  writeStore(store);
+
+  return {
+    item,
+    reply,
+    user_state: userState,
+  };
+}
+
+
+app.post('/chat/attachment', async (req, res) => {
+  const startedAt = Date.now();
+
+  const userId = normalizeText(req.body?.userId || 'local-user');
+  const message = normalizeText(req.body?.message || '');
+  const filePayload = req.body?.file || {};
+  const fileName = normalizeUploadedFileName(
+    filePayload.name ||
+    req.body?.fileName ||
+    'fichier-nyra'
+  );
+  const mimeType = normalizeUploadedMimeType(filePayload.mimeType || filePayload.type || req.body?.mimeType);
+  const extension = normalizeText(filePayload.extension || path.extname(fileName).replace(/^\./, '') || '');
+  const buffer = decodeUploadBase64(filePayload.base64 || req.body?.base64 || '');
+  const maxUploadBytes = 8 * 1024 * 1024;
+
+  if (!buffer) {
+    return res.status(400).json({
+      ok: false,
+      error: 'FILE_MISSING',
+      message: 'Fichier manquant ou illisible.',
+    });
+  }
+
+  if (buffer.length > maxUploadBytes) {
+    return res.status(413).json({
+      ok: false,
+      error: 'FILE_TOO_LARGE',
+      message: 'Fichier trop volumineux pour cette première version.',
+      max_bytes: maxUploadBytes,
+    });
+  }
+
+  try {
+    ensureDir(UPLOADS_DIR);
+
+    const attachmentId = crypto.randomUUID();
+    const storedFileName = `${attachmentId}-${fileName}`;
+    const storedPath = path.join(UPLOADS_DIR, storedFileName);
+
+    fs.writeFileSync(storedPath, buffer);
+
+    const fileMetadata = {
+      id: attachmentId,
+      name: fileName,
+      stored_name: storedFileName,
+      mime_type: mimeType,
+      mimeType,
+      extension: extension || null,
+      size: buffer.length,
+      size_bytes: buffer.length,
+      storage: 'local_backend',
+      path: storedPath,
+      uploaded_at: nowIso(),
+    };
+
+    const saved = saveChatAttachmentCapture({
+      userId,
+      message,
+      fileMetadata,
+    });
+
+    return res.json({
+      ok: true,
+      userId,
+      message: saved.reply,
+      reply: saved.reply,
+      attachment: fileMetadata,
+      stored_item: saved.item,
+      item: saved.item,
+      user_state: saved.user_state,
+      perf: {
+        total_ms: Date.now() - startedAt,
+      },
+    });
+  } catch (error) {
+    console.error('❌ /chat/attachment error:', error.message);
+
+    return res.status(500).json({
+      ok: false,
+      error: 'ATTACHMENT_UPLOAD_FAILED',
+      message: 'Erreur serveur pendant l’envoi du fichier.',
+      details: error.message,
+    });
+  }
 });
 
 app.post('/chat', async (req, res) => {
