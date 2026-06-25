@@ -17,6 +17,7 @@ const { compressTask } = require('./engines/actionCompressionEngine');
 const { analyzeMomentumRecovery } = require('./engines/momentumRecoveryEngine');
 const { buildAttachmentThought } = require('./engines/nyraAttachmentEngine');
 const { extractKnowledgeObjectsFromText } = require('./engines/nyraKnowledgeExtractor');
+const { segmentDocumentText } = require('./engines/nyraDocumentSegmenter');
 const {
   buildNyraCognitiveOrchestration,
   buildInitialChatAnalysis,
@@ -11222,16 +11223,42 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       }
     }
 
+    const documentSegmentationStartedAt = Date.now();
+    const documentSegmentation = segmentDocumentText(attachmentThought.text || '', {
+      maxSegmentCharacters: 5000,
+      minSegmentCharacters: 900,
+      maxSegments: 40,
+    });
+    const firstDocumentSegment = documentSegmentation?.ok && Array.isArray(documentSegmentation.segments)
+      ? documentSegmentation.segments[0] || null
+      : null;
+    const textForKnowledgeExtraction = firstDocumentSegment?.text || attachmentThought.text || '';
+    perf.mark('document_segmenter', documentSegmentationStartedAt, {
+      ok: Boolean(documentSegmentation?.ok),
+      status: documentSegmentation?.status || null,
+      segment_count: Array.isArray(documentSegmentation?.segments) ? documentSegmentation.segments.length : 0,
+      first_segment_id: firstDocumentSegment?.id || null,
+      first_segment_title: firstDocumentSegment?.title || null,
+      first_segment_characters: Number(firstDocumentSegment?.character_count || 0),
+      first_segment_estimated_tokens: Number(firstDocumentSegment?.estimated_tokens || 0),
+      source_text_characters: Number(attachmentThought?.text?.length || 0),
+      metadata: documentSegmentation?.metadata || null,
+    });
+
     const knowledgeExtractionStartedAt = Date.now();
     const knowledgeExtraction = await extractKnowledgeObjectsFromText({
       openaiClient: openai,
       model: OPENAI_MODEL,
-      text: attachmentThought.text || '',
+      text: textForKnowledgeExtraction,
       sourceMetadata: {
         source: 'chat_attachment',
         file_name: fileMetadata.name,
         attachment_id: fileMetadata.id,
         mime_type: fileMetadata.mime_type,
+        segment_id: firstDocumentSegment?.id || null,
+        segment_index: firstDocumentSegment?.index ?? null,
+        segment_title: firstDocumentSegment?.title || null,
+        segment_count: Array.isArray(documentSegmentation?.segments) ? documentSegmentation.segments.length : 0,
       },
       maxTextCharacters: 12000,
       maxObjects: 12,
@@ -11243,6 +11270,10 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       extracted_objects_count: Array.isArray(knowledgeExtraction?.objects) ? knowledgeExtraction.objects.length : 0,
       max_text_characters: 12000,
       max_objects: 12,
+      source_segment_id: firstDocumentSegment?.id || null,
+      source_segment_title: firstDocumentSegment?.title || null,
+      source_segment_characters: Number(firstDocumentSegment?.character_count || 0),
+      document_segment_count: Array.isArray(documentSegmentation?.segments) ? documentSegmentation.segments.length : 0,
       internal_timing: knowledgeExtraction?.metadata?.timing || null,
     });
 
@@ -11274,6 +11305,8 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
         interface: 'mobile',
         attachment: fileMetadata,
         attachment_engine: attachmentThought.metadata,
+        document_segmentation: documentSegmentation.metadata,
+        document_segments: documentSegmentation.segments,
         knowledge_extraction: knowledgeExtraction.metadata,
         knowledge_objects_saved: savedKnowledge.saved_count,
       },
@@ -11288,6 +11321,8 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
         interface: 'mobile',
         attachment: fileMetadata,
         attachment_engine: attachmentThought.metadata,
+        document_segmentation: documentSegmentation.metadata,
+        document_segments: documentSegmentation.segments,
         knowledge_extraction: knowledgeExtraction.metadata,
         knowledge_objects_saved: savedKnowledge.saved_count,
       },
@@ -11323,6 +11358,9 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
         source: 'file_attachment',
         attachment: fileMetadata,
         attachment_engine: attachmentThought.metadata,
+        document_segmentation: documentSegmentation.metadata,
+        document_segments: documentSegmentation.segments,
+        active_document_segment: firstDocumentSegment,
         knowledge_extraction: knowledgeExtraction.metadata,
         knowledge_objects: savedKnowledge.objects,
         file_content_is_instruction: false,
@@ -11356,6 +11394,9 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
     analysis.source = 'file_attachment';
     analysis.attachment = fileMetadata;
     analysis.attachment_engine = attachmentThought.metadata;
+    analysis.document_segmentation = documentSegmentation.metadata;
+    analysis.document_segments = documentSegmentation.segments;
+    analysis.active_document_segment = firstDocumentSegment;
     analysis.knowledge_extraction = knowledgeExtraction.metadata;
     analysis.knowledge_objects = savedKnowledge.objects;
     analysis.living_model_update = {
@@ -11488,6 +11529,9 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       saved.item.attachment = fileMetadata;
       saved.item.attachments = [fileMetadata];
       saved.item.attachment_engine = attachmentThought.metadata;
+      saved.item.document_segmentation = documentSegmentation.metadata;
+      saved.item.document_segments = documentSegmentation.segments;
+      saved.item.active_document_segment = firstDocumentSegment;
       saved.item.knowledge_extraction = knowledgeExtraction.metadata;
       saved.item.knowledge_objects = savedKnowledge.objects;
       saved.item.source_attachment_message = message || null;
@@ -11513,6 +11557,8 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       skipped_ai_understanding: shouldUseFastReply,
       skipped_chat_reply_generation: shouldUseFastReply,
       saved_knowledge_count: Number(savedKnowledge?.saved_count || 0),
+      document_segment_count: Array.isArray(documentSegmentation?.segments) ? documentSegmentation.segments.length : 0,
+      active_document_segment_id: firstDocumentSegment?.id || null,
     });
 
     return {
