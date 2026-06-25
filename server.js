@@ -11262,6 +11262,7 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       },
       maxTextCharacters: 12000,
       maxObjects: 12,
+      extractionMode: firstDocumentSegment ? 'fast_segment' : 'standard',
     });
     perf.mark('knowledge_extractor', knowledgeExtractionStartedAt, {
       ok: Boolean(knowledgeExtraction?.ok),
@@ -11270,6 +11271,7 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       extracted_objects_count: Array.isArray(knowledgeExtraction?.objects) ? knowledgeExtraction.objects.length : 0,
       max_text_characters: 12000,
       max_objects: 12,
+      extraction_mode: knowledgeExtraction?.metadata?.extraction_mode || (firstDocumentSegment ? 'fast_segment' : 'standard'),
       source_segment_id: firstDocumentSegment?.id || null,
       source_segment_title: firstDocumentSegment?.title || null,
       source_segment_characters: Number(firstDocumentSegment?.character_count || 0),
