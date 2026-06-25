@@ -11109,6 +11109,26 @@ function saveChatAttachmentCapture({ userId, message, fileMetadata }) {
 
 
 
+function shouldUseFastAttachmentReply(message) {
+  const instruction = normalizeText(message || '');
+
+  if (!instruction) return true;
+
+  return !hasExplicitOperationalRequest(instruction);
+}
+
+function buildFastAttachmentReply({ fileMetadata, savedKnowledge }) {
+  const fileName = normalizeUploadedFileName(fileMetadata?.name || 'fichier-nyra');
+  const savedCount = Number(savedKnowledge?.saved_count || 0);
+
+  if (savedCount > 0) {
+    return `J’ai lu le fichier ${fileName} et j’en ai extrait ${savedCount} élément${savedCount > 1 ? 's' : ''} utile${savedCount > 1 ? 's' : ''} pour mieux te comprendre.`;
+  }
+
+  return `J’ai lu le fichier ${fileName} et je l’ai intégré à Nyra.`;
+}
+
+
 async function processAttachmentJob({ userId, message, fileMetadata, buffer, startedAt }) {
     const attachmentThought = await buildAttachmentThought({
       buffer,
@@ -11232,6 +11252,7 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
         knowledge_objects: savedKnowledge.objects,
         file_content_is_instruction: false,
         allow_attachment_content_actions: false,
+        attachment_fast_reply_available: shouldUseFastAttachmentReply(attachmentInstruction),
         tags: uniqueArray([
           ...(Array.isArray(initialAnalysis.tags) ? initialAnalysis.tags : []),
           'fichier',
@@ -11243,8 +11264,11 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       },
       thoughtOrchestration
     );
+    const shouldUseFastReply = shouldUseFastAttachmentReply(attachmentInstruction);
     const analysis = enrichAnalysisWithPipelineContext(
-      await analyzeMessageWithAI(attachmentAnalysisMessage, localAnalysis, memorySummary),
+      shouldUseFastReply
+        ? localAnalysis
+        : await analyzeMessageWithAI(attachmentAnalysisMessage, localAnalysis, memorySummary),
       thoughtOrchestration
     );
     analysis.source = 'file_attachment';
@@ -11305,32 +11329,44 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       analysis,
     });
 
-    const replyResult = executionPolicy.mode === 'deterministic'
+    const replyResult = shouldUseFastReply
       ? {
-          reply: executionPolicy.reply,
-          execution_policy: executionPolicy,
+          reply: buildFastAttachmentReply({ fileMetadata, savedKnowledge }),
+          execution_policy: {
+            ...executionPolicy,
+            mode: 'deterministic',
+            protocol: 'attachment_fast_reply',
+            phase: 'received_and_integrated',
+            reason: 'Pièce jointe sans directive explicite : éviter les appels conversationnels coûteux après extraction.',
+            behavior_impact: 'faster_attachment_response',
+          },
         }
-      : (typeof buildChatReply === 'function'
-          ? await buildChatReply({
-              openaiClient: openai,
-              model: OPENAI_MODEL,
-              analysis,
-              memorySummary,
-              thought,
-              action,
-              thoughtOrchestration,
-              buildActionReply,
-              buildSystemPrompt: (promptAnalysis, promptMemorySummary, cognitivePromptContext = {}) => {
-                return buildSystemPrompt(promptAnalysis, promptMemorySummary, {
-                  ...(cognitivePromptContext || {}),
-                  chosenDecision,
-                  decision_profile: chosenDecision?.decision_profile || null,
-                  cognitive_cost: chosenDecision?.decision_profile?.cognitive_cost || null,
-                  execution_policy: executionPolicy,
-                });
-              },
-            })
-          : null);
+      : (executionPolicy.mode === 'deterministic'
+          ? {
+              reply: executionPolicy.reply,
+              execution_policy: executionPolicy,
+            }
+          : (typeof buildChatReply === 'function'
+              ? await buildChatReply({
+                  openaiClient: openai,
+                  model: OPENAI_MODEL,
+                  analysis,
+                  memorySummary,
+                  thought,
+                  action,
+                  thoughtOrchestration,
+                  buildActionReply,
+                  buildSystemPrompt: (promptAnalysis, promptMemorySummary, cognitivePromptContext = {}) => {
+                    return buildSystemPrompt(promptAnalysis, promptMemorySummary, {
+                      ...(cognitivePromptContext || {}),
+                      chosenDecision,
+                      decision_profile: chosenDecision?.decision_profile || null,
+                      cognitive_cost: chosenDecision?.decision_profile?.cognitive_cost || null,
+                      execution_policy: executionPolicy,
+                    });
+                  },
+                })
+              : null));
 
     const reply = normalizeText(replyResult?.reply) || buildActionReply(action) || `J’ai lu le fichier ${fileMetadata.name} et je l’ai intégré à Nyra.`;
 
@@ -11372,6 +11408,11 @@ async function processAttachmentJob({ userId, message, fileMetadata, buffer, sta
       attachment_engine: attachmentThought,
       knowledge_extraction: knowledgeExtraction,
       knowledge_objects: savedKnowledge.objects,
+      attachment_performance: {
+        fast_reply_used: shouldUseFastReply,
+        skipped_ai_understanding: shouldUseFastReply,
+        skipped_chat_reply_generation: shouldUseFastReply,
+      },
       living_model_update: {
         status: savedKnowledge.saved_count > 0 ? 'updated' : 'no_structured_knowledge',
         saved_count: savedKnowledge.saved_count,
