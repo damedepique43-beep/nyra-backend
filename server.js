@@ -16,6 +16,7 @@ const { analyzePriorities } = require('./engines/cognitivePriorityEngine');
 const { compressTask } = require('./engines/actionCompressionEngine');
 const { analyzeMomentumRecovery } = require('./engines/momentumRecoveryEngine');
 const { buildAttachmentThought } = require('./engines/nyraAttachmentEngine');
+const { extractKnowledgeObjectsFromText } = require('./engines/nyraKnowledgeExtractor');
 const {
   buildNyraCognitiveOrchestration,
   buildInitialChatAnalysis,
@@ -125,6 +126,7 @@ function createEmptyStore() {
     cognitive_priority_snapshots: [],
     cognitive_history_analyses: [],
     proactive_assistant_v2_events: [],
+    knowledge_objects: [],
     updated_at: null,
   };
 }
@@ -184,6 +186,9 @@ function readStore() {
       proactive_assistant_v2_events: Array.isArray(parsed.proactive_assistant_v2_events)
         ? parsed.proactive_assistant_v2_events
         : [],
+      knowledge_objects: Array.isArray(parsed.knowledge_objects)
+        ? parsed.knowledge_objects
+        : [],
       updated_at: parsed.updated_at || null,
     }
 
@@ -211,6 +216,7 @@ function writeStore(store) {
       cognitive_priority_snapshots: Array.isArray(store.cognitive_priority_snapshots) ? store.cognitive_priority_snapshots : [],
       cognitive_history_analyses: Array.isArray(store.cognitive_history_analyses) ? store.cognitive_history_analyses : [],
       proactive_assistant_v2_events: Array.isArray(store.proactive_assistant_v2_events) ? store.proactive_assistant_v2_events : [],
+      knowledge_objects: Array.isArray(store.knowledge_objects) ? store.knowledge_objects : [],
       version: STORE_VERSION,
       updated_at: nowIso(),
     };
@@ -762,6 +768,101 @@ function includesAny(text, words) {
 
 function uniqueArray(values) {
   return [...new Set(values.filter(Boolean))];
+}
+
+
+function buildKnowledgeObjectStableKey(userId, object = {}) {
+  const source = normalizeText([
+    userId || 'local-user',
+    object.type || 'observation',
+    object.key || '',
+    object.value || '',
+    object.source || '',
+    object.source_file || '',
+  ].join('|'));
+
+  return crypto
+    .createHash('sha256')
+    .update(source || crypto.randomUUID())
+    .digest('hex')
+    .slice(0, 32);
+}
+
+function saveKnowledgeObjectsForUser({ userId, objects, sourceMetadata }) {
+  const normalizedUserId = normalizeText(userId || 'local-user');
+  const safeObjects = Array.isArray(objects) ? objects : [];
+
+  if (!safeObjects.length) {
+    return {
+      saved_count: 0,
+      objects: [],
+    };
+  }
+
+  const store = readStore();
+  store.knowledge_objects = Array.isArray(store.knowledge_objects)
+    ? store.knowledge_objects
+    : [];
+
+  const savedObjects = [];
+
+  safeObjects.forEach(rawObject => {
+    if (!rawObject || typeof rawObject !== 'object') return;
+
+    const stableKey = buildKnowledgeObjectStableKey(normalizedUserId, rawObject);
+    const existingIndex = store.knowledge_objects.findIndex(existingObject => {
+      return existingObject.user_id === normalizedUserId && existingObject.stable_key === stableKey;
+    });
+    const now = nowIso();
+    const nextObject = {
+      id: existingIndex >= 0 ? store.knowledge_objects[existingIndex].id : crypto.randomUUID(),
+      user_id: normalizedUserId,
+      stable_key: stableKey,
+      type: normalizeText(rawObject.type || 'observation') || 'observation',
+      key: normalizeText(rawObject.key || ''),
+      label: normalizeText(rawObject.label || rawObject.key || ''),
+      value: normalizeText(rawObject.value || ''),
+      confidence: Math.max(0, Math.min(1, Number(rawObject.confidence ?? 0.5))),
+      stability: normalizeText(rawObject.stability || 'unknown') || 'unknown',
+      source: normalizeText(rawObject.source || sourceMetadata?.source || 'unknown') || 'unknown',
+      source_file: normalizeText(rawObject.source_file || sourceMetadata?.file_name || ''),
+      source_attachment_id: normalizeText(rawObject.source_attachment_id || sourceMetadata?.attachment_id || ''),
+      evidence: normalizeText(rawObject.evidence || '').slice(0, 260),
+      status: 'active',
+      created_at: existingIndex >= 0 ? store.knowledge_objects[existingIndex].created_at || now : now,
+      updated_at: now,
+      last_seen_at: now,
+      observation_count: existingIndex >= 0
+        ? Number(store.knowledge_objects[existingIndex].observation_count || 1) + 1
+        : 1,
+    };
+
+    if (existingIndex >= 0) {
+      store.knowledge_objects[existingIndex] = {
+        ...store.knowledge_objects[existingIndex],
+        ...nextObject,
+      };
+      savedObjects.push(store.knowledge_objects[existingIndex]);
+      return;
+    }
+
+    store.knowledge_objects.push(nextObject);
+    savedObjects.push(nextObject);
+  });
+
+  const otherObjects = store.knowledge_objects.filter(object => object.user_id !== normalizedUserId);
+  const userObjects = store.knowledge_objects.filter(object => object.user_id === normalizedUserId);
+  store.knowledge_objects = [
+    ...otherObjects,
+    ...userObjects.slice(-500),
+  ].slice(-2000);
+
+  writeStore(store);
+
+  return {
+    saved_count: savedObjects.length,
+    objects: savedObjects,
+  };
 }
 
 function extractContext(text) {
@@ -5281,6 +5382,7 @@ function getStoreSummary(userId) {
     cognitive_priority_snapshot_count: (Array.isArray(store.cognitive_priority_snapshots) ? store.cognitive_priority_snapshots : []).filter(snapshot => snapshot.user_id === userId).length,
     cognitive_history_analysis_count: (Array.isArray(store.cognitive_history_analyses) ? store.cognitive_history_analyses : []).filter(analysis => analysis.user_id === userId).length,
     proactive_assistant_v2_event_count: (Array.isArray(store.proactive_assistant_v2_events) ? store.proactive_assistant_v2_events : []).filter(event => event.user_id === userId).length,
+    knowledge_object_count: (Array.isArray(store.knowledge_objects) ? store.knowledge_objects : []).filter(object => object.user_id === userId).length,
     local_only: userActions.filter(action => action.sync_status === 'local_only').length,
     pending_sync: userActions.filter(action => action.sync_status === 'pending_sync').length,
     synced: userActions.filter(action => action.sync_status === 'synced').length,
@@ -11097,6 +11199,35 @@ app.post('/chat/attachment', async (req, res) => {
       });
     }
 
+    const knowledgeExtraction = await extractKnowledgeObjectsFromText({
+      openaiClient: openai,
+      model: OPENAI_MODEL,
+      text: attachmentThought.text || '',
+      sourceMetadata: {
+        source: 'chat_attachment',
+        file_name: fileMetadata.name,
+        attachment_id: fileMetadata.id,
+        mime_type: fileMetadata.mime_type,
+      },
+      maxTextCharacters: 12000,
+      maxObjects: 12,
+    });
+
+    const savedKnowledge = knowledgeExtraction.ok && knowledgeExtraction.objects.length
+      ? saveKnowledgeObjectsForUser({
+          userId,
+          objects: knowledgeExtraction.objects,
+          sourceMetadata: {
+            source: 'chat_attachment',
+            file_name: fileMetadata.name,
+            attachment_id: fileMetadata.id,
+          },
+        })
+      : {
+          saved_count: 0,
+          objects: [],
+        };
+
     const thought = createThought({
       userId,
       content: attachmentThought.thought_content,
@@ -11106,6 +11237,8 @@ app.post('/chat/attachment', async (req, res) => {
         interface: 'mobile',
         attachment: fileMetadata,
         attachment_engine: attachmentThought.metadata,
+        knowledge_extraction: knowledgeExtraction.metadata,
+        knowledge_objects_saved: savedKnowledge.saved_count,
       },
     });
 
@@ -11117,6 +11250,8 @@ app.post('/chat/attachment', async (req, res) => {
         interface: 'mobile',
         attachment: fileMetadata,
         attachment_engine: attachmentThought.metadata,
+        knowledge_extraction: knowledgeExtraction.metadata,
+        knowledge_objects_saved: savedKnowledge.saved_count,
       },
     });
 
@@ -11147,6 +11282,8 @@ app.post('/chat/attachment', async (req, res) => {
         source: 'file_attachment',
         attachment: fileMetadata,
         attachment_engine: attachmentThought.metadata,
+        knowledge_extraction: knowledgeExtraction.metadata,
+        knowledge_objects: savedKnowledge.objects,
         file_content_is_instruction: false,
         allow_attachment_content_actions: false,
         tags: uniqueArray([
@@ -11155,6 +11292,7 @@ app.post('/chat/attachment', async (req, res) => {
           'attachment',
           'pdf',
           'document-source',
+          savedKnowledge.saved_count > 0 ? 'living-model-update' : null,
         ]),
       },
       thoughtOrchestration
@@ -11166,6 +11304,13 @@ app.post('/chat/attachment', async (req, res) => {
     analysis.source = 'file_attachment';
     analysis.attachment = fileMetadata;
     analysis.attachment_engine = attachmentThought.metadata;
+    analysis.knowledge_extraction = knowledgeExtraction.metadata;
+    analysis.knowledge_objects = savedKnowledge.objects;
+    analysis.living_model_update = {
+      source: 'chat_attachment',
+      saved_count: savedKnowledge.saved_count,
+      status: savedKnowledge.saved_count > 0 ? 'updated' : 'no_structured_knowledge',
+    };
     analysis.file_content_is_instruction = false;
     analysis.allow_attachment_content_actions = false;
     analysis.tags = uniqueArray([
@@ -11174,6 +11319,7 @@ app.post('/chat/attachment', async (req, res) => {
       'attachment',
       'pdf',
       'document-source',
+      savedKnowledge.saved_count > 0 ? 'living-model-update' : null,
     ]);
 
     // Une action ne peut venir que du message explicite accompagnant le fichier.
@@ -11257,6 +11403,8 @@ app.post('/chat/attachment', async (req, res) => {
       saved.item.attachment = fileMetadata;
       saved.item.attachments = [fileMetadata];
       saved.item.attachment_engine = attachmentThought.metadata;
+      saved.item.knowledge_extraction = knowledgeExtraction.metadata;
+      saved.item.knowledge_objects = savedKnowledge.objects;
       saved.item.source_attachment_message = message || null;
     }
 
@@ -11276,6 +11424,12 @@ app.post('/chat/attachment', async (req, res) => {
       ...chatResponse,
       attachment: fileMetadata,
       attachment_engine: attachmentThought,
+      knowledge_extraction: knowledgeExtraction,
+      knowledge_objects: savedKnowledge.objects,
+      living_model_update: {
+        status: savedKnowledge.saved_count > 0 ? 'updated' : 'no_structured_knowledge',
+        saved_count: savedKnowledge.saved_count,
+      },
     });
   } catch (error) {
     console.error('❌ /chat/attachment error:', error.message);
