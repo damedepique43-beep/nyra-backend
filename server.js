@@ -12147,6 +12147,7 @@ function buildConversationPerformanceReport(performanceSummary = {}) {
     ? [
         '',
         'Reply generation usage :',
+        `- Prompt mode .................. ${replyGenerationStep.prompt_mode || 'non disponible'}`,
         `- Prompt characters ............ ${formatNullableConversationMetric(replyGenerationStep.prompt_characters)}`,
         `- Prompt tokens ................ ${formatNullableConversationMetric(replyGenerationStep.prompt_tokens)}`,
         `- Completion tokens ............ ${formatNullableConversationMetric(replyGenerationStep.completion_tokens)}`,
@@ -12277,6 +12278,158 @@ function isSimpleLowRiskConversationMessage(message, localAnalysis = {}) {
     !localAnalysis?.is_project &&
     !localAnalysis?.is_idea
   );
+}
+
+
+function isSafeLightConversationReplyMessage(message, analysis = {}) {
+  const compact = normalizeSimpleConversationKey(message);
+
+  if (!compact) return false;
+  if (compact.length > 40) return false;
+  if (hasExplicitOperationalRequest(compact)) return false;
+
+  if (
+    analysis?.is_task ||
+    analysis?.is_project ||
+    analysis?.is_idea ||
+    analysis?.is_emotion ||
+    normalizeText(analysis?.response_level || '') === 'reflection' ||
+    normalizeText(analysis?.suggested_bucket || '') === 'journal'
+  ) {
+    return false;
+  }
+
+  const safeMessages = new Set([
+    'coucou',
+    'bonjour',
+    'bonsoir',
+    'salut',
+    'hello',
+    'hey',
+    'yo',
+    'merci',
+    'merci beaucoup',
+    'ok',
+    'okay',
+    'd accord',
+    'daccord',
+    'ca marche',
+    'ça marche',
+    'parfait',
+    'super',
+    'nickel',
+    'bonne nuit',
+    'a plus',
+    'à plus',
+    'a bientot',
+    'à bientot',
+    'à bientôt',
+  ]);
+
+  return safeMessages.has(compact);
+}
+
+function buildLightConversationPersonalContext(userId) {
+  const normalizedUserId = normalizeText(userId || 'local-user');
+
+  try {
+    const store = readStore();
+    const users = Array.isArray(store.users) ? store.users : [];
+    const user = users.find(existingUser => {
+      return (
+        existingUser.id === normalizedUserId ||
+        existingUser.legacy_user_id === normalizedUserId ||
+        existingUser.google_user_id === normalizedUserId
+      );
+    }) || null;
+
+    const displayName = normalizeText(
+      user?.profile_name ||
+      user?.name ||
+      user?.display_name ||
+      ''
+    );
+
+    const recentConversations = (Array.isArray(store.conversations) ? store.conversations : [])
+      .filter(conversation => {
+        return !normalizedUserId || normalizedUserId === 'local-user' || conversation.user_id === normalizedUserId;
+      })
+      .slice(-4)
+      .map(conversation => {
+        const userMessage = normalizeText(conversation.user_message || '').slice(0, 180);
+        const nyraReply = normalizeText(conversation.nyra_reply || '').slice(0, 180);
+        return normalizeMultilineText([
+          userMessage ? `Utilisateur : ${userMessage}` : '',
+          nyraReply ? `Nyra : ${nyraReply}` : '',
+        ].filter(Boolean).join('\n'));
+      })
+      .filter(Boolean);
+
+    const latestState = typeof getLatestUserState === 'function'
+      ? getLatestUserState(store, normalizedUserId)
+      : null;
+
+    return {
+      display_name: displayName || null,
+      recent_conversation_summary: recentConversations.join('\n---\n').slice(0, 1200),
+      latest_state: latestState ? {
+        cognitive_load: latestState.cognitive_load || null,
+        energy_level: latestState.energy_level || null,
+        focus_state: latestState.focus_state || null,
+        emotional_state: latestState.emotional_state || null,
+        dominant_mode: latestState.dominant_mode || null,
+      } : null,
+    };
+  } catch (error) {
+    console.error('⚠️ buildLightConversationPersonalContext fallback:', error.message);
+    return {
+      display_name: null,
+      recent_conversation_summary: '',
+      latest_state: null,
+    };
+  }
+}
+
+function buildLightConversationSystemPrompt({ userId, message, analysis }) {
+  const context = buildLightConversationPersonalContext(userId);
+  const displayNameLine = context.display_name
+    ? `Nom ou prénom connu de l'utilisateur : ${context.display_name}`
+    : 'Nom utilisateur : non disponible.';
+  const recentContextLine = context.recent_conversation_summary
+    ? `Derniers échanges utiles, à utiliser seulement si cela rend la réponse plus naturelle :\n${context.recent_conversation_summary}`
+    : 'Aucun échange récent utile à rappeler.';
+  const stateLine = context.latest_state
+    ? `État cognitif récent éventuel : ${JSON.stringify(context.latest_state)}`
+    : 'Aucun état cognitif récent utile.';
+
+  return normalizeMultilineText(`
+Tu es Nyra, un partenaire cognitif personnel, chaleureux, clair et direct.
+
+Tu réponds à une micro-interaction sociale simple, par exemple une salutation, un merci ou un accord court.
+Tu dois rester personnalisée, mais sans mobiliser un raisonnement lourd.
+
+Message utilisateur : ${normalizeText(message)}
+Analyse locale : ${JSON.stringify({
+    type: analysis?.type || null,
+    suggested_bucket: analysis?.suggested_bucket || null,
+    conversation_intent: analysis?.conversation_intent || null,
+  })}
+
+Contexte minimal personnalisé :
+${displayNameLine}
+${stateLine}
+${recentContextLine}
+
+Règles strictes :
+- Réponds en français.
+- Fais court : une ou deux phrases maximum.
+- Garde une chaleur naturelle et personnalisée.
+- Ne crée aucune tâche, aucun rappel, aucun projet et aucune action.
+- Ne prétends pas avoir analysé profondément la situation.
+- Ne donne pas de long conseil.
+- Si le message est une salutation, accueille l'utilisateur et ouvre doucement la suite.
+- Si le message est un remerciement ou un accord, réponds simplement et garde le lien.
+`.trim());
 }
 
 app.post('/chat', async (req, res) => {
@@ -12457,8 +12610,16 @@ app.post('/chat', async (req, res) => {
     }, null, 2));
 
     const replyGenerationStartedAt = Date.now();
+    const shouldUseLightConversationReply = Boolean(
+      executionPolicy?.mode !== 'deterministic' &&
+      shouldSkipAIUnderstanding &&
+      !action &&
+      isSafeLightConversationReplyMessage(thought.content, analysis)
+    );
     const replyGenerationMetrics = {
       model: OPENAI_MODEL,
+      prompt_mode: shouldUseLightConversationReply ? 'light_conversation_v1' : 'full_cognitive_prompt',
+      light_conversation_reply_used: shouldUseLightConversationReply,
       prompt_characters: null,
       prompt_tokens: null,
       completion_tokens: null,
@@ -12508,36 +12669,68 @@ app.post('/chat', async (req, res) => {
         },
       },
     };
-    const replyResult = executionPolicy.mode === 'deterministic'
-      ? {
-          reply: executionPolicy.reply,
-          execution_policy: executionPolicy,
-        }
-      : (typeof buildChatReply === 'function'
-          ? await buildChatReply({
-              openaiClient: instrumentedReplyOpenAIClient,
-              model: OPENAI_MODEL,
-              analysis,
-              memorySummary,
-              thought,
-              action,
-              thoughtOrchestration,
-              buildActionReply,
-              buildSystemPrompt: (promptAnalysis, promptMemorySummary, cognitivePromptContext = {}) => {
-                const systemPrompt = buildSystemPrompt(promptAnalysis, promptMemorySummary, {
-                  ...(cognitivePromptContext || {}),
-                  chosenDecision,
-                  decision_profile: chosenDecision?.decision_profile || null,
-                  cognitive_cost: chosenDecision?.decision_profile?.cognitive_cost || null,
-                  execution_policy: executionPolicy,
-                });
+    let replyResult = null;
 
-                replyGenerationMetrics.system_prompt_characters = String(systemPrompt || '').length;
+    if (executionPolicy.mode === 'deterministic') {
+      replyResult = {
+        reply: executionPolicy.reply,
+        execution_policy: executionPolicy,
+      };
+    } else if (shouldUseLightConversationReply) {
+      const lightSystemPrompt = buildLightConversationSystemPrompt({
+        userId,
+        message: thought.content,
+        analysis,
+      });
 
-                return systemPrompt;
-              },
-            })
-          : null);
+      replyGenerationMetrics.system_prompt_characters = String(lightSystemPrompt || '').length;
+
+      const lightCompletion = await instrumentedReplyOpenAIClient.chat.completions.create({
+        model: OPENAI_MODEL,
+        temperature: 0.35,
+        max_tokens: 90,
+        messages: [
+          {
+            role: 'system',
+            content: lightSystemPrompt,
+          },
+          {
+            role: 'user',
+            content: thought.content,
+          },
+        ],
+      });
+
+      replyResult = {
+        reply: lightCompletion?.choices?.[0]?.message?.content || '',
+        execution_policy: executionPolicy,
+        prompt_mode: 'light_conversation_v1',
+      };
+    } else if (typeof buildChatReply === 'function') {
+      replyResult = await buildChatReply({
+        openaiClient: instrumentedReplyOpenAIClient,
+        model: OPENAI_MODEL,
+        analysis,
+        memorySummary,
+        thought,
+        action,
+        thoughtOrchestration,
+        buildActionReply,
+        buildSystemPrompt: (promptAnalysis, promptMemorySummary, cognitivePromptContext = {}) => {
+          const systemPrompt = buildSystemPrompt(promptAnalysis, promptMemorySummary, {
+            ...(cognitivePromptContext || {}),
+            chosenDecision,
+            decision_profile: chosenDecision?.decision_profile || null,
+            cognitive_cost: chosenDecision?.decision_profile?.cognitive_cost || null,
+            execution_policy: executionPolicy,
+          });
+
+          replyGenerationMetrics.system_prompt_characters = String(systemPrompt || '').length;
+
+          return systemPrompt;
+        },
+      });
+    }
     perf.mark('reply_generation', replyGenerationStartedAt, {
       execution_policy_mode: executionPolicy?.mode || null,
       llm_call_expected: executionPolicy?.mode !== 'deterministic' && typeof buildChatReply === 'function',
@@ -12599,6 +12792,8 @@ app.post('/chat', async (req, res) => {
       suggested_bucket: analysis?.suggested_bucket || null,
       skipped_ai_understanding: Boolean(analysis?.ai_understanding_skipped),
       ai_understanding_skip_reason: analysis?.ai_understanding_skip_reason || null,
+      light_conversation_reply_used: shouldUseLightConversationReply,
+      reply_prompt_mode: replyGenerationMetrics.prompt_mode || null,
     });
 
     res.json({
