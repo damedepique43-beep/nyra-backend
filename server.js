@@ -11287,6 +11287,42 @@ function getMaxAttachmentKnowledgeExtractionSegments() {
   return Math.max(1, Math.min(configuredValue, 8));
 }
 
+function getAttachmentKnowledgeExtractionConcurrency(segmentCount = 1) {
+  const configuredValue = Number(
+    process.env.NYRA_ATTACHMENT_KNOWLEDGE_CONCURRENCY ||
+    process.env.ATTACHMENT_KNOWLEDGE_CONCURRENCY ||
+    3
+  );
+  const safeSegmentCount = Math.max(1, Number(segmentCount || 1));
+  const safeConfiguredValue = Number.isNaN(configuredValue) ? 3 : configuredValue;
+
+  return Math.max(1, Math.min(safeConfiguredValue, 5, safeSegmentCount));
+}
+
+async function runControlledAsyncPool(items, worker, concurrency = 1) {
+  const safeItems = Array.isArray(items) ? items : [];
+  const safeConcurrency = Math.max(1, Math.min(Number(concurrency || 1), safeItems.length || 1));
+  const results = new Array(safeItems.length);
+  let nextIndex = 0;
+
+  async function runWorker() {
+    while (nextIndex < safeItems.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await worker(safeItems[currentIndex], currentIndex);
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(safeConcurrency, safeItems.length) },
+    () => runWorker()
+  );
+
+  await Promise.all(workers);
+
+  return results;
+}
+
 function normalizeKnowledgeMergeKeyPart(value, fallback = 'unknown') {
   const normalized = normalizeKey(value || fallback);
   return normalized || normalizeKey(fallback || 'unknown') || 'unknown';
@@ -11469,53 +11505,93 @@ async function extractKnowledgeObjectsFromDocumentSegments({
   const allSegments = getAttachmentKnowledgeExtractionSegments(documentSegmentation, attachmentText);
   const maxSegmentsToAnalyze = getMaxAttachmentKnowledgeExtractionSegments();
   const segmentsToAnalyze = allSegments.slice(0, maxSegmentsToAnalyze);
-  const segmentResults = [];
+  const concurrency = getAttachmentKnowledgeExtractionConcurrency(segmentsToAnalyze.length);
 
-  for (const segment of segmentsToAnalyze) {
-    const segmentStartedAt = Date.now();
-    const segmentResult = await extractKnowledgeObjectsFromText({
-      openaiClient,
-      model,
-      text: segment.text,
-      sourceMetadata: {
-        source: 'chat_attachment',
-        file_name: fileMetadata.name,
-        attachment_id: fileMetadata.id,
-        mime_type: fileMetadata.mime_type,
-        segment_id: segment.id || null,
-        segment_index: segment.index ?? null,
-        segment_title: segment.title || null,
-        segment_count: allSegments.length,
-      },
-      maxTextCharacters: 12000,
-      maxObjects: 12,
-      extractionMode: segment.fallback ? 'standard' : 'fast_segment',
+  if (perf?.mark) {
+    perf.mark('knowledge_extractor_pool_prepare', startedAt, {
+      orchestration: 'controlled_parallel_pool_v1',
+      total_document_segments: allSegments.length,
+      analyzed_segment_count: segmentsToAnalyze.length,
+      max_analyzed_segments: maxSegmentsToAnalyze,
+      concurrency,
     });
-
-    segmentResults.push({
-      ...segmentResult,
-      segment: {
-        id: segment.id || null,
-        index: segment.index ?? null,
-        title: segment.title || null,
-        character_count: Number(segment.character_count || segment.text?.length || 0),
-        estimated_tokens: Number(segment.estimated_tokens || 0),
-        fallback: Boolean(segment.fallback),
-      },
-    });
-
-    if (perf?.mark) {
-      perf.mark(`knowledge_extractor_segment_${Number(segment.index ?? segmentResults.length - 1) + 1}`, segmentStartedAt, {
-        ok: Boolean(segmentResult?.ok),
-        status: segmentResult?.status || null,
-        segment_id: segment.id || null,
-        segment_title: segment.title || null,
-        extracted_objects_count: Array.isArray(segmentResult?.objects) ? segmentResult.objects.length : 0,
-        extraction_mode: segmentResult?.metadata?.extraction_mode || (segment.fallback ? 'standard' : 'fast_segment'),
-        internal_timing: segmentResult?.metadata?.timing || null,
-      });
-    }
   }
+
+  const segmentResults = await runControlledAsyncPool(
+    segmentsToAnalyze,
+    async (segment, poolIndex) => {
+      const segmentStartedAt = Date.now();
+      let segmentResult = null;
+
+      try {
+        segmentResult = await extractKnowledgeObjectsFromText({
+          openaiClient,
+          model,
+          text: segment.text,
+          sourceMetadata: {
+            source: 'chat_attachment',
+            file_name: fileMetadata.name,
+            attachment_id: fileMetadata.id,
+            mime_type: fileMetadata.mime_type,
+            segment_id: segment.id || null,
+            segment_index: segment.index ?? null,
+            segment_title: segment.title || null,
+            segment_count: allSegments.length,
+          },
+          maxTextCharacters: 12000,
+          maxObjects: 12,
+          extractionMode: segment.fallback ? 'standard' : 'fast_segment',
+        });
+      } catch (error) {
+        segmentResult = {
+          ok: false,
+          status: 'extraction_failed',
+          objects: [],
+          metadata: {
+            engine: 'nyra-knowledge-extractor-v1',
+            reason: 'SEGMENT_EXTRACTION_THROWN_ERROR',
+            error_message: error?.message || 'Erreur inconnue',
+            extraction_mode: segment.fallback ? 'standard' : 'fast_segment',
+            model: normalizeText(model || ''),
+            timing: {
+              total_ms: Date.now() - segmentStartedAt,
+              status: 'extraction_failed',
+              error_message: normalizeText(error?.message || ''),
+            },
+          },
+        };
+      }
+
+      const result = {
+        ...segmentResult,
+        segment: {
+          id: segment.id || null,
+          index: segment.index ?? null,
+          title: segment.title || null,
+          character_count: Number(segment.character_count || segment.text?.length || 0),
+          estimated_tokens: Number(segment.estimated_tokens || 0),
+          fallback: Boolean(segment.fallback),
+        },
+      };
+
+      if (perf?.mark) {
+        perf.mark(`knowledge_extractor_segment_${Number(segment.index ?? poolIndex) + 1}`, segmentStartedAt, {
+          ok: Boolean(segmentResult?.ok),
+          status: segmentResult?.status || null,
+          segment_id: segment.id || null,
+          segment_title: segment.title || null,
+          pool_index: poolIndex,
+          concurrency,
+          extracted_objects_count: Array.isArray(segmentResult?.objects) ? segmentResult.objects.length : 0,
+          extraction_mode: segmentResult?.metadata?.extraction_mode || (segment.fallback ? 'standard' : 'fast_segment'),
+          internal_timing: segmentResult?.metadata?.timing || null,
+        });
+      }
+
+      return result;
+    },
+    concurrency
+  );
 
   const mergeStartedAt = Date.now();
   const merged = mergeKnowledgeExtractionResults(segmentResults, {
@@ -11541,7 +11617,9 @@ async function extractKnowledgeObjectsFromDocumentSegments({
     metadata: {
       ...merged.metadata,
       engine: 'nyra-knowledge-extractor-v1',
-      orchestration: 'multi_segment_v1',
+      orchestration: 'controlled_parallel_pool_v1',
+      previous_orchestration: 'multi_segment_v1',
+      concurrency,
       merge_engine: merged.metadata,
       model: normalizeText(model || ''),
       source: 'chat_attachment',
@@ -11556,7 +11634,6 @@ async function extractKnowledgeObjectsFromDocumentSegments({
     },
   };
 }
-
 
 async function processAttachmentJob({ userId, message, fileMetadata, buffer, startedAt }) {
     const perf = createAttachmentPerformanceTracker({
