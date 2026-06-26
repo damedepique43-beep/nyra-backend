@@ -2002,6 +2002,38 @@ function getProjectRelatedItems(store, userId, projectId) {
   };
 }
 
+function getProjectChecklistItems(store, userId, projectId) {
+  return (Array.isArray(store.items) ? store.items : [])
+    .filter(item => {
+      return (
+        item.user_id === userId &&
+        item.project_id === projectId &&
+        item.bucket === 'project_items'
+      );
+    })
+    .sort((a, b) => {
+      return String(a.created_at || '').localeCompare(String(b.created_at || ''));
+    });
+}
+
+function buildProjectItemResponse(store, userId, project) {
+  const { relations, items } = getProjectRelatedItems(store, userId, project.id);
+  const context = updateProjectContext(store, userId, project);
+  const projectSpec = getLatestProjectSpec(store, userId, project.id);
+  const projectItems = getProjectChecklistItems(store, userId, project.id);
+
+  return {
+    ok: true,
+    userId,
+    project,
+    context: context || null,
+    project_spec: projectSpec || null,
+    relations,
+    items,
+    project_items: projectItems,
+  };
+}
+
 function buildContextSummary(project, relatedItems) {
   const recentItems = relatedItems
     .slice(-8)
@@ -11193,6 +11225,7 @@ app.get('/store/project/:projectId', (req, res) => {
   });
 
   const projectSpec = getLatestProjectSpec(store, userId, project.id);
+  const projectItems = getProjectChecklistItems(store, userId, project.id);
 
   res.json({
     ok: true,
@@ -11202,6 +11235,7 @@ app.get('/store/project/:projectId', (req, res) => {
     project_spec: projectSpec || null,
     relations,
     items,
+    project_items: projectItems,
   });
 });
 
@@ -11268,6 +11302,8 @@ app.patch('/store/project/:projectId', (req, res) => {
 
   writeStore(store);
 
+  const projectItems = getProjectChecklistItems(store, userId, project.id);
+
   res.json({
     ok: true,
     userId,
@@ -11275,6 +11311,189 @@ app.patch('/store/project/:projectId', (req, res) => {
     context: context || null,
     relations,
     items,
+    project_items: projectItems,
+  });
+});
+
+app.post('/store/project/:projectId/items', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const projectId = normalizeText(req.params.projectId);
+  const text = normalizeText(req.body?.text || req.body?.title || req.body?.content || '');
+  const store = readStore();
+
+  if (!text) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Élément de projet manquant',
+    });
+  }
+
+  const project = store.projects.find(item => {
+    return item.user_id === userId && item.id === projectId;
+  });
+
+  if (!project) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Projet introuvable',
+    });
+  }
+
+  const item = {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    bucket: 'project_items',
+    type: 'project_item',
+    title: text,
+    content: text,
+    text,
+    completed: false,
+    status: 'active',
+    project_id: project.id,
+    project_name: project.name || project.project_name || null,
+    created_at: nowIso(),
+    updated_at: nowIso(),
+  };
+
+  store.items.push(item);
+
+  if (!relationExists(store, userId, item.id, project.id, 'belongs_to_project')) {
+    store.relations.push(createRelation({
+      userId,
+      sourceId: item.id,
+      targetId: project.id,
+      relationType: 'belongs_to_project',
+      confidence: 1,
+      metadata: { source: 'project_item_manual' },
+    }));
+  }
+
+  project.updated_at = nowIso();
+  updateProjectContext(store, userId, project);
+  writeStore(store);
+
+  res.json({
+    ...buildProjectItemResponse(store, userId, project),
+    item,
+  });
+});
+
+app.patch('/store/project/:projectId/items/:itemId', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const projectId = normalizeText(req.params.projectId);
+  const itemId = normalizeText(req.params.itemId);
+  const store = readStore();
+
+  const project = store.projects.find(item => {
+    return item.user_id === userId && item.id === projectId;
+  });
+
+  if (!project) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Projet introuvable',
+    });
+  }
+
+  const item = store.items.find(existingItem => {
+    return (
+      existingItem.user_id === userId &&
+      existingItem.id === itemId &&
+      existingItem.project_id === projectId &&
+      existingItem.bucket === 'project_items'
+    );
+  });
+
+  if (!item) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Élément de projet introuvable',
+    });
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'text') || Object.prototype.hasOwnProperty.call(req.body || {}, 'title')) {
+    const nextText = normalizeText(req.body?.text || req.body?.title || '');
+
+    if (!nextText) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Texte de l’élément manquant',
+      });
+    }
+
+    item.text = nextText;
+    item.title = nextText;
+    item.content = nextText;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'completed')) {
+    item.completed = Boolean(req.body.completed);
+    item.status = item.completed ? 'completed' : 'active';
+    item.completed_at = item.completed ? nowIso() : null;
+  }
+
+  item.updated_at = nowIso();
+  project.updated_at = nowIso();
+  updateProjectContext(store, userId, project);
+  writeStore(store);
+
+  res.json({
+    ...buildProjectItemResponse(store, userId, project),
+    item,
+  });
+});
+
+app.delete('/store/project/:projectId/items/:itemId', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const projectId = normalizeText(req.params.projectId);
+  const itemId = normalizeText(req.params.itemId);
+  const store = readStore();
+
+  const project = store.projects.find(item => {
+    return item.user_id === userId && item.id === projectId;
+  });
+
+  if (!project) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Projet introuvable',
+    });
+  }
+
+  const itemIndex = store.items.findIndex(existingItem => {
+    return (
+      existingItem.user_id === userId &&
+      existingItem.id === itemId &&
+      existingItem.project_id === projectId &&
+      existingItem.bucket === 'project_items'
+    );
+  });
+
+  if (itemIndex < 0) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Élément de projet introuvable',
+    });
+  }
+
+  const [deletedItem] = store.items.splice(itemIndex, 1);
+
+  store.relations = store.relations.filter(relation => {
+    if (relation.user_id !== userId) return true;
+
+    return !(
+      relation.source_id === itemId ||
+      relation.target_id === itemId
+    );
+  });
+
+  project.updated_at = nowIso();
+  updateProjectContext(store, userId, project);
+  writeStore(store);
+
+  res.json({
+    ...buildProjectItemResponse(store, userId, project),
+    deleted_item: deletedItem,
   });
 });
 
@@ -11312,6 +11531,15 @@ app.delete('/store/project/:projectId', (req, res) => {
     return !(
       context.project_id === projectId ||
       context.id === deletedProject.project_spec_context_id
+    );
+  });
+
+  store.items = store.items.filter(item => {
+    if (item.user_id !== userId) return true;
+
+    return !(
+      item.bucket === 'project_items' &&
+      item.project_id === projectId
     );
   });
 
