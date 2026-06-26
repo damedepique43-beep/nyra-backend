@@ -11205,6 +11205,155 @@ app.get('/store/project/:projectId', (req, res) => {
   });
 });
 
+app.patch('/store/project/:projectId', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const projectId = normalizeText(req.params.projectId);
+  const nextName = normalizeText(req.body?.name || req.body?.project_name || '');
+  const store = readStore();
+
+  if (!nextName) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Nom de projet manquant',
+    });
+  }
+
+  const project = store.projects.find(item => {
+    return item.user_id === userId && item.id === projectId;
+  });
+
+  if (!project) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Projet introuvable',
+    });
+  }
+
+  const nextKey = normalizeKey(nextName);
+
+  const existingProject = store.projects.find(item => {
+    return (
+      item.user_id === userId &&
+      item.id !== projectId &&
+      normalizeKey(item.name || item.project_name || item.key) === nextKey
+    );
+  });
+
+  if (existingProject) {
+    return res.status(409).json({
+      ok: false,
+      error: 'Un projet porte déjà ce nom',
+    });
+  }
+
+  project.name = nextName;
+  project.project_name = nextName;
+  project.key = nextKey;
+  project.updated_at = nowIso();
+
+  const { relations, items } = getProjectRelatedItems(store, userId, project.id);
+  const context = updateProjectContext(store, userId, project);
+
+  store.contexts.forEach(existingContext => {
+    if (
+      existingContext.user_id === userId &&
+      existingContext.context_type === 'project_spec' &&
+      existingContext.project_id === project.id
+    ) {
+      existingContext.name = `Cahier des charges — ${project.name}`;
+      existingContext.summary = `Cahier des charges généré pour le projet ${project.name}.`;
+      existingContext.updated_at = nowIso();
+    }
+  });
+
+  writeStore(store);
+
+  res.json({
+    ok: true,
+    userId,
+    project,
+    context: context || null,
+    relations,
+    items,
+  });
+});
+
+app.delete('/store/project/:projectId', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const projectId = normalizeText(req.params.projectId);
+  const store = readStore();
+
+  const projectIndex = store.projects.findIndex(item => {
+    return item.user_id === userId && item.id === projectId;
+  });
+
+  if (projectIndex < 0) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Projet introuvable',
+    });
+  }
+
+  const [deletedProject] = store.projects.splice(projectIndex, 1);
+
+  store.relations = store.relations.filter(relation => {
+    if (relation.user_id !== userId) return true;
+
+    return !(
+      relation.source_id === projectId ||
+      relation.target_id === projectId ||
+      relation.project_id === projectId
+    );
+  });
+
+  store.contexts = store.contexts.filter(context => {
+    if (context.user_id !== userId) return true;
+
+    return !(
+      context.project_id === projectId ||
+      context.id === deletedProject.project_spec_context_id
+    );
+  });
+
+  store.items.forEach(item => {
+    if (item.user_id !== userId) return;
+
+    if (item.project_id === projectId || normalizeKey(item.project_name) === normalizeKey(deletedProject.name)) {
+      item.project_id = null;
+      item.project_name = null;
+      item.updated_at = nowIso();
+    }
+  });
+
+  store.actions.forEach(action => {
+    if (action.user_id !== userId) return;
+
+    if (action.project_id === projectId || normalizeKey(action.project_name) === normalizeKey(deletedProject.name)) {
+      action.project_id = null;
+      action.project_name = null;
+      action.updated_at = nowIso();
+    }
+  });
+
+  store.conversations.forEach(conversation => {
+    if (conversation.user_id !== userId) return;
+
+    if (conversation.project_id === projectId || normalizeKey(conversation.project_name) === normalizeKey(deletedProject.name)) {
+      conversation.project_id = null;
+      conversation.project_name = null;
+      conversation.updated_at = nowIso();
+    }
+  });
+
+  writeStore(store);
+
+  res.json({
+    ok: true,
+    userId,
+    deleted_project_id: projectId,
+  });
+});
+
 app.post('/store/project/:projectId/spec', async (req, res) => {
   const startedAt = Date.now();
 
