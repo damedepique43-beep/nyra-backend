@@ -110,6 +110,7 @@ function createEmptyStore() {
     version: STORE_VERSION,
     users: [],
     items: [],
+    collections: [],
     actions: [],
     action_events: [],
     conversations: [],
@@ -148,6 +149,7 @@ function readStore() {
       version: parsed.version || STORE_VERSION,
       users: Array.isArray(parsed.users) ? parsed.users : [],
       items: Array.isArray(parsed.items) ? parsed.items : [],
+      collections: Array.isArray(parsed.collections) ? parsed.collections : [],
       actions: Array.isArray(parsed.actions) ? parsed.actions : [],
       action_events: Array.isArray(parsed.action_events) ? parsed.action_events : [],
       conversations: Array.isArray(parsed.conversations) ? parsed.conversations : [],
@@ -206,6 +208,14 @@ function writeStore(store) {
     const safeStore = {
       ...store,
       users: Array.isArray(store.users) ? store.users : [],
+      items: Array.isArray(store.items) ? store.items : [],
+      collections: Array.isArray(store.collections) ? store.collections : [],
+      actions: Array.isArray(store.actions) ? store.actions : [],
+      conversations: Array.isArray(store.conversations) ? store.conversations : [],
+      projects: Array.isArray(store.projects) ? store.projects : [],
+      relations: Array.isArray(store.relations) ? store.relations : [],
+      contexts: Array.isArray(store.contexts) ? store.contexts : [],
+      connected_accounts: Array.isArray(store.connected_accounts) ? store.connected_accounts : [],
       sessions: Array.isArray(store.sessions) ? store.sessions : [],
       action_events: Array.isArray(store.action_events) ? store.action_events : [],
       user_states: Array.isArray(store.user_states) ? store.user_states : [],
@@ -10178,6 +10188,115 @@ function archiveCompletedOrganizationItem(store, item) {
   return null;
 }
 
+
+function getCollectionTitle(collection) {
+  return normalizeText(collection?.name || collection?.title || 'Liste');
+}
+
+function normalizeCollectionName(value) {
+  return normalizeText(value || '')
+    .replace(/[.!?;:]+$/g, '')
+    .trim()
+    .slice(0, 80);
+}
+
+function normalizeCollectionItemTitle(value) {
+  return normalizeText(value || '')
+    .replace(/[.!?;:]+$/g, '')
+    .trim()
+    .slice(0, 140);
+}
+
+function ensureCollectionsArray(store) {
+  if (!Array.isArray(store.collections)) {
+    store.collections = [];
+  }
+
+  return store.collections;
+}
+
+function isDefaultShoppingCollection(collection) {
+  return Boolean(collection?.is_default) && normalizeText(collection?.type || '') === 'shopping';
+}
+
+function getDefaultShoppingCollection(store, userId, { create = true } = {}) {
+  const collections = ensureCollectionsArray(store);
+  const normalizedUserId = normalizeText(userId || 'local-user');
+
+  let collection = collections.find(existingCollection => {
+    return itemBelongsToUser(existingCollection, normalizedUserId) && isDefaultShoppingCollection(existingCollection);
+  });
+
+  if (!collection && create) {
+    collection = {
+      id: crypto.randomUUID(),
+      user_id: normalizedUserId,
+      name: 'Courses',
+      title: 'Courses',
+      type: 'shopping',
+      is_default: true,
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    };
+
+    collections.push(collection);
+  }
+
+  return collection || null;
+}
+
+function findUserCollection(store, userId, collectionId) {
+  const normalizedCollectionId = normalizeText(collectionId || '');
+  const collections = ensureCollectionsArray(store);
+  const index = collections.findIndex(collection => {
+    return itemBelongsToUser(collection, userId) && collection.id === normalizedCollectionId;
+  });
+
+  if (index < 0) return null;
+
+  return { collection: collections[index], index };
+}
+
+function getCollectionItems(store, userId, collection) {
+  const items = Array.isArray(store.items) ? store.items : [];
+
+  if (!collection) return [];
+
+  if (isDefaultShoppingCollection(collection)) {
+    return items.filter(item => {
+      return (
+        itemBelongsToUser(item, userId) &&
+        item.bucket === 'shopping_list' &&
+        !item.archived_at &&
+        !isCompletedStatus(item.status)
+      );
+    });
+  }
+
+  return items.filter(item => {
+    return (
+      itemBelongsToUser(item, userId) &&
+      item.bucket === 'collection_items' &&
+      item.collection_id === collection.id &&
+      !item.archived_at &&
+      !isCompletedStatus(item.status)
+    );
+  });
+}
+
+function buildCollectionResponse(store, userId, collection) {
+  const items = getCollectionItems(store, userId, collection);
+
+  return {
+    ...collection,
+    name: getCollectionTitle(collection),
+    title: getCollectionTitle(collection),
+    item_count: items.length,
+    checked_count: items.filter(item => Boolean(item.checked) || isCompletedStatus(item.status)).length,
+    items,
+  };
+}
+
 function archiveShoppingListIfFullyChecked(store, userId) {
   const items = Array.isArray(store.items) ? store.items : [];
   const shoppingItems = items.filter(item => {
@@ -10207,6 +10326,239 @@ function archiveShoppingListIfFullyChecked(store, userId) {
     archived_at: nowIso(),
   };
 }
+
+
+app.get('/store/collections', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+
+  getDefaultShoppingCollection(store, userId, { create: true });
+  writeStore(store);
+
+  const collections = ensureCollectionsArray(store)
+    .filter(collection => itemBelongsToUser(collection, userId))
+    .map(collection => buildCollectionResponse(store, userId, collection))
+    .sort((a, b) => {
+      if (a.is_default && !b.is_default) return -1;
+      if (!a.is_default && b.is_default) return 1;
+      return new Date(b.updated_at || b.created_at || 0).getTime() -
+        new Date(a.updated_at || a.created_at || 0).getTime();
+    });
+
+  return res.json({
+    ok: true,
+    userId,
+    count: collections.length,
+    collections,
+  });
+});
+
+app.post('/store/collections', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const name = normalizeCollectionName(req.body?.name || req.body?.title || '');
+
+  if (!name) {
+    return res.status(400).json({
+      ok: false,
+      error: 'COLLECTION_NAME_REQUIRED',
+      message: 'Nom de liste obligatoire.',
+    });
+  }
+
+  const store = readStore();
+  const collections = ensureCollectionsArray(store);
+  const existingCollection = collections.find(collection => {
+    return itemBelongsToUser(collection, userId) &&
+      getCollectionTitle(collection).toLowerCase() === name.toLowerCase();
+  });
+
+  if (existingCollection) {
+    return res.json({
+      ok: true,
+      userId,
+      collection: buildCollectionResponse(store, userId, existingCollection),
+      already_exists: true,
+      message: 'Cette liste existe déjà.',
+    });
+  }
+
+  const collection = {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    name,
+    title: name,
+    type: 'custom',
+    is_default: false,
+    created_at: nowIso(),
+    updated_at: nowIso(),
+  };
+
+  collections.push(collection);
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    collection: buildCollectionResponse(store, userId, collection),
+    message: 'Liste créée.',
+  });
+});
+
+app.patch('/store/collections/:collectionId', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const store = readStore();
+  const found = findUserCollection(store, userId, req.params.collectionId);
+
+  if (!found) {
+    return res.status(404).json({
+      ok: false,
+      error: 'COLLECTION_NOT_FOUND',
+      message: 'Liste introuvable.',
+    });
+  }
+
+  const collection = found.collection;
+  const name = normalizeCollectionName(req.body?.name || req.body?.title || '');
+
+  if (!name) {
+    return res.status(400).json({
+      ok: false,
+      error: 'COLLECTION_NAME_REQUIRED',
+      message: 'Nom de liste obligatoire.',
+    });
+  }
+
+  collection.name = name;
+  collection.title = name;
+  collection.updated_at = nowIso();
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    collection: buildCollectionResponse(store, userId, collection),
+    message: 'Liste renommée.',
+  });
+});
+
+app.delete('/store/collections/:collectionId', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const store = readStore();
+  const found = findUserCollection(store, userId, req.params.collectionId);
+
+  if (!found) {
+    return res.status(404).json({
+      ok: false,
+      error: 'COLLECTION_NOT_FOUND',
+      message: 'Liste introuvable.',
+    });
+  }
+
+  const collection = found.collection;
+
+  if (isDefaultShoppingCollection(collection)) {
+    return res.status(400).json({
+      ok: false,
+      error: 'DEFAULT_COLLECTION_CANNOT_BE_DELETED',
+      message: 'La liste Courses ne peut pas encore être supprimée.',
+    });
+  }
+
+  const deletedItems = getCollectionItems(store, userId, collection);
+  deletedItems.forEach(item => {
+    item.archived_at = item.archived_at || nowIso();
+    item.status = 'cancelled';
+    item.updated_at = nowIso();
+  });
+
+  store.collections.splice(found.index, 1);
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    deleted_collection: collection,
+    deleted_items_count: deletedItems.length,
+    message: 'Liste supprimée.',
+  });
+});
+
+app.get('/store/collections/:collectionId/items', (req, res) => {
+  const userId = normalizeText(req.query?.userId || 'local-user');
+  const store = readStore();
+  const found = findUserCollection(store, userId, req.params.collectionId);
+
+  if (!found) {
+    return res.status(404).json({
+      ok: false,
+      error: 'COLLECTION_NOT_FOUND',
+      message: 'Liste introuvable.',
+    });
+  }
+
+  const items = getCollectionItems(store, userId, found.collection);
+
+  return res.json({
+    ok: true,
+    userId,
+    collection: buildCollectionResponse(store, userId, found.collection),
+    count: items.length,
+    items,
+  });
+});
+
+app.post('/store/collections/:collectionId/items', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const title = normalizeCollectionItemTitle(req.body?.title || req.body?.content || req.body?.target || '');
+
+  if (!title) {
+    return res.status(400).json({
+      ok: false,
+      error: 'COLLECTION_ITEM_TITLE_REQUIRED',
+      message: 'Titre obligatoire.',
+    });
+  }
+
+  const store = readStore();
+  const found = findUserCollection(store, userId, req.params.collectionId);
+
+  if (!found) {
+    return res.status(404).json({
+      ok: false,
+      error: 'COLLECTION_NOT_FOUND',
+      message: 'Liste introuvable.',
+    });
+  }
+
+  const collection = found.collection;
+  const item = {
+    id: crypto.randomUUID(),
+    user_id: userId,
+    bucket: isDefaultShoppingCollection(collection) ? 'shopping_list' : 'collection_items',
+    type: 'collection_item',
+    collection_id: collection.id,
+    collection_name: getCollectionTitle(collection),
+    title,
+    content: title,
+    target: title,
+    checked: false,
+    status: 'todo',
+    created_at: nowIso(),
+    updated_at: nowIso(),
+  };
+
+  store.items.push(item);
+  collection.updated_at = nowIso();
+  writeStore(store);
+
+  return res.json({
+    ok: true,
+    userId,
+    collection: buildCollectionResponse(store, userId, collection),
+    item,
+    message: 'Élément ajouté à la liste.',
+  });
+});
 
 app.get('/store/memory', (req, res) => {
   const userId = normalizeText(req.query?.userId || 'local-user');
