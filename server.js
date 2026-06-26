@@ -12184,6 +12184,71 @@ function createConversationPerformanceTracker({ startedAt, message, userId }) {
   };
 }
 
+
+function normalizeSimpleConversationKey(value) {
+  return normalizeText(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[.!?;:…]+$/g, '')
+    .trim();
+}
+
+function isSimpleLowRiskConversationMessage(message, localAnalysis = {}) {
+  const compact = normalizeSimpleConversationKey(message);
+
+  if (!compact) return false;
+  if (compact.length > 60) return false;
+  if (hasExplicitOperationalRequest(compact)) return false;
+
+  const simpleMessages = new Set([
+    'coucou',
+    'bonjour',
+    'bonsoir',
+    'salut',
+    'hello',
+    'hey',
+    'yo',
+    'merci',
+    'merci beaucoup',
+    'ok',
+    'okay',
+    'd accord',
+    'daccord',
+    'ca marche',
+    'ça marche',
+    'parfait',
+    'super',
+    'nickel',
+    'oui',
+    'oui exactement',
+    'exactement',
+    'c est ca',
+    "c'est ca",
+    'non',
+    'pas vraiment',
+  ]);
+
+  if (simpleMessages.has(compact)) return true;
+
+  const conversationIntent = normalizeConversationIntent(localAnalysis?.conversation_intent || 'none');
+  const simpleConversationIntents = new Set([
+    'agreement',
+    'disagreement',
+    'emotional_resonance',
+  ]);
+
+  const wordCount = compact.split(/\s+/).filter(Boolean).length;
+
+  return Boolean(
+    wordCount <= 4 &&
+    simpleConversationIntents.has(conversationIntent) &&
+    !localAnalysis?.is_task &&
+    !localAnalysis?.is_project &&
+    !localAnalysis?.is_idea
+  );
+}
+
 app.post('/chat', async (req, res) => {
   const startedAt = Date.now();
 
@@ -12255,9 +12320,19 @@ app.post('/chat', async (req, res) => {
     );
     perf.mark('enrich_local_analysis_with_pipeline', enrichLocalAnalysisStartedAt);
 
+    const shouldSkipAIUnderstanding = isSimpleLowRiskConversationMessage(thought.content, localAnalysis);
     const aiUnderstandingStartedAt = Date.now();
-    const aiUnderstanding = await analyzeMessageWithAI(thought.content, localAnalysis, memorySummary);
+    const aiUnderstanding = shouldSkipAIUnderstanding
+      ? {
+          ...localAnalysis,
+          ai_understanding_applied: false,
+          ai_understanding_skipped: true,
+          ai_understanding_skip_reason: 'simple_low_risk_conversation_message',
+        }
+      : await analyzeMessageWithAI(thought.content, localAnalysis, memorySummary);
     perf.mark('ai_understanding', aiUnderstandingStartedAt, {
+      skipped: shouldSkipAIUnderstanding,
+      skip_reason: shouldSkipAIUnderstanding ? 'simple_low_risk_conversation_message' : null,
       ai_understanding_applied: Boolean(aiUnderstanding?.ai_understanding_applied),
       type: aiUnderstanding?.type || null,
       suggested_bucket: aiUnderstanding?.suggested_bucket || null,
@@ -12436,6 +12511,8 @@ app.post('/chat', async (req, res) => {
       action_type: action?.action_type || null,
       analysis_type: analysis?.type || null,
       suggested_bucket: analysis?.suggested_bucket || null,
+      skipped_ai_understanding: Boolean(analysis?.ai_understanding_skipped),
+      ai_understanding_skip_reason: analysis?.ai_understanding_skip_reason || null,
     });
 
     res.json({
