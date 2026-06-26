@@ -12113,18 +12113,47 @@ function formatConversationPerformanceDuration(durationMs) {
   return `${Math.round(safeDuration)} ms`;
 }
 
+function formatNullableConversationMetric(value, suffix = '') {
+  if (value === null || value === undefined || value === '') return 'non disponible';
+
+  const numeric = Number(value);
+
+  if (!Number.isNaN(numeric)) {
+    return `${Math.round(numeric)}${suffix}`;
+  }
+
+  return `${value}${suffix}`;
+}
+
+function findConversationPerformanceStep(steps, stepName) {
+  return (Array.isArray(steps) ? steps : []).find(step => step?.step === stepName) || null;
+}
+
 function buildConversationPerformanceReport(performanceSummary = {}) {
   const steps = Array.isArray(performanceSummary.steps) ? performanceSummary.steps : [];
   const measuredSteps = steps.filter(step => typeof step?.duration_ms === 'number');
   const slowestStep = measuredSteps
     .slice()
     .sort((a, b) => Number(b.duration_ms || 0) - Number(a.duration_ms || 0))[0] || null;
+  const replyGenerationStep = findConversationPerformanceStep(steps, 'reply_generation');
 
   const stepLines = measuredSteps.length
     ? measuredSteps.map(step => {
         return `- ${String(step.step || 'step').padEnd(30, '.')} ${formatConversationPerformanceDuration(step.duration_ms)}`;
       })
     : ['- Aucun temps mesuré'];
+
+  const replyGenerationUsageLines = replyGenerationStep
+    ? [
+        '',
+        'Reply generation usage :',
+        `- Prompt characters ............ ${formatNullableConversationMetric(replyGenerationStep.prompt_characters)}`,
+        `- Prompt tokens ................ ${formatNullableConversationMetric(replyGenerationStep.prompt_tokens)}`,
+        `- Completion tokens ............ ${formatNullableConversationMetric(replyGenerationStep.completion_tokens)}`,
+        `- Total tokens ................. ${formatNullableConversationMetric(replyGenerationStep.total_tokens)}`,
+        `- Modèle ....................... ${replyGenerationStep.model || 'non disponible'}`,
+      ]
+    : [];
 
   return [
     '===== NYRA CONVERSATION PERFORMANCE SUMMARY =====',
@@ -12135,6 +12164,7 @@ function buildConversationPerformanceReport(performanceSummary = {}) {
     '',
     'Temps clés :',
     ...stepLines,
+    ...replyGenerationUsageLines,
     '',
     `Étape la plus lente : ${slowestStep ? `${slowestStep.step} (${formatConversationPerformanceDuration(slowestStep.duration_ms)})` : 'non mesurée'}`,
     `TOTAL : ${formatConversationPerformanceDuration(performanceSummary.total_ms)}`,
@@ -12427,6 +12457,57 @@ app.post('/chat', async (req, res) => {
     }, null, 2));
 
     const replyGenerationStartedAt = Date.now();
+    const replyGenerationMetrics = {
+      model: OPENAI_MODEL,
+      prompt_characters: null,
+      prompt_tokens: null,
+      completion_tokens: null,
+      total_tokens: null,
+      openai_response_id: null,
+      openai_finish_reason: null,
+      openai_call_observed: false,
+    };
+    const instrumentedReplyOpenAIClient = {
+      ...openai,
+      chat: {
+        ...(openai.chat || {}),
+        completions: {
+          ...(openai.chat?.completions || {}),
+          create: async (...args) => {
+            const payload = args[0] || {};
+            const messages = Array.isArray(payload.messages) ? payload.messages : [];
+            replyGenerationMetrics.openai_call_observed = true;
+            replyGenerationMetrics.model = normalizeText(payload.model || OPENAI_MODEL);
+            replyGenerationMetrics.requested_max_tokens = payload.max_tokens ?? null;
+            replyGenerationMetrics.temperature = payload.temperature ?? null;
+            replyGenerationMetrics.prompt_characters = messages.reduce((total, message) => {
+              const content = message?.content;
+
+              if (Array.isArray(content)) {
+                return total + content.reduce((subTotal, part) => {
+                  if (typeof part === 'string') return subTotal + part.length;
+                  if (part && typeof part === 'object') return subTotal + normalizeText(part.text || part.content || '').length;
+                  return subTotal;
+                }, 0);
+              }
+
+              return total + String(content || '').length;
+            }, 0);
+            replyGenerationMetrics.messages_count = messages.length;
+
+            const completion = await openai.chat.completions.create(...args);
+
+            replyGenerationMetrics.openai_response_id = normalizeText(completion?.id || '');
+            replyGenerationMetrics.openai_finish_reason = normalizeText(completion?.choices?.[0]?.finish_reason || '');
+            replyGenerationMetrics.prompt_tokens = completion?.usage?.prompt_tokens ?? null;
+            replyGenerationMetrics.completion_tokens = completion?.usage?.completion_tokens ?? null;
+            replyGenerationMetrics.total_tokens = completion?.usage?.total_tokens ?? null;
+
+            return completion;
+          },
+        },
+      },
+    };
     const replyResult = executionPolicy.mode === 'deterministic'
       ? {
           reply: executionPolicy.reply,
@@ -12434,7 +12515,7 @@ app.post('/chat', async (req, res) => {
         }
       : (typeof buildChatReply === 'function'
           ? await buildChatReply({
-              openaiClient: openai,
+              openaiClient: instrumentedReplyOpenAIClient,
               model: OPENAI_MODEL,
               analysis,
               memorySummary,
@@ -12443,13 +12524,17 @@ app.post('/chat', async (req, res) => {
               thoughtOrchestration,
               buildActionReply,
               buildSystemPrompt: (promptAnalysis, promptMemorySummary, cognitivePromptContext = {}) => {
-                return buildSystemPrompt(promptAnalysis, promptMemorySummary, {
+                const systemPrompt = buildSystemPrompt(promptAnalysis, promptMemorySummary, {
                   ...(cognitivePromptContext || {}),
                   chosenDecision,
                   decision_profile: chosenDecision?.decision_profile || null,
                   cognitive_cost: chosenDecision?.decision_profile?.cognitive_cost || null,
                   execution_policy: executionPolicy,
                 });
+
+                replyGenerationMetrics.system_prompt_characters = String(systemPrompt || '').length;
+
+                return systemPrompt;
               },
             })
           : null);
@@ -12457,6 +12542,7 @@ app.post('/chat', async (req, res) => {
       execution_policy_mode: executionPolicy?.mode || null,
       llm_call_expected: executionPolicy?.mode !== 'deterministic' && typeof buildChatReply === 'function',
       has_reply_result: Boolean(replyResult?.reply),
+      ...replyGenerationMetrics,
     });
 
     const replyNormalizeStartedAt = Date.now();
