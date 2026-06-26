@@ -12102,11 +12102,98 @@ app.post('/chat/attachment', async (req, res) => {
   }
 });
 
+
+function formatConversationPerformanceDuration(durationMs) {
+  const safeDuration = Number(durationMs || 0);
+
+  if (safeDuration >= 1000) {
+    return `${(safeDuration / 1000).toFixed(2)} s`;
+  }
+
+  return `${Math.round(safeDuration)} ms`;
+}
+
+function buildConversationPerformanceReport(performanceSummary = {}) {
+  const steps = Array.isArray(performanceSummary.steps) ? performanceSummary.steps : [];
+  const measuredSteps = steps.filter(step => typeof step?.duration_ms === 'number');
+  const slowestStep = measuredSteps
+    .slice()
+    .sort((a, b) => Number(b.duration_ms || 0) - Number(a.duration_ms || 0))[0] || null;
+
+  const stepLines = measuredSteps.length
+    ? measuredSteps.map(step => {
+        return `- ${String(step.step || 'step').padEnd(30, '.')} ${formatConversationPerformanceDuration(step.duration_ms)}`;
+      })
+    : ['- Aucun temps mesuré'];
+
+  return [
+    '===== NYRA CONVERSATION PERFORMANCE SUMMARY =====',
+    '',
+    `Message : ${performanceSummary.message_preview || ''}`,
+    `Mode exécution : ${performanceSummary.execution_policy_mode || 'unknown'}`,
+    `LLM appelé : ${performanceSummary.llm_call_expected ? 'oui' : 'non'}`,
+    '',
+    'Temps clés :',
+    ...stepLines,
+    '',
+    `Étape la plus lente : ${slowestStep ? `${slowestStep.step} (${formatConversationPerformanceDuration(slowestStep.duration_ms)})` : 'non mesurée'}`,
+    `TOTAL : ${formatConversationPerformanceDuration(performanceSummary.total_ms)}`,
+    '=================================================',
+  ].join('\n');
+}
+
+function createConversationPerformanceTracker({ startedAt, message, userId }) {
+  const requestStartedAt = Number(startedAt || Date.now());
+  const steps = [];
+
+  function mark(step, stepStartedAt, extra = {}) {
+    const durationMs = Date.now() - Number(stepStartedAt || Date.now());
+    steps.push({
+      step,
+      duration_ms: durationMs,
+      ...(extra && typeof extra === 'object' ? extra : {}),
+    });
+
+    return durationMs;
+  }
+
+  function summary(extra = {}) {
+    return {
+      route: '/chat',
+      user_id: normalizeText(userId || 'local-user'),
+      message_preview: normalizeText(message || '').slice(0, 180),
+      total_ms: Date.now() - requestStartedAt,
+      steps,
+      ...(extra && typeof extra === 'object' ? extra : {}),
+    };
+  }
+
+  function log(extra = {}) {
+    const performanceSummary = summary(extra);
+    console.log(buildConversationPerformanceReport(performanceSummary));
+    console.log('===== NYRA CONVERSATION PERF RAW =====');
+    console.log(JSON.stringify(performanceSummary, null, 2));
+    console.log('======================================');
+    return performanceSummary;
+  }
+
+  return {
+    mark,
+    summary,
+    log,
+  };
+}
+
 app.post('/chat', async (req, res) => {
   const startedAt = Date.now();
 
   const userMessage = normalizeText(req.body?.message || '');
   const userId = normalizeText(req.body?.userId || 'local-user');
+  const perf = createConversationPerformanceTracker({
+    startedAt,
+    message: userMessage,
+    userId,
+  });
 
   if (!userMessage) {
     return res.status(400).json({
@@ -12116,6 +12203,7 @@ app.post('/chat', async (req, res) => {
   }
 
   try {
+    const createThoughtStartedAt = Date.now();
     const thought = createThought({
       userId,
       content: userMessage,
@@ -12125,7 +12213,9 @@ app.post('/chat', async (req, res) => {
         interface: 'mobile',
       },
     });
+    perf.mark('create_thought', createThoughtStartedAt);
 
+    const orchestrateThoughtStartedAt = Date.now();
     const thoughtOrchestration = await orchestrateThought({
       thought,
       source: 'chat',
@@ -12134,24 +12224,59 @@ app.post('/chat', async (req, res) => {
         interface: 'mobile',
       },
     });
+    perf.mark('orchestrate_thought', orchestrateThoughtStartedAt, {
+      pipeline_context_available: Boolean(buildPipelineAnalysisContext(thoughtOrchestration)),
+    });
 
+    const memorySummaryStartedAt = Date.now();
     const memorySummary = getStoreSummary(userId);
+    perf.mark('get_memory_summary_initial', memorySummaryStartedAt, {
+      total_items: memorySummary?.total_items ?? null,
+      actions: memorySummary?.actions ?? null,
+      knowledge_object_count: memorySummary?.knowledge_object_count ?? null,
+    });
+
+    const initialAnalysisStartedAt = Date.now();
     const initialAnalysis = typeof buildInitialChatAnalysis === 'function'
       ? buildInitialChatAnalysis({
           thought,
           buildLegacyAnalysis: analyzeMessage,
         })
       : analyzeMessage(thought.content);
+    perf.mark('initial_chat_analysis', initialAnalysisStartedAt, {
+      type: initialAnalysis?.type || null,
+      suggested_bucket: initialAnalysis?.suggested_bucket || null,
+    });
 
+    const enrichLocalAnalysisStartedAt = Date.now();
     const localAnalysis = enrichAnalysisWithPipelineContext(
       initialAnalysis,
       thoughtOrchestration
     );
+    perf.mark('enrich_local_analysis_with_pipeline', enrichLocalAnalysisStartedAt);
+
+    const aiUnderstandingStartedAt = Date.now();
+    const aiUnderstanding = await analyzeMessageWithAI(thought.content, localAnalysis, memorySummary);
+    perf.mark('ai_understanding', aiUnderstandingStartedAt, {
+      ai_understanding_applied: Boolean(aiUnderstanding?.ai_understanding_applied),
+      type: aiUnderstanding?.type || null,
+      suggested_bucket: aiUnderstanding?.suggested_bucket || null,
+    });
+
+    const enrichAiAnalysisStartedAt = Date.now();
     const analysis = enrichAnalysisWithPipelineContext(
-      await analyzeMessageWithAI(thought.content, localAnalysis, memorySummary),
+      aiUnderstanding,
       thoughtOrchestration
     );
+    perf.mark('enrich_ai_analysis_with_pipeline', enrichAiAnalysisStartedAt);
+
+    const detectActionStartedAt = Date.now();
     const detectedAction = detectAction(thought.content, userId, analysis);
+    perf.mark('detect_action', detectActionStartedAt, {
+      detected_action_type: detectedAction?.action_type || null,
+    });
+
+    const decisionStartedAt = Date.now();
     const decision = typeof buildChatActionDecision === 'function'
       ? buildChatActionDecision({
           action: detectedAction,
@@ -12159,29 +12284,60 @@ app.post('/chat', async (req, res) => {
           thoughtOrchestration,
         })
       : null;
+    perf.mark('build_chat_action_decision', decisionStartedAt, {
+      has_decision: Boolean(decision),
+    });
+
+    const candidateDecisionStartedAt = Date.now();
+    const pipelineContext = buildPipelineAnalysisContext(thoughtOrchestration) || null;
     const candidateDecision = buildChatCandidateDecision({
       thought,
       analysis,
       detectedAction,
       decision,
-      pipelineContext: buildPipelineAnalysisContext(thoughtOrchestration) || null,
+      pipelineContext,
     });
+    perf.mark('build_candidate_decision', candidateDecisionStartedAt, {
+      has_candidate_decision: Boolean(candidateDecision),
+    });
+
+    const chooseDecisionStartedAt = Date.now();
     const chosenDecision = chooseBestDecision([candidateDecision], {
       thought,
       analysis,
       decision,
       thoughtOrchestration,
-      pipelineContext: buildPipelineAnalysisContext(thoughtOrchestration) || null,
+      pipelineContext,
     });
-    const action = resolveExecutableActionFromCandidateDecision(chosenDecision);
-    const suggestions = buildSuggestions(analysis, action);
+    perf.mark('choose_best_decision', chooseDecisionStartedAt, {
+      has_chosen_decision: Boolean(chosenDecision),
+      decision_profile_contract: chosenDecision?.decision_profile?.contract || null,
+    });
 
+    const resolveActionStartedAt = Date.now();
+    const action = resolveExecutableActionFromCandidateDecision(chosenDecision);
+    perf.mark('resolve_executable_action', resolveActionStartedAt, {
+      action_type: action?.action_type || null,
+    });
+
+    const suggestionsStartedAt = Date.now();
+    const suggestions = buildSuggestions(analysis, action);
+    perf.mark('build_suggestions', suggestionsStartedAt, {
+      suggestions_count: Array.isArray(suggestions) ? suggestions.length : 0,
+    });
+
+    const executionPolicyStartedAt = Date.now();
     const executionPolicy = buildChatExecutionPolicy({
       message: thought.content,
       thoughtOrchestration,
-      pipelineContext: buildPipelineAnalysisContext(thoughtOrchestration) || null,
+      pipelineContext,
       chosenDecision,
       analysis,
+    });
+    perf.mark('build_execution_policy', executionPolicyStartedAt, {
+      execution_policy_mode: executionPolicy?.mode || null,
+      execution_policy_protocol: executionPolicy?.protocol || null,
+      execution_policy_phase: executionPolicy?.phase || null,
     });
 
     console.log('===== NYRA CHAT REPLY ROUTING =====');
@@ -12195,6 +12351,7 @@ app.post('/chat', async (req, res) => {
         : 'llm_assisted_fallback',
     }, null, 2));
 
+    const replyGenerationStartedAt = Date.now();
     const replyResult = executionPolicy.mode === 'deterministic'
       ? {
           reply: executionPolicy.reply,
@@ -12221,9 +12378,19 @@ app.post('/chat', async (req, res) => {
               },
             })
           : null);
+    perf.mark('reply_generation', replyGenerationStartedAt, {
+      execution_policy_mode: executionPolicy?.mode || null,
+      llm_call_expected: executionPolicy?.mode !== 'deterministic' && typeof buildChatReply === 'function',
+      has_reply_result: Boolean(replyResult?.reply),
+    });
 
+    const replyNormalizeStartedAt = Date.now();
     const reply = normalizeText(replyResult?.reply) || buildActionReply(action) || 'Je l’ai capté. Je le range dans Nyra.';
+    perf.mark('normalize_reply', replyNormalizeStartedAt, {
+      reply_characters: reply.length,
+    });
 
+    const saveChatExecutionStartedAt = Date.now();
     const saved = dispatchChatExecution({
       userId,
       message: thought.content,
@@ -12233,7 +12400,20 @@ app.post('/chat', async (req, res) => {
       decision,
       candidateDecision: chosenDecision,
     });
+    perf.mark('save_chat_execution', saveChatExecutionStartedAt, {
+      has_saved_item: Boolean(saved?.item),
+      has_saved_action: Boolean(saved?.action),
+    });
 
+    const memorySummaryResponseStartedAt = Date.now();
+    const responseMemorySummary = getStoreSummary(userId);
+    perf.mark('get_memory_summary_response', memorySummaryResponseStartedAt, {
+      total_items: responseMemorySummary?.total_items ?? null,
+      actions: responseMemorySummary?.actions ?? null,
+      knowledge_object_count: responseMemorySummary?.knowledge_object_count ?? null,
+    });
+
+    const buildChatResponseStartedAt = Date.now();
     const chatResponse = buildChatCognitiveResponse({
       thoughtOrchestration,
       reply,
@@ -12242,12 +12422,33 @@ app.post('/chat', async (req, res) => {
       decision,
       suggestions,
       saved,
-      memorySummary: getStoreSummary(userId),
+      memorySummary: responseMemorySummary,
       startedAt,
     });
-    res.json(chatResponse);
+    perf.mark('build_chat_response', buildChatResponseStartedAt);
+
+    const conversationPerformance = perf.log({
+      status: 'completed',
+      execution_policy_mode: executionPolicy?.mode || 'unknown',
+      execution_policy_protocol: executionPolicy?.protocol || null,
+      execution_policy_phase: executionPolicy?.phase || null,
+      llm_call_expected: executionPolicy?.mode !== 'deterministic' && typeof buildChatReply === 'function',
+      action_type: action?.action_type || null,
+      analysis_type: analysis?.type || null,
+      suggested_bucket: analysis?.suggested_bucket || null,
+    });
+
+    res.json({
+      ...chatResponse,
+      conversation_performance: conversationPerformance,
+    });
   } catch (error) {
     console.error('❌ /chat error:', error.message);
+
+    perf.log({
+      status: 'failed',
+      error_message: normalizeText(error?.message || ''),
+    });
 
     res.status(500).json({
       ok: false,
