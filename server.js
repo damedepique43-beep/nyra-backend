@@ -1997,17 +1997,56 @@ function buildPotentialProjectOfferReply(analysis = {}) {
     analysis.project_name ||
     ''
   );
+  const lowerObjective = objective.toLowerCase();
 
-  const firstLine = objective
-    ? `Je pense que « ${objective} » ressemble à un vrai projet à construire, pas juste à une tâche.`
-    : 'Je pense que ce que tu me décris ressemble à un vrai projet à construire, pas juste à une tâche.';
+  if (includesAny(lowerObjective, ['pension canine', 'pension pour chien', 'pension pour chiens', 'refuge', 'animaux', 'animalier', 'chien', 'chiens', 'chat', 'chats'])) {
+    return [
+      'Ce genre de projet demande de poser quelques bases dès le départ, parce que le lieu, le rythme et les règles vont vite influencer toute la suite.',
+      '',
+      'On peut le construire progressivement depuis ici, sans te noyer dans un plan tout fait.',
+      '',
+      'Tu veux qu’on commence ?',
+    ].join('\n');
+  }
+
+  if (includesAny(lowerObjective, ['application', 'appli', 'app', 'site', 'logiciel', 'plateforme'])) {
+    return [
+      'Ce genre de projet peut vite partir dans tous les sens si on ne pose pas d’abord le cœur de l’idée.',
+      '',
+      'On peut le construire progressivement depuis ici, en clarifiant seulement ce qui aide vraiment à avancer.',
+      '',
+      'Tu veux qu’on commence ?',
+    ].join('\n');
+  }
+
+  if (includesAny(lowerObjective, ['restaurant', 'boutique', 'boulangerie', 'pâtisserie', 'patisserie', 'commerce'])) {
+    return [
+      'Ce genre de projet demande de poser les bonnes bases tôt, parce que le lieu, le budget et le modèle économique vont influencer presque toutes les décisions.',
+      '',
+      'On peut le construire progressivement depuis ici, sans partir directement dans un gros plan figé.',
+      '',
+      'Tu veux qu’on commence ?',
+    ].join('\n');
+  }
+
+  if (includesAny(lowerObjective, ['livre', 'roman', 'chaîne', 'chaine', 'youtube', 'podcast', 'contenu'])) {
+    return [
+      'Ce genre de projet avance mieux quand on comprend d’abord l’intention : expression personnelle, audience, revenus, ou un mélange de tout ça.',
+      '',
+      'On peut le construire progressivement depuis ici, avec seulement les questions qui servent vraiment la suite.',
+      '',
+      'Tu veux qu’on commence ?',
+    ].join('\n');
+  }
 
   return [
-    firstLine,
+    objective
+      ? 'Ce que tu décris ressemble à quelque chose qui mérite d’être construit progressivement plutôt que traité comme une simple tâche.'
+      : 'Ça ressemble à quelque chose qui mérite d’être construit progressivement plutôt que traité comme une simple tâche.',
     '',
-    'On peut le construire ensemble depuis ici : je te poserai seulement les questions utiles pour comprendre ton objectif, puis je pourrai te proposer une première feuille de route claire.',
+    'On peut poser les bases ensemble depuis ici, en avançant étape par étape sans te surcharger.',
     '',
-    'Tu veux qu’on commence à le clarifier ?',
+    'Tu veux qu’on commence ?',
   ].join('\n');
 }
 
@@ -2094,22 +2133,43 @@ function buildProjectClarificationReply(analysis = {}) {
     analysis.project_name ||
     ''
   );
+  const lowerObjective = objective.toLowerCase();
   const question = buildProjectClarificationQuestion(objective);
 
-  if (objective) {
+  if (includesAny(lowerObjective, ['pension canine', 'pension pour chien', 'pension pour chiens', 'refuge', 'animaux', 'animalier', 'chien', 'chiens', 'chat', 'chats'])) {
     return [
-      `Oui, « ${objective} » ressemble bien à un projet à construire progressivement.`,
+      'Les premières décisions vont beaucoup compter ici, parce qu’elles vont influencer le budget, les démarches, l’organisation quotidienne et la capacité d’accueil.',
       '',
-      'On va éviter de partir trop vite dans un plan tout fait : ce qui compte d’abord, c’est de poser les bonnes bases.',
+      question,
+    ].join('\n');
+  }
+
+  if (includesAny(lowerObjective, ['application', 'appli', 'app', 'site', 'logiciel', 'plateforme'])) {
+    return [
+      'Le plus important au départ, c’est de savoir pour qui tu construis ce projet. Ça évite de créer une usine à gaz avant même d’avoir une base claire.',
+      '',
+      question,
+    ].join('\n');
+  }
+
+  if (includesAny(lowerObjective, ['restaurant', 'boutique', 'boulangerie', 'pâtisserie', 'patisserie', 'commerce'])) {
+    return [
+      'Le modèle de départ va guider presque tout le reste : budget, lieu, contraintes et manière de trouver les premiers clients.',
+      '',
+      question,
+    ].join('\n');
+  }
+
+  if (includesAny(lowerObjective, ['livre', 'roman', 'chaîne', 'chaine', 'youtube', 'podcast', 'contenu'])) {
+    return [
+      'Avant de construire la suite, il faut surtout comprendre ce que ce projet doit t’apporter : expression, audience, revenus ou structure personnelle.',
       '',
       question,
     ].join('\n');
   }
 
   return [
-    'Oui, ça ressemble bien à un projet à construire progressivement.',
-    '',
-    'On va éviter de partir trop vite dans un plan tout fait : ce qui compte d’abord, c’est de poser les bonnes bases.',
+    'Le plus utile maintenant, c’est de poser une première base claire plutôt que de partir directement dans un plan complet.',
     '',
     question,
   ].join('\n');
@@ -2130,51 +2190,41 @@ function buildProjectFirstGuidanceReply(analysis = {}) {
   if (includesAny(lowerObjective, ['pension canine', 'pension pour chien', 'pension pour chiens', 'refuge', 'animaux', 'animalier', 'chien', 'chiens', 'chat', 'chats'])) {
     if (includesAny(lowerAnswer, ['chez moi', 'maison', 'domicile'])) {
       return [
-        'D’accord, donc tu imagines plutôt commencer chez toi.',
+        'Commencer chez toi peut limiter l’investissement de départ, mais ça rend l’organisation quotidienne beaucoup plus importante.',
         '',
-        'Ça change déjà beaucoup la manière de construire le projet : il faudra penser espace disponible, sécurité des animaux, règles du logement et organisation quotidienne.',
+        'Il faudra penser espace disponible, sécurité des animaux, règles du logement et rythme de vie.',
         '',
-        'Tu imagines accueillir quelques chiens de façon ponctuelle, ou tu veux en faire une activité régulière ?',
+        'Tu imagines accueillir quelques chiens ponctuellement, ou construire une activité régulière ?',
       ].join('\n');
     }
 
     if (includesAny(lowerAnswer, ['lieu dédié', 'lieu dedie', 'local', 'terrain', 'établissement', 'etablissement'])) {
       return [
-        'D’accord, donc tu imagines plutôt un lieu dédié.',
+        'Un lieu dédié donne plus de marge pour construire une vraie structure, mais il demande aussi plus de préparation dès le départ.',
         '',
-        'Dans ce cas, le projet devient plus structurant : il faudra penser budget, autorisations, emplacement et capacité d’accueil.',
+        'Budget, autorisations, emplacement et capacité d’accueil vont devenir des décisions centrales.',
         '',
-        'Tu te vois commencer petit avec un lieu simple, ou viser directement une vraie structure professionnelle ?',
+        'Tu te vois commencer avec un petit lieu simple, ou viser directement une structure professionnelle ?',
       ].join('\n');
     }
   }
 
-  if (objective && answer) {
-    return [
-      `D’accord, donc pour « ${objective} », tu pars plutôt sur : ${answer}.`,
-      '',
-      'Ça donne déjà une base plus concrète pour construire quelque chose de réaliste, sans partir dans tous les sens.',
-      '',
-      'Qu’est-ce qui serait le plus important pour toi au départ : avancer doucement, sécuriser le cadre, ou aller vite vers du concret ?',
-    ].join('\n');
-  }
-
   if (answer) {
     return [
-      `D’accord, donc tu pars plutôt sur : ${answer}.`,
+      'Cette direction donne déjà une base plus concrète pour éviter de construire quelque chose de trop flou.',
       '',
-      'Ça donne déjà une base plus concrète pour construire quelque chose de réaliste.',
+      'Le plus utile maintenant, c’est de choisir le type d’avancement qui te correspond.',
       '',
-      'Qu’est-ce qui serait le plus important pour toi au départ : avancer doucement, sécuriser le cadre, ou aller vite vers du concret ?',
+      'Tu veux d’abord sécuriser le cadre, avancer doucement, ou aller vite vers du concret ?',
     ].join('\n');
   }
 
   return [
-    'D’accord, on a déjà une première base.',
+    'On a déjà une première base exploitable.',
     '',
-    'On peut maintenant avancer sans transformer ça en questionnaire.',
+    'Le plus utile maintenant, c’est d’identifier ce qui compte vraiment pour toi dans ce projet.',
     '',
-    'Qu’est-ce qui compte le plus pour toi dans ce projet ?',
+    'Tu veux surtout qu’il soit simple à lancer, solide sur le long terme, ou rapidement concret ?',
   ].join('\n');
 }
 
