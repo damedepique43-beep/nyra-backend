@@ -2096,12 +2096,20 @@ function buildProjectClarificationReply(analysis = {}) {
   );
   const question = buildProjectClarificationQuestion(objective);
 
+  if (objective) {
+    return [
+      `Oui, « ${objective} » ressemble bien à un projet à construire progressivement.`,
+      '',
+      'On va éviter de partir trop vite dans un plan tout fait : ce qui compte d’abord, c’est de poser les bonnes bases.',
+      '',
+      question,
+    ].join('\n');
+  }
+
   return [
-    'Parfait. On va le construire ensemble, sans partir directement dans une liste d’étapes.',
+    'Oui, ça ressemble bien à un projet à construire progressivement.',
     '',
-    objective
-      ? `Pour l’instant, je pars de ton objectif : « ${objective} ».`
-      : 'Pour l’instant, je vais d’abord chercher à comprendre ton objectif.',
+    'On va éviter de partir trop vite dans un plan tout fait : ce qui compte d’abord, c’est de poser les bonnes bases.',
     '',
     question,
   ].join('\n');
@@ -2116,19 +2124,58 @@ function buildProjectFirstGuidanceReply(analysis = {}) {
     ''
   );
   const answer = normalizeText(analysis.project_clarification_answer || analysis.raw_text || '');
+  const lowerObjective = objective.toLowerCase();
+  const lowerAnswer = answer.toLowerCase();
+
+  if (includesAny(lowerObjective, ['pension canine', 'pension pour chien', 'pension pour chiens', 'refuge', 'animaux', 'animalier', 'chien', 'chiens', 'chat', 'chats'])) {
+    if (includesAny(lowerAnswer, ['chez moi', 'maison', 'domicile'])) {
+      return [
+        'D’accord, donc tu imagines plutôt commencer chez toi.',
+        '',
+        'Ça change déjà beaucoup la manière de construire le projet : il faudra penser espace disponible, sécurité des animaux, règles du logement et organisation quotidienne.',
+        '',
+        'Tu imagines accueillir quelques chiens de façon ponctuelle, ou tu veux en faire une activité régulière ?',
+      ].join('\n');
+    }
+
+    if (includesAny(lowerAnswer, ['lieu dédié', 'lieu dedie', 'local', 'terrain', 'établissement', 'etablissement'])) {
+      return [
+        'D’accord, donc tu imagines plutôt un lieu dédié.',
+        '',
+        'Dans ce cas, le projet devient plus structurant : il faudra penser budget, autorisations, emplacement et capacité d’accueil.',
+        '',
+        'Tu te vois commencer petit avec un lieu simple, ou viser directement une vraie structure professionnelle ?',
+      ].join('\n');
+    }
+  }
+
+  if (objective && answer) {
+    return [
+      `D’accord, donc pour « ${objective} », tu pars plutôt sur : ${answer}.`,
+      '',
+      'Ça donne déjà une base plus concrète pour construire quelque chose de réaliste, sans partir dans tous les sens.',
+      '',
+      'Qu’est-ce qui serait le plus important pour toi au départ : avancer doucement, sécuriser le cadre, ou aller vite vers du concret ?',
+    ].join('\n');
+  }
+
+  if (answer) {
+    return [
+      `D’accord, donc tu pars plutôt sur : ${answer}.`,
+      '',
+      'Ça donne déjà une base plus concrète pour construire quelque chose de réaliste.',
+      '',
+      'Qu’est-ce qui serait le plus important pour toi au départ : avancer doucement, sécuriser le cadre, ou aller vite vers du concret ?',
+    ].join('\n');
+  }
 
   return [
-    'Ok, ça me donne une première direction utile.',
+    'D’accord, on a déjà une première base.',
     '',
-    objective
-      ? `Je comprends que ton objectif reste : « ${objective} ».`
-      : 'Je comprends mieux l’objectif que tu veux construire.',
-    answer
-      ? `Et pour l’instant, je retiens ce point de cadrage : « ${answer} ».`
-      : '',
+    'On peut maintenant avancer sans transformer ça en questionnaire.',
     '',
-    'À partir de là, je peux commencer à t’aider sans te noyer de questions. La prochaine étape logique sera de transformer cette compréhension en première orientation, puis en feuille de route quand ce sera assez clair.',
-  ].filter(Boolean).join('\n');
+    'Qu’est-ce qui compte le plus pour toi dans ce projet ?',
+  ].join('\n');
 }
 
 function findLatestProjectClarificationConversationItem(userId) {
@@ -6449,10 +6496,10 @@ RÈGLES DE RÉPONSE
 - pas de long pavé
 - si un CONTRAT D’EXÉCUTION PRIORITAIRE est présent, il passe avant toutes les autres règles
 - si response_level = capture : réponds très court, comme une confirmation utile
-- si response_level = reflection : fais 1 observation courte + 1 question utile
-- si response_level = project : relie clairement au projet concerné et propose la prochaine clarification utile
+- si response_level = reflection : formule une observation concrète issue du message, ajoute une courte déduction si elle apporte de la valeur, puis termine par une seule question qui fait naturellement progresser la réflexion
+- si response_level = project : pars de ce que l’utilisateur vient de dire, montre la conséquence concrète pour son projet, puis pose une seule question utile
 - si l’utilisateur demande à comprendre une émotion, ne dis pas "c’est capturé" comme réponse principale
-- si conversation_intent = develop : développe l'analyse précédente, ne repose pas la même question, apporte une nuance concrète puis une seule ouverture utile
+- si conversation_intent = develop : poursuis réellement le raisonnement précédent. Fais progresser la compréhension, apporte une nouvelle nuance ou une nouvelle hypothèse, puis termine uniquement si nécessaire par une question qui fait avancer la réflexion. Ne répète jamais une question déjà posée sous une autre forme
 - si conversation_intent = continue : poursuis le fil actif sans repartir de zéro
 - si conversation_intent = agreement ou emotional_resonance : considère que l'utilisateur valide ce qui vient d'être dit ; nomme ce qui semble résonner et approfondis doucement
 - si conversation_intent = disagreement ou correction : ajuste ton analyse sans te défendre
@@ -6460,6 +6507,41 @@ RÈGLES DE RÉPONSE
 - évite les phrases génériques comme "prends un moment pour respirer" sauf si la personne semble en crise
 - ne parle pas de fichier JSON
 - ne parle pas de tes mécanismes internes
+
+=========================
+STYLE DE RAISONNEMENT
+=========================
+
+Lorsque tu as besoin d’obtenir une précision :
+
+- ne dis jamais que tu es en train de comprendre
+- ne commente jamais ton propre raisonnement
+- ne dis jamais que tu vas poser une question
+- ne fais jamais référence à ton processus interne
+- ne donne jamais l’impression de dérouler un formulaire
+
+Formulations interdites :
+
+- "je comprends mieux"
+- "cela me donne une meilleure idée"
+- "ça me donne une première direction"
+- "pour préciser"
+- "j’aimerais approfondir"
+- "une autre question"
+- "j’ai besoin d’en savoir plus"
+- "peux-tu m’en dire davantage"
+- "prochaine étape logique"
+- "point de cadrage"
+
+Une question ne doit jamais apparaître seule.
+
+Avant chaque question :
+1. formule une observation concrète issue de ce que l’utilisateur vient de dire ;
+2. ajoute une courte conséquence logique si elle aide vraiment ;
+3. termine par une seule question utile.
+
+La compréhension doit être montrée, jamais annoncée.
+L’utilisateur doit sentir que Nyra réfléchit avec lui, pas qu’il suit un algorithme.
 `.trim();
 }
 
