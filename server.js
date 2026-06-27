@@ -2012,6 +2012,16 @@ function getProjectChecklistItems(store, userId, projectId) {
       );
     })
     .sort((a, b) => {
+      const orderA = Number.isFinite(Number(a.order_index)) ? Number(a.order_index) : null;
+      const orderB = Number.isFinite(Number(b.order_index)) ? Number(b.order_index) : null;
+
+      if (orderA !== null && orderB !== null && orderA !== orderB) {
+        return orderA - orderB;
+      }
+
+      if (orderA !== null && orderB === null) return -1;
+      if (orderA === null && orderB !== null) return 1;
+
       return String(a.created_at || '').localeCompare(String(b.created_at || ''));
     });
 }
@@ -10563,6 +10573,9 @@ app.post('/store/collections/:collectionId/items', (req, res) => {
   }
 
   const collection = found.collection;
+  const existingProjectItems = getProjectChecklistItems(store, userId, project.id);
+  const nextOrderIndex = existingProjectItems.length + 1;
+
   const item = {
     id: crypto.randomUUID(),
     user_id: userId,
@@ -11339,6 +11352,9 @@ app.post('/store/project/:projectId/items', (req, res) => {
     });
   }
 
+  const existingProjectItems = getProjectChecklistItems(store, userId, project.id);
+  const nextOrderIndex = existingProjectItems.length + 1;
+
   const item = {
     id: crypto.randomUUID(),
     user_id: userId,
@@ -11349,6 +11365,7 @@ app.post('/store/project/:projectId/items', (req, res) => {
     text,
     completed: false,
     status: 'active',
+    order_index: nextOrderIndex,
     project_id: project.id,
     project_name: project.name || project.project_name || null,
     created_at: nowIso(),
@@ -11440,6 +11457,74 @@ app.patch('/store/project/:projectId/items/:itemId', (req, res) => {
   res.json({
     ...buildProjectItemResponse(store, userId, project),
     item,
+  });
+});
+
+
+app.post('/store/project/:projectId/items/:itemId/move', (req, res) => {
+  const userId = normalizeText(req.body?.userId || req.query?.userId || 'local-user');
+  const projectId = normalizeText(req.params.projectId);
+  const itemId = normalizeText(req.params.itemId);
+  const direction = normalizeText(req.body?.direction || req.query?.direction || '');
+  const store = readStore();
+
+  if (direction !== 'up' && direction !== 'down') {
+    return res.status(400).json({
+      ok: false,
+      error: 'Direction de déplacement invalide',
+    });
+  }
+
+  const project = store.projects.find(item => {
+    return item.user_id === userId && item.id === projectId;
+  });
+
+  if (!project) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Projet introuvable',
+    });
+  }
+
+  const projectItems = getProjectChecklistItems(store, userId, projectId);
+  const currentIndex = projectItems.findIndex(item => item.id === itemId);
+
+  if (currentIndex < 0) {
+    return res.status(404).json({
+      ok: false,
+      error: 'Étape de projet introuvable',
+    });
+  }
+
+  const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+
+  if (targetIndex < 0 || targetIndex >= projectItems.length) {
+    return res.json({
+      ...buildProjectItemResponse(store, userId, project),
+      moved_item: projectItems[currentIndex],
+    });
+  }
+
+  projectItems.forEach((item, index) => {
+    item.order_index = index + 1;
+  });
+
+  const currentItem = projectItems[currentIndex];
+  const targetItem = projectItems[targetIndex];
+  const currentOrderIndex = currentItem.order_index;
+
+  currentItem.order_index = targetItem.order_index;
+  targetItem.order_index = currentOrderIndex;
+  currentItem.updated_at = nowIso();
+  targetItem.updated_at = nowIso();
+  project.updated_at = nowIso();
+
+  updateProjectContext(store, userId, project);
+  writeStore(store);
+
+  res.json({
+    ...buildProjectItemResponse(store, userId, project),
+    moved_item: currentItem,
   });
 });
 
