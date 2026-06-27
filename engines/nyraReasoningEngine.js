@@ -125,6 +125,47 @@ function hasLayerType(items = [], type) {
 }
 
 
+function buildReadyForCapabilities({
+  isProjectContext = false,
+  hasObjective = false,
+  hasConcreteDirection = false,
+  hasStructuralDirection = false,
+  hasCompetingHypotheses = false,
+  shouldClarifyProject = false,
+  understandingStatus = 'sufficient_for_first_guidance',
+} = {}) {
+  const hasUsableUnderstanding = understandingStatus !== 'insufficient' && !hasCompetingHypotheses;
+
+  return {
+    clarification: Boolean(
+      hasCompetingHypotheses ||
+      understandingStatus === 'insufficient' ||
+      understandingStatus === 'partial' ||
+      (isProjectContext && shouldClarifyProject && !hasStructuralDirection)
+    ),
+    brain_dump: true,
+    context_capture: true,
+    first_guidance: hasUsableUnderstanding || Boolean(isProjectContext && hasObjective),
+    first_roadmap: Boolean(
+      isProjectContext &&
+      hasObjective &&
+      hasConcreteDirection &&
+      hasStructuralDirection &&
+      !hasCompetingHypotheses
+    ),
+    execution_plan: Boolean(
+      isProjectContext &&
+      hasObjective &&
+      hasConcreteDirection &&
+      hasStructuralDirection &&
+      !hasCompetingHypotheses
+    ),
+    decision_support: Boolean(hasUsableUnderstanding || hasObjective),
+    project_creation: Boolean(isProjectContext && hasObjective && !hasCompetingHypotheses),
+    memory_storage: true,
+  };
+}
+
 function buildUnderstandingAssessment({ understanding = {}, basis = {} } = {}) {
   const profile = normalizeObject(basis.situation_profile);
   const metadata = normalizeObject(understanding.metadata);
@@ -135,7 +176,7 @@ function buildUnderstandingAssessment({ understanding = {}, basis = {} } = {}) {
     metadata.project_lifecycle_phase ||
     ''
   );
-  const rawText = normalizeText(understanding.raw_text || understanding.text || '');
+  const rawText = normalizeText(understanding.raw_text || understanding.text || analysis.raw_text || '');
   const lower = rawText.toLowerCase();
   const domain = normalizeText(profile.domain || basis.domain || 'context');
   const isProjectContext = Boolean(
@@ -145,28 +186,62 @@ function buildUnderstandingAssessment({ understanding = {}, basis = {} } = {}) {
     ['potential_project', 'project_clarification', 'project_clarification_answer'].includes(lifecyclePhase)
   );
 
+  const objective = normalizeText(
+    understanding.potential_project_objective ||
+    understanding.project_goal ||
+    understanding.project_name ||
+    analysis.potential_project_objective ||
+    analysis.project_goal ||
+    analysis.project_name ||
+    ''
+  );
+
+  const clarificationAnswer = normalizeText(
+    understanding.project_clarification_answer ||
+    analysis.project_clarification_answer ||
+    ''
+  );
+
+  const combinedProjectText = normalizeText(`${objective} ${clarificationAnswer} ${rawText}`).toLowerCase();
+
   const missingInformationPriority = [];
   let understandingStatus = 'sufficient_for_first_guidance';
   let confidence = 0.7;
   let reason = 'La compréhension actuelle semble suffisante pour produire une première aide utile.';
+  let hasObjective = false;
+  let hasConcreteDirection = false;
+  let hasStructuralDirection = false;
 
   if (isProjectContext) {
-    const hasObjective = Boolean(
-      normalizeText(
-        understanding.potential_project_objective ||
-        understanding.project_goal ||
-        understanding.project_name ||
-        analysis.potential_project_objective ||
-        analysis.project_goal ||
-        analysis.project_name ||
-        ''
-      ) || rawText.length >= 12
-    );
-    const hasConcreteDirection = Boolean(
+    hasObjective = Boolean(objective || rawText.length >= 12);
+    hasConcreteDirection = Boolean(
       lifecyclePhase === 'project_clarification_answer' ||
-      ['chez moi', 'chez nous', 'lieu dédié', 'lieu dedie', 'local', 'boutique', 'en ligne', 'application', 'commercialisable', 'pour moi', 'utilisateurs'].some(pattern => lower.includes(pattern)) ||
+      ['chez moi', 'chez nous', 'lieu dédié', 'lieu dedie', 'local', 'boutique', 'en ligne', 'application', 'commercialisable', 'pour moi', 'utilisateurs'].some(pattern => combinedProjectText.includes(pattern)) ||
       rawText.length >= 18
     );
+    hasStructuralDirection = Boolean(
+      [
+        'activité régulière',
+        'activite reguliere',
+        'activité principale',
+        'activite principale',
+        'ponctuellement',
+        'temps plein',
+        'petit lieu',
+        'structure professionnelle',
+        'offre commercialisable',
+        'premiers utilisateurs',
+        'pour moi',
+        'audience',
+        'revenus',
+        'lieu physique',
+        'en ligne',
+      ].some(pattern => combinedProjectText.includes(pattern))
+    );
+
+    understandingStatus = 'partial';
+    confidence = 0.66;
+    reason = 'Nyra a identifié un objectif de projet, mais il manque encore au moins une information structurante avant de proposer une roadmap utile.';
 
     if (!hasObjective) {
       understandingStatus = 'insufficient';
@@ -174,14 +249,19 @@ function buildUnderstandingAssessment({ understanding = {}, basis = {} } = {}) {
       missingInformationPriority.push('project_objective');
       reason = 'L’objectif du projet reste trop implicite pour produire une aide utile.';
     } else if (profile.should_clarify_project && !hasConcreteDirection) {
-      understandingStatus = 'insufficient';
-      confidence = 0.66;
+      understandingStatus = 'partial';
+      confidence = 0.68;
       missingInformationPriority.push('project_scope');
       reason = 'Nyra a identifié un objectif de projet, mais il manque encore une information de cadrage pour éviter une roadmap trop générique.';
-    } else if (hasConcreteDirection) {
+    } else if (hasConcreteDirection && !hasStructuralDirection) {
       understandingStatus = 'sufficient_for_first_guidance';
       confidence = 0.76;
-      reason = 'Une première information de cadrage permet maintenant de commencer à aider sans attendre une roadmap complète.';
+      missingInformationPriority.push('project_operating_model');
+      reason = 'Une première information de cadrage permet d’aider utilement, mais il manque encore le modèle d’activité pour construire une roadmap pertinente.';
+    } else if (hasConcreteDirection && hasStructuralDirection) {
+      understandingStatus = 'sufficient_for_first_roadmap';
+      confidence = 0.84;
+      reason = 'Les décisions structurantes sont suffisamment claires pour proposer une première feuille de route ajustable.';
     }
   }
 
@@ -192,15 +272,26 @@ function buildUnderstandingAssessment({ understanding = {}, basis = {} } = {}) {
     reason = 'Plusieurs hypothèses restent concurrentes : une clarification est nécessaire avant d’aider utilement.';
   }
 
+  const readyFor = buildReadyForCapabilities({
+    isProjectContext,
+    hasObjective,
+    hasConcreteDirection,
+    hasStructuralDirection,
+    hasCompetingHypotheses: basis.has_competing_hypotheses,
+    shouldClarifyProject: profile.should_clarify_project,
+    understandingStatus,
+  });
+
   return {
-    version: 'understanding-assessment-v1',
+    version: 'understanding-assessment-v2',
     understanding_status: understandingStatus,
     confidence: clamp01(confidence, 0.7),
     missing_information_priority: [...new Set(missingInformationPriority)],
+    ready_for: readyFor,
     reason,
     applies_to_domain: isProjectContext ? 'project' : domain,
     lifecycle_phase: lifecyclePhase || null,
-    principle: 'Évaluer si Nyra comprend suffisamment pour produire une aide utile, sans décider ni exécuter.',
+    principle: 'Évaluer ce que Nyra est actuellement capable de faire avec son niveau de compréhension, sans décider ni exécuter.',
   };
 }
 
@@ -466,7 +557,6 @@ function buildReasoningBasis(understanding) {
       situation_profile: situationProfile,
       cognitive_intervention: cognitiveIntervention,
       understanding_assessment: understandingAssessment,
-    information_value_assessment: informationValueAssessment,
     },
   });
 
@@ -829,10 +919,10 @@ function buildReasoningOutput({ thought, understanding, basis, strategies, alter
       principle: 'Le Reasoning Engine choisit une méthode d’accompagnement cognitive avant de générer les stratégies qui la servent.',
     },
     understanding_assessment_analysis: {
-      version: 'understanding-assessment-v1',
+      version: 'understanding-assessment-v2',
       behavior_changed: false,
       assessment: basis.understanding_assessment || null,
-      principle: 'Nyra évalue si sa compréhension est suffisante pour produire une aide utile avant de choisir une stratégie.',
+      principle: 'Nyra évalue quelles capacités cognitives sont débloquées par le niveau de compréhension actuel avant de choisir une stratégie.',
     },
     information_value_assessment_analysis: {
       version: 'information-value-assessment-v1',

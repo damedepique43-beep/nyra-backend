@@ -187,6 +187,9 @@ function buildCreateProjectStrategy({ basis, hypothesis = null }) {
 function buildProjectClarificationStrategy({ basis, hypothesis = null }) {
   const profile = normalizeObject(basis.situation_profile);
   const informationValue = normalizeObject(basis.information_value_assessment);
+  const understandingAssessment = normalizeObject(basis.understanding_assessment);
+  const readyFor = normalizeObject(understandingAssessment.ready_for);
+  const canGenerateFirstRoadmap = Boolean(readyFor.first_roadmap);
   const confidence = Math.max(
     hypothesis ? getHypothesisConfidence(hypothesis, basis.confidence) : basis.confidence,
     0.78
@@ -208,7 +211,7 @@ function buildProjectClarificationStrategy({ basis, hypothesis = null }) {
     },
     reasons: [
       getHypothesisReason(hypothesis, 'Un objectif pouvant devenir un projet a été détecté.'),
-      'Nyra doit comprendre suffisamment le projet avant de proposer une roadmap.',
+      canGenerateFirstRoadmap ? 'La compréhension actuelle autorise une première roadmap ajustable.' : 'Nyra doit encore clarifier le projet avant de proposer une roadmap.',
       informationValue.why_this_matters || 'La prochaine question doit viser l’information qui augmente le plus la compréhension utile.',
       'Une seule question utile réduit la charge cognitive par rapport à un formulaire ou une liste de questions.',
     ],
@@ -223,7 +226,10 @@ function buildProjectClarificationStrategy({ basis, hypothesis = null }) {
       selected_knowledge_gap: informationValue.selected_gap || null,
       why_this_question_matters: informationValue.why_this_matters || null,
       forbid_direct_project_creation: true,
-      should_not_generate_roadmap_yet: true,
+      understanding_assessment: understandingAssessment,
+      ready_for: readyFor,
+      can_generate_first_roadmap: canGenerateFirstRoadmap,
+      should_not_generate_roadmap_yet: !canGenerateFirstRoadmap,
     },
     payload: {
       intent: basis.primary_intent,
@@ -234,6 +240,9 @@ function buildProjectClarificationStrategy({ basis, hypothesis = null }) {
         ? `Poser une seule question contextualisée sur le projet. Montrer brièvement pourquoi cette information est utile pour l’utilisateur : ${informationValue.why_this_matters}. Ne pas générer de roadmap et ne pas créer le projet tout de suite.`
         : 'Poser une seule question contextualisée sur le projet. Ne pas générer de roadmap et ne pas créer le projet tout de suite.',
       information_value_assessment: informationValue,
+      understanding_assessment: understandingAssessment,
+      ready_for: readyFor,
+      can_generate_first_roadmap: canGenerateFirstRoadmap,
     },
   });
 }
