@@ -2141,11 +2141,19 @@ function findLatestProjectClarificationConversationItem(userId) {
       const updatedAt = new Date(item.updated_at || item.created_at || 0).getTime();
       const tags = Array.isArray(item.tags) ? item.tags.map(tag => normalizeText(tag).toLowerCase()) : [];
       const lifecyclePhase = normalizeText(item.project_lifecycle_phase || '').toLowerCase();
+      const objective = normalizeText(
+        item.potential_project_objective ||
+        item.project_goal ||
+        item.project_name ||
+        ''
+      );
 
       return (
         itemBelongsToUser(item, userId) &&
         Number.isFinite(updatedAt) &&
         now - updatedAt <= maxAgeMs &&
+        Boolean(objective) &&
+        !isProjectClarificationAcceptanceMessage(objective) &&
         (
           tags.includes('clarification-projet') ||
           lifecyclePhase === 'project_clarification'
@@ -2160,6 +2168,18 @@ function findLatestProjectClarificationConversationItem(userId) {
 
 function buildProjectUnderstandingAssessmentContext({ userId, message, analysis = {} } = {}) {
   if (isProjectClarificationAcceptanceMessage(message)) {
+    return {
+      should_assess_project_understanding: false,
+      analysis_patch: {},
+      project_clarification_item: null,
+    };
+  }
+
+  // Un nouveau message exprimant lui-même un objectif/projet ne doit jamais être
+  // traité comme une réponse à une ancienne question de clarification.
+  // Cela évite qu'un ancien état conversationnel transforme un nouveau sujet
+  // comme "Je veux ouvrir une pension canine" en simple réponse de cadrage.
+  if (isPotentialProjectObjectiveExpression(message)) {
     return {
       should_assess_project_understanding: false,
       analysis_patch: {},
@@ -2191,9 +2211,16 @@ function buildProjectUnderstandingAssessmentContext({ userId, message, analysis 
     clarificationItem.potential_project_objective ||
     clarificationItem.project_goal ||
     clarificationItem.project_name ||
-    clarificationItem.content ||
     ''
   );
+
+  if (!objective || isProjectClarificationAcceptanceMessage(objective)) {
+    return {
+      should_assess_project_understanding: false,
+      analysis_patch: {},
+      project_clarification_item: clarificationItem,
+    };
+  }
 
   return {
     should_assess_project_understanding: true,
