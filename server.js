@@ -1890,6 +1890,127 @@ function isProjectCreationRequest(text) {
   );
 }
 
+
+function extractPotentialProjectObjective(text) {
+  const normalizedText = normalizeText(text);
+
+  if (!normalizedText) return '';
+
+  const patterns = [
+    /(?:je\s+(?:veux|voudrais|souhaite|souhaiterais|rêve\s+de|reve\s+de|vais)\s+)(?:me\s+)?(.+)$/i,
+    /(?:j[’']aimerais|j[’']aimerai|j[’']aime\s+rais)\s+(?:me\s+)?(.+)$/i,
+    /(?:mon\s+objectif\s+(?:est|serait)\s+de\s+)(.+)$/i,
+    /(?:j[’']ai\s+(?:pour\s+)?projet\s+de\s+)(.+)$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalizedText.match(pattern);
+
+    if (match?.[1]) {
+      const candidate = normalizeText(match[1])
+        .replace(/^(?:de\s+|d’|d')/i, '')
+        .replace(/[.,!?;:]+$/g, '')
+        .trim();
+
+      if (candidate.length >= 8) {
+        return candidate.length > 140 ? `${candidate.slice(0, 140)}…` : candidate;
+      }
+    }
+  }
+
+  return '';
+}
+
+function isPotentialProjectObjectiveExpression(text) {
+  const normalizedText = normalizeText(text);
+  const lower = normalizedText.toLowerCase();
+
+  if (!normalizedText) return false;
+  if (isProjectCreationRequest(normalizedText)) return false;
+  if (hasExplicitOperationalRequest(normalizedText)) return false;
+  if (lower.length < 12) return false;
+
+  const hasObjectiveIntro = includesAny(lower, [
+    'je veux ',
+    'je voudrais ',
+    'j’aimerais ',
+    "j'aimerais ",
+    'je souhaite ',
+    'mon objectif est',
+    'j’ai pour projet de',
+    "j'ai pour projet de",
+    'je rêve de',
+    'je reve de',
+  ]);
+
+  const hasProjectLikeVerb = includesAny(lower, [
+    'créer',
+    'creer',
+    'lancer',
+    'ouvrir',
+    'monter',
+    'développer',
+    'developper',
+    'construire',
+    'écrire',
+    'ecrire',
+    'apprendre',
+    'organiser',
+    'préparer',
+    'preparer',
+    'devenir',
+    'mettre en place',
+  ]);
+
+  const hasLongTermSignal = includesAny(lower, [
+    'application',
+    'app',
+    'entreprise',
+    'business',
+    'association',
+    'refuge',
+    'pension',
+    'restaurant',
+    'boutique',
+    'formation',
+    'chaîne',
+    'chaine',
+    'livre',
+    'roman',
+    'site',
+    'marque',
+    'projet',
+    'activité',
+    'activite',
+    'voyage',
+    'déménagement',
+    'demenagement',
+  ]);
+
+  return Boolean(hasObjectiveIntro && (hasProjectLikeVerb || hasLongTermSignal));
+}
+
+function buildPotentialProjectOfferReply(analysis = {}) {
+  const objective = normalizeText(
+    analysis.potential_project_objective ||
+    analysis.project_goal ||
+    analysis.project_name ||
+    ''
+  );
+
+  const firstLine = objective
+    ? `Je pense que « ${objective} » ressemble à un vrai projet à construire, pas juste à une tâche.`
+    : 'Je pense que ce que tu me décris ressemble à un vrai projet à construire, pas juste à une tâche.';
+
+  return [
+    firstLine,
+    '',
+    'On peut le construire ensemble depuis ici : je te poserai seulement les questions utiles pour comprendre ton objectif, puis je pourrai te proposer une première feuille de route claire.',
+    '',
+    'Tu veux qu’on commence à le clarifier ?',
+  ].join('\n');
+}
+
 function detectKnownProjectName(text) {
   const projectCreationName = extractProjectNameFromProjectCreationRequest(text);
 
@@ -2329,6 +2450,16 @@ function normalizeAIUnderstanding(localAnalysis, aiUnderstanding) {
     (suggestedBucket === 'journal' || type === 'emotion' || aiUnderstanding.response_level === 'reflection')
   );
   const isExplicitProjectCreation = isProjectCreationRequest(localAnalysis.raw_text || '');
+  const isPotentialProjectObjective = Boolean(
+    !isExplicitProjectCreation &&
+    (
+      localAnalysis.project_lifecycle_phase === 'potential_project' ||
+      isPotentialProjectObjectiveExpression(localAnalysis.raw_text || '')
+    )
+  );
+  const potentialProjectObjective = isPotentialProjectObjective
+    ? (localAnalysis.potential_project_objective || extractPotentialProjectObjective(localAnalysis.raw_text || '') || localAnalysis.raw_text || '')
+    : null;
 
   return {
     ...localAnalysis,
@@ -2336,8 +2467,10 @@ function normalizeAIUnderstanding(localAnalysis, aiUnderstanding) {
     is_task: shouldKeepReflectionFirst || isExplicitProjectCreation ? false : Boolean(aiUnderstanding.is_task ?? localAnalysis.is_task),
     is_idea: Boolean(aiUnderstanding.is_idea ?? localAnalysis.is_idea),
     is_emotion: isEmotion,
-    is_project: isExplicitProjectCreation || Boolean(aiUnderstanding.is_project ?? localAnalysis.is_project ?? projectName),
-    project_name: projectName,
+    is_project: isExplicitProjectCreation || isPotentialProjectObjective || Boolean(aiUnderstanding.is_project ?? localAnalysis.is_project ?? projectName),
+    project_name: isPotentialProjectObjective ? null : projectName,
+    project_lifecycle_phase: isPotentialProjectObjective ? 'potential_project' : (localAnalysis.project_lifecycle_phase || null),
+    potential_project_objective: potentialProjectObjective,
     urgency: ['low', 'normal', 'high'].includes(aiUnderstanding.urgency)
       ? aiUnderstanding.urgency
       : localAnalysis.urgency,
@@ -2484,6 +2617,19 @@ function analyzeMessage(message) {
     analysis.suggested_bucket = 'projects';
     analysis.response_level = 'project';
     analysis.tags.push('projet', 'création-projet');
+  }
+
+  if (isPotentialProjectObjectiveExpression(text)) {
+    const potentialProjectObjective = extractPotentialProjectObjective(text);
+
+    analysis.type = 'project_note';
+    analysis.is_project = true;
+    analysis.suggested_bucket = 'projects';
+    analysis.response_level = 'project';
+    analysis.project_lifecycle_phase = 'potential_project';
+    analysis.potential_project_objective = potentialProjectObjective || text;
+    analysis.project_name = null;
+    analysis.tags.push('projet', 'objectif', 'projet-potentiel');
   }
 
   if (isReflectionResumeRequest(text)) {
@@ -2962,9 +3108,13 @@ function buildSuggestions(analysis, action) {
   }
 
   if (analysis.is_project) {
-    suggestions.push('Ajouter à la roadmap');
-    suggestions.push('Créer une tâche projet');
-    suggestions.push('Préparer un cahier des charges');
+    if (analysis.project_lifecycle_phase === 'potential_project') {
+      suggestions.push('Clarifier ce projet avec Nyra');
+    } else {
+      suggestions.push('Ajouter à la roadmap');
+      suggestions.push('Créer une tâche projet');
+      suggestions.push('Préparer un cahier des charges');
+    }
   }
 
   return uniqueArray(suggestions).slice(0, 4);
@@ -3975,7 +4125,7 @@ function saveCapture({ userId, message, reply, analysis, action }) {
   let createdRelation = null;
   let updatedContext = null;
 
-  if (analysis.project_name && !isReservedAutoProjectName(analysis.project_name)) {
+  if (analysis.project_name && analysis.project_lifecycle_phase !== 'potential_project' && !isReservedAutoProjectName(analysis.project_name)) {
     linkedProject = ensureProject(store, userId, analysis.project_name, message);
     item.project_id = linkedProject.id;
     item.project_name = linkedProject.name;
@@ -5720,6 +5870,30 @@ function buildChatExecutionPolicy({ message, thoughtOrchestration, pipelineConte
       reason: 'Surcharge mentale détectée : la collecte doit minimiser le coût cognitif et ne demander aucun tri.',
       behavior_impact: 'visible_reply_controlled',
       reply: buildBrainDumpCollectReply(),
+      generated_at: new Date().toISOString(),
+    };
+
+    console.log('===== NYRA EXECUTION POLICY =====');
+    console.log(JSON.stringify({
+      mode: policy.mode,
+      protocol: policy.protocol,
+      phase: policy.phase,
+      reason: policy.reason,
+      llm_call_expected: false,
+    }, null, 2));
+
+    return policy;
+  }
+
+  if (analysis?.project_lifecycle_phase === 'potential_project') {
+    const policy = {
+      contract: 'execution-policy-v1',
+      mode: 'deterministic',
+      protocol: 'project_guidance',
+      phase: 'offer_clarification',
+      reason: 'Objectif pouvant devenir un projet détecté : Nyra propose de le construire avec l’utilisateur avant toute création.',
+      behavior_impact: 'visible_reply_controlled_no_project_creation',
+      reply: buildPotentialProjectOfferReply(analysis),
       generated_at: new Date().toISOString(),
     };
 
