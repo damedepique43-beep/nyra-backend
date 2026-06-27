@@ -124,6 +124,86 @@ function hasLayerType(items = [], type) {
   return normalizeArray(items).some(item => normalizeText(item?.type) === normalizedType);
 }
 
+
+function buildUnderstandingAssessment({ understanding = {}, basis = {} } = {}) {
+  const profile = normalizeObject(basis.situation_profile);
+  const metadata = normalizeObject(understanding.metadata);
+  const analysis = normalizeObject(understanding.analysis || metadata.analysis || metadata.local_analysis);
+  const lifecyclePhase = normalizeText(
+    understanding.project_lifecycle_phase ||
+    analysis.project_lifecycle_phase ||
+    metadata.project_lifecycle_phase ||
+    ''
+  );
+  const rawText = normalizeText(understanding.raw_text || understanding.text || '');
+  const lower = rawText.toLowerCase();
+  const domain = normalizeText(profile.domain || basis.domain || 'context');
+  const isProjectContext = Boolean(
+    domain === 'project' ||
+    basis.primary_intent === 'project_thought' ||
+    profile.should_clarify_project ||
+    ['potential_project', 'project_clarification', 'project_clarification_answer'].includes(lifecyclePhase)
+  );
+
+  const missingInformationPriority = [];
+  let understandingStatus = 'sufficient_for_first_guidance';
+  let confidence = 0.7;
+  let reason = 'La compréhension actuelle semble suffisante pour produire une première aide utile.';
+
+  if (isProjectContext) {
+    const hasObjective = Boolean(
+      normalizeText(
+        understanding.potential_project_objective ||
+        understanding.project_goal ||
+        understanding.project_name ||
+        analysis.potential_project_objective ||
+        analysis.project_goal ||
+        analysis.project_name ||
+        ''
+      ) || rawText.length >= 12
+    );
+    const hasConcreteDirection = Boolean(
+      lifecyclePhase === 'project_clarification_answer' ||
+      ['chez moi', 'chez nous', 'lieu dédié', 'lieu dedie', 'local', 'boutique', 'en ligne', 'application', 'commercialisable', 'pour moi', 'utilisateurs'].some(pattern => lower.includes(pattern)) ||
+      rawText.length >= 18
+    );
+
+    if (!hasObjective) {
+      understandingStatus = 'insufficient';
+      confidence = 0.62;
+      missingInformationPriority.push('project_objective');
+      reason = 'L’objectif du projet reste trop implicite pour produire une aide utile.';
+    } else if (profile.should_clarify_project && !hasConcreteDirection) {
+      understandingStatus = 'insufficient';
+      confidence = 0.66;
+      missingInformationPriority.push('project_scope');
+      reason = 'Nyra a identifié un objectif de projet, mais il manque encore une information de cadrage pour éviter une roadmap trop générique.';
+    } else if (hasConcreteDirection) {
+      understandingStatus = 'sufficient_for_first_guidance';
+      confidence = 0.76;
+      reason = 'Une première information de cadrage permet maintenant de commencer à aider sans attendre une roadmap complète.';
+    }
+  }
+
+  if (basis.has_competing_hypotheses) {
+    understandingStatus = 'insufficient';
+    confidence = Math.min(confidence, 0.64);
+    missingInformationPriority.push('resolve_competing_hypotheses');
+    reason = 'Plusieurs hypothèses restent concurrentes : une clarification est nécessaire avant d’aider utilement.';
+  }
+
+  return {
+    version: 'understanding-assessment-v1',
+    understanding_status: understandingStatus,
+    confidence: clamp01(confidence, 0.7),
+    missing_information_priority: [...new Set(missingInformationPriority)],
+    reason,
+    applies_to_domain: isProjectContext ? 'project' : domain,
+    lifecycle_phase: lifecyclePhase || null,
+    principle: 'Évaluer si Nyra comprend suffisamment pour produire une aide utile, sans décider ni exécuter.',
+  };
+}
+
 function buildReasoningBasis(understanding) {
   const layers = getCognitiveLayers(understanding);
   const primaryIntent = getPrimaryIntent(understanding);
@@ -165,6 +245,18 @@ function buildReasoningBasis(understanding) {
     basis: provisionalBasis,
     directiveDetection,
   });
+  const understandingAssessment = buildUnderstandingAssessment({
+    understanding,
+    basis: {
+      ...provisionalBasis,
+      domain: situationProfile.domain,
+      cognitive_state: situationProfile.cognitive_state,
+      dominant_cognitive_need: situationProfile.dominant_need,
+      directive_detection: directiveDetection,
+      situation_profile: situationProfile,
+      cognitive_intervention: cognitiveIntervention,
+    },
+  });
 
   return {
     ...provisionalBasis,
@@ -174,6 +266,7 @@ function buildReasoningBasis(understanding) {
     directive_detection: directiveDetection,
     situation_profile: situationProfile,
     cognitive_intervention: cognitiveIntervention,
+    understanding_assessment: understandingAssessment,
     confidence,
     temporal_scope: temporalScope,
     emotional_intensity: emotionalIntensity,
@@ -489,6 +582,7 @@ function buildReasoningOutput({ thought, understanding, basis, strategies, alter
       directive_detection: basis.directive_detection || null,
       situation_profile: basis.situation_profile || null,
       cognitive_intervention: basis.cognitive_intervention || null,
+      understanding_assessment: basis.understanding_assessment || null,
       hypothesis_evaluation_summary: hypothesisEvaluationSummary,
     },
     evaluated_hypotheses: basis.hypotheses.map(hypothesis => ({
@@ -519,6 +613,12 @@ function buildReasoningOutput({ thought, understanding, basis, strategies, alter
       behavior_changed: false,
       selected_intervention: basis.cognitive_intervention || null,
       principle: 'Le Reasoning Engine choisit une méthode d’accompagnement cognitive avant de générer les stratégies qui la servent.',
+    },
+    understanding_assessment_analysis: {
+      version: 'understanding-assessment-v1',
+      behavior_changed: false,
+      assessment: basis.understanding_assessment || null,
+      principle: 'Nyra évalue si sa compréhension est suffisante pour produire une aide utile avant de choisir une stratégie.',
     },
     cognitive_need_analysis: {
       version: 'cognitive-need-strategy-annotation-v1',
@@ -581,7 +681,7 @@ function reasonAboutThought({ thought, context = {} } = {}) {
       nextEngine: null,
       behaviorChanged: false,
       metadata: {
-        internal_analyzers: ['hypothesis_evaluator_v2', 'hypothesis_arbitration_v1', 'directive_detection_v1', 'situation_profile_v1', 'cognitive_intervention_selector_v1', 'project_clarification_strategy_v1', 'cognitive_layer_strategy_generator_v1', 'alternative_strategy_analyzer_v1', 'cognitive_need_strategy_annotation_v1', 'strategy_evaluator_v1', 'cognitive_questions_v1'],
+        internal_analyzers: ['hypothesis_evaluator_v2', 'hypothesis_arbitration_v1', 'directive_detection_v1', 'understanding_assessment_v1', 'situation_profile_v1', 'cognitive_intervention_selector_v1', 'project_clarification_strategy_v1', 'cognitive_layer_strategy_generator_v1', 'alternative_strategy_analyzer_v1', 'cognitive_need_strategy_annotation_v1', 'strategy_evaluator_v1', 'cognitive_questions_v1'],
         foundation_role: 'construct_strategies_without_deciding',
         reasoning_priority: ['evaluated_hypotheses', 'facts', 'observations', 'fallback_signals'],
       },

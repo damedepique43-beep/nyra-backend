@@ -2107,6 +2107,128 @@ function buildProjectClarificationReply(analysis = {}) {
   ].join('\n');
 }
 
+
+function buildProjectFirstGuidanceReply(analysis = {}) {
+  const objective = normalizeText(
+    analysis.potential_project_objective ||
+    analysis.project_goal ||
+    analysis.project_name ||
+    ''
+  );
+  const answer = normalizeText(analysis.project_clarification_answer || analysis.raw_text || '');
+
+  return [
+    'Ok, ça me donne une première direction utile.',
+    '',
+    objective
+      ? `Je comprends que ton objectif reste : « ${objective} ».`
+      : 'Je comprends mieux l’objectif que tu veux construire.',
+    answer
+      ? `Et pour l’instant, je retiens ce point de cadrage : « ${answer} ».`
+      : '',
+    '',
+    'À partir de là, je peux commencer à t’aider sans te noyer de questions. La prochaine étape logique sera de transformer cette compréhension en première orientation, puis en feuille de route quand ce sera assez clair.',
+  ].filter(Boolean).join('\n');
+}
+
+function findLatestProjectClarificationConversationItem(userId) {
+  const store = readStore();
+  const now = Date.now();
+  const maxAgeMs = 60 * 60 * 1000;
+
+  return (Array.isArray(store.items) ? store.items : [])
+    .filter(item => {
+      const updatedAt = new Date(item.updated_at || item.created_at || 0).getTime();
+      const tags = Array.isArray(item.tags) ? item.tags.map(tag => normalizeText(tag).toLowerCase()) : [];
+      const lifecyclePhase = normalizeText(item.project_lifecycle_phase || '').toLowerCase();
+
+      return (
+        itemBelongsToUser(item, userId) &&
+        Number.isFinite(updatedAt) &&
+        now - updatedAt <= maxAgeMs &&
+        (
+          tags.includes('clarification-projet') ||
+          lifecyclePhase === 'project_clarification'
+        )
+      );
+    })
+    .sort((a, b) => {
+      return new Date(b.updated_at || b.created_at || 0).getTime() -
+        new Date(a.updated_at || a.created_at || 0).getTime();
+    })[0] || null;
+}
+
+function buildProjectUnderstandingAssessmentContext({ userId, message, analysis = {} } = {}) {
+  if (isProjectClarificationAcceptanceMessage(message)) {
+    return {
+      should_assess_project_understanding: false,
+      analysis_patch: {},
+      project_clarification_item: null,
+    };
+  }
+
+  const clarificationItem = findLatestProjectClarificationConversationItem(userId);
+
+  if (!clarificationItem) {
+    return {
+      should_assess_project_understanding: false,
+      analysis_patch: {},
+      project_clarification_item: null,
+    };
+  }
+
+  const answer = normalizeText(message);
+
+  if (!answer || answer.length < 2) {
+    return {
+      should_assess_project_understanding: false,
+      analysis_patch: {},
+      project_clarification_item: clarificationItem,
+    };
+  }
+
+  const objective = normalizeText(
+    clarificationItem.potential_project_objective ||
+    clarificationItem.project_goal ||
+    clarificationItem.project_name ||
+    clarificationItem.content ||
+    ''
+  );
+
+  return {
+    should_assess_project_understanding: true,
+    project_clarification_item: clarificationItem,
+    analysis_patch: {
+      type: 'project_note',
+      is_project: true,
+      is_task: false,
+      is_idea: false,
+      suggested_bucket: 'projects',
+      response_level: 'project',
+      project_lifecycle_phase: 'project_clarification_answer',
+      potential_project_objective: objective,
+      project_clarification_answer: answer,
+      understanding_status: 'sufficient_for_first_guidance',
+      understanding_assessment: {
+        version: 'understanding-assessment-v1',
+        understanding_status: 'sufficient_for_first_guidance',
+        confidence: 0.76,
+        missing_information_priority: [],
+        reason: 'La réponse à la première question donne un cadrage suffisant pour commencer à aider sans générer encore de roadmap.',
+      },
+      project_name: null,
+      conversation_intent: 'answer',
+      tags: uniqueArray([
+        ...(Array.isArray(analysis.tags) ? analysis.tags : []),
+        'projet',
+        'objectif',
+        'clarification-projet',
+        'compréhension-suffisante-v1',
+      ]),
+    },
+  };
+}
+
 function buildProjectClarificationContext({ userId, message, analysis = {} } = {}) {
   if (!isProjectClarificationAcceptanceMessage(message)) {
     return {
@@ -3313,6 +3435,11 @@ function createStoredItem({ userId, message, analysis, action }) {
       : analysis.tags,
     status: action ? getStoredItemStatusForAction(action) : analysis.is_task ? 'todo' : 'captured',
     project_name: analysis.project_name || null,
+    project_lifecycle_phase: analysis.project_lifecycle_phase || null,
+    potential_project_objective: analysis.potential_project_objective || null,
+    project_clarification_answer: analysis.project_clarification_answer || null,
+    understanding_status: analysis.understanding_status || analysis.understanding_assessment?.understanding_status || null,
+    understanding_assessment: analysis.understanding_assessment || null,
     project_id: null,
     action_type: action ? action.action_type : null,
     action_label: action ? action.label : null,
@@ -6021,6 +6148,30 @@ function buildChatExecutionPolicy({ message, thoughtOrchestration, pipelineConte
       reason: 'Surcharge mentale détectée : la collecte doit minimiser le coût cognitif et ne demander aucun tri.',
       behavior_impact: 'visible_reply_controlled',
       reply: buildBrainDumpCollectReply(),
+      generated_at: new Date().toISOString(),
+    };
+
+    console.log('===== NYRA EXECUTION POLICY =====');
+    console.log(JSON.stringify({
+      mode: policy.mode,
+      protocol: policy.protocol,
+      phase: policy.phase,
+      reason: policy.reason,
+      llm_call_expected: false,
+    }, null, 2));
+
+    return policy;
+  }
+
+  if (analysis?.project_lifecycle_phase === 'project_clarification_answer' && analysis?.understanding_status === 'sufficient_for_first_guidance') {
+    const policy = {
+      contract: 'execution-policy-v1',
+      mode: 'deterministic',
+      protocol: 'project_guidance',
+      phase: 'understanding_sufficient_for_first_guidance',
+      reason: 'La compréhension du projet est suffisante pour produire une première aide utile sans générer encore de roadmap.',
+      behavior_impact: 'visible_reply_controlled_no_project_creation',
+      reply: buildProjectFirstGuidanceReply(analysis),
       generated_at: new Date().toISOString(),
     };
 
@@ -13702,9 +13853,27 @@ app.post('/chat', async (req, res) => {
       Object.assign(analysis, projectClarificationContext.analysis_patch);
     }
 
+    const projectUnderstandingAssessmentContext = projectClarificationContext.should_start_project_clarification
+      ? {
+          should_assess_project_understanding: false,
+          analysis_patch: {},
+          project_clarification_item: null,
+        }
+      : buildProjectUnderstandingAssessmentContext({
+          userId,
+          message: thought.content,
+          analysis,
+        });
+
+    if (projectUnderstandingAssessmentContext.should_assess_project_understanding) {
+      Object.assign(analysis, projectUnderstandingAssessmentContext.analysis_patch);
+    }
+
     perf.mark('project_clarification_context', projectClarificationStartedAt, {
       started: Boolean(projectClarificationContext.should_start_project_clarification),
       pending_project_item_id: projectClarificationContext.pending_project_item?.id || null,
+      assessed_understanding: Boolean(projectUnderstandingAssessmentContext.should_assess_project_understanding),
+      project_clarification_item_id: projectUnderstandingAssessmentContext.project_clarification_item?.id || null,
     });
 
     const detectActionStartedAt = Date.now();
