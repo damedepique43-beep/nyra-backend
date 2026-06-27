@@ -35,6 +35,45 @@ function includesAny(value, patterns = []) {
   });
 }
 
+function hasProjectClarificationSignal(understanding = {}, basis = {}) {
+  const rawText = normalizeText(understanding.raw_text || understanding.text || basis.raw_text || '').toLowerCase();
+  const metadata = normalizeObject(understanding.metadata);
+  const analysis = normalizeObject(understanding.analysis || metadata.analysis || metadata.local_analysis);
+  const lifecyclePhase = normalizeText(
+    understanding.project_lifecycle_phase ||
+    analysis.project_lifecycle_phase ||
+    metadata.project_lifecycle_phase ||
+    ''
+  );
+
+  if (['potential_project', 'project_clarification', 'clarification'].includes(lifecyclePhase)) {
+    return true;
+  }
+
+  return includesAny(rawText, [
+    'je veux créer',
+    'je veux creer',
+    'je veux lancer',
+    'je veux ouvrir',
+    'je veux monter',
+    'j aimerais créer',
+    "j'aimerais créer",
+    'j aimerais lancer',
+    "j'aimerais lancer",
+    'j aimerais ouvrir',
+    "j'aimerais ouvrir",
+    'je voudrais créer',
+    'je voudrais creer',
+    'je voudrais lancer',
+    'je voudrais ouvrir',
+    'mon projet c est',
+    "mon projet c'est",
+    'j ai pour projet',
+    "j'ai pour projet",
+  ]);
+}
+
+
 function getPrimaryIntent(understanding) {
   const intent = normalizeObject(understanding.intent);
   return normalizeText(intent.primary || understanding.primary_intent || 'capture_note') || 'capture_note';
@@ -227,6 +266,14 @@ function buildSituationProfile({ understanding = {}, basis = {}, directiveDetect
   const isForgettingRisk = forgettingStates.includes(cognitiveState);
   const isPlanning = planningStates.includes(cognitiveState);
   const isEmotional = emotionalStates.includes(cognitiveState) || hasEmotion;
+  const hasProjectClarificationNeed = Boolean(
+    !hasExplicitActionDirective &&
+    (
+      domain === 'project' ||
+      primaryIntent === 'project_thought' ||
+      hasProjectClarificationSignal(understanding, basis)
+    )
+  );
 
   let dominantNeed = 'preserve_context';
 
@@ -235,7 +282,7 @@ function buildSituationProfile({ understanding = {}, basis = {}, directiveDetect
   else if (isForgettingRisk || primaryIntent === 'create_reminder') dominantNeed = 'prevent_forgetting';
   else if (isEmotional) dominantNeed = 'support_regulation';
   else if (hasUncertainty) dominantNeed = 'clarify_uncertainty';
-  else if (domain === 'idea' || domain === 'project') dominantNeed = 'structure_idea';
+  else if (hasProjectClarificationNeed || domain === 'idea' || domain === 'project') dominantNeed = 'structure_idea';
   else if (domain === 'collection') dominantNeed = 'organize_information';
   else if (domain === 'task' || primaryIntent === 'create_task') dominantNeed = 'prepare_action';
 
@@ -254,6 +301,7 @@ function buildSituationProfile({ understanding = {}, basis = {}, directiveDetect
     dominant_need: dominantNeed,
     uncertainty_level: hasUncertainty || shouldClarifyFirst ? 'medium' : 'low',
     should_clarify_first: shouldClarifyFirst,
+    should_clarify_project: hasProjectClarificationNeed,
     should_externalize: Boolean(
       (!isOverloaded && !isEmotional && (isPlanning || primaryIntent === 'create_task')) ||
       directive.requested_action === 'create_task'
@@ -402,6 +450,19 @@ function selectCognitiveIntervention({ profile = {}, basis = {}, directiveDetect
       recommendedBuilders: ['clarify_understanding'],
       nextPromptGoal: 'Clarifier une seule information utile avant de choisir une action.',
       rationale: 'L’incertitude doit être réduite avant de transformer la pensée en action.',
+    });
+  }
+
+  if (dominantNeed === 'structure_idea' && safeProfile.should_clarify_project) {
+    return buildCognitiveIntervention({
+      id: 'progressive_clarification',
+      label: 'Clarification progressive du projet',
+      goal: 'structure_idea',
+      confidence: 0.8,
+      conversationStyle: 'project_clarification',
+      recommendedBuilders: ['clarify_project_objective'],
+      nextPromptGoal: 'Poser une seule question utile pour mieux comprendre l’objectif avant de proposer une feuille de route.',
+      rationale: 'Un objectif pouvant devenir un projet demande une clarification progressive avant toute roadmap.',
     });
   }
 

@@ -184,6 +184,53 @@ function buildCreateProjectStrategy({ basis, hypothesis = null }) {
 }
 
 
+function buildProjectClarificationStrategy({ basis, hypothesis = null }) {
+  const profile = normalizeObject(basis.situation_profile);
+  const confidence = Math.max(
+    hypothesis ? getHypothesisConfidence(hypothesis, basis.confidence) : basis.confidence,
+    0.78
+  );
+
+  return buildStrategy({
+    id: 'clarify_project_objective',
+    label: 'Clarifier un projet avant de construire sa feuille de route',
+    confidence,
+    cognitiveCost: 0.12,
+    expectedBenefit: 0.84,
+    riskLevel: clamp01(0.08 + getHypothesisRiskAdjustment(hypothesis), 0.08),
+    cognitiveNeed: {
+      primary: 'structure_idea',
+      label: 'Clarifier un objectif avant de le transformer en roadmap',
+      confidence,
+      source: hypothesis ? 'evaluated_hypothesis' : 'project_guidance',
+      rationale: 'La stratégie vise à réduire l’incertitude utile autour d’un objectif avant toute création de feuille de route.',
+    },
+    reasons: [
+      getHypothesisReason(hypothesis, 'Un objectif pouvant devenir un projet a été détecté.'),
+      'Nyra doit comprendre suffisamment le projet avant de proposer une roadmap.',
+      'Une seule question utile réduit la charge cognitive par rapport à un formulaire ou une liste de questions.',
+    ],
+    constraints: {
+      requires_decision: true,
+      reasoning_source: hypothesis ? 'evaluated_hypothesis' : 'project_guidance',
+      hypothesis_status: hypothesis?.evaluation?.status || null,
+      project_lifecycle_phase: 'clarification',
+      conversation_style: 'project_clarification',
+      next_prompt_goal: 'Poser une seule question utile pour mieux comprendre l’objectif avant toute roadmap.',
+      forbid_direct_project_creation: true,
+      should_not_generate_roadmap_yet: true,
+    },
+    payload: {
+      intent: basis.primary_intent,
+      hypothesis_id: hypothesis?.id || null,
+      domain: profile.domain || basis.domain || 'project',
+      project_lifecycle_phase: 'clarification',
+      guidance: 'Poser une seule question contextualisée sur le projet. Ne pas générer de roadmap et ne pas créer le projet tout de suite.',
+    },
+  });
+}
+
+
 function buildFuturePromptStrategy({ basis, hypothesis = null }) {
   const confidence = hypothesis ? getHypothesisConfidence(hypothesis, basis.confidence) : basis.confidence;
 
@@ -443,6 +490,7 @@ function buildBrainDumpStrategy({ basis }) {
 module.exports = {
   buildExternalizeActionStrategy,
   buildCreateProjectStrategy,
+  buildProjectClarificationStrategy,
   buildFuturePromptStrategy,
   buildCollectionStrategy,
   buildRegulationStrategy,

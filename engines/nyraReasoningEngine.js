@@ -10,6 +10,7 @@ const {
 const {
   buildExternalizeActionStrategy,
   buildCreateProjectStrategy,
+  buildProjectClarificationStrategy,
   buildFuturePromptStrategy,
   buildCollectionStrategy,
   buildRegulationStrategy,
@@ -241,6 +242,13 @@ function buildStrategiesFromCognitiveLayers({ understanding, basis }) {
     }));
   }
 
+  if (profile.should_clarify_project) {
+    addStrategyOnce(strategies, buildProjectClarificationStrategy({
+      basis,
+      hypothesis: projectOrIdeaHypothesis,
+    }));
+  }
+
   if (profile.should_prepare_reminder) {
     addStrategyOnce(strategies, buildFuturePromptStrategy({
       basis,
@@ -347,6 +355,10 @@ function buildStrategiesFromFallbackSignals({ understanding, basis }) {
 
   if (profile.should_regulate) {
     addStrategyOnce(strategies, buildRegulationStrategy({ basis }));
+  }
+
+  if (profile.should_clarify_project) {
+    addStrategyOnce(strategies, buildProjectClarificationStrategy({ basis }));
   }
 
   if (profile.should_prepare_reminder) {
@@ -569,7 +581,7 @@ function reasonAboutThought({ thought, context = {} } = {}) {
       nextEngine: null,
       behaviorChanged: false,
       metadata: {
-        internal_analyzers: ['hypothesis_evaluator_v2', 'hypothesis_arbitration_v1', 'directive_detection_v1', 'situation_profile_v1', 'cognitive_intervention_selector_v1', 'cognitive_layer_strategy_generator_v1', 'alternative_strategy_analyzer_v1', 'cognitive_need_strategy_annotation_v1', 'strategy_evaluator_v1', 'cognitive_questions_v1'],
+        internal_analyzers: ['hypothesis_evaluator_v2', 'hypothesis_arbitration_v1', 'directive_detection_v1', 'situation_profile_v1', 'cognitive_intervention_selector_v1', 'project_clarification_strategy_v1', 'cognitive_layer_strategy_generator_v1', 'alternative_strategy_analyzer_v1', 'cognitive_need_strategy_annotation_v1', 'strategy_evaluator_v1', 'cognitive_questions_v1'],
         foundation_role: 'construct_strategies_without_deciding',
         reasoning_priority: ['evaluated_hypotheses', 'facts', 'observations', 'fallback_signals'],
       },

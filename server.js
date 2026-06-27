@@ -2011,6 +2011,154 @@ function buildPotentialProjectOfferReply(analysis = {}) {
   ].join('\n');
 }
 
+function isProjectClarificationAcceptanceMessage(message) {
+  const compact = normalizeSimpleConversationKey(message);
+
+  if (!compact) return false;
+
+  return [
+    'oui',
+    'oui vas y',
+    'oui allons y',
+    'vas y',
+    'allons y',
+    'on commence',
+    'commencons',
+    'commençons',
+    'ok',
+    'okay',
+    'd accord',
+    'daccord',
+    'ca marche',
+    'ça marche',
+    'je veux bien',
+    'oui je veux bien',
+  ].includes(compact);
+}
+
+function findLatestPotentialProjectConversationItem(userId) {
+  const store = readStore();
+  const now = Date.now();
+  const maxAgeMs = 60 * 60 * 1000;
+
+  return (Array.isArray(store.items) ? store.items : [])
+    .filter(item => {
+      const updatedAt = new Date(item.updated_at || item.created_at || 0).getTime();
+      const tags = Array.isArray(item.tags) ? item.tags.map(tag => normalizeText(tag).toLowerCase()) : [];
+
+      return (
+        itemBelongsToUser(item, userId) &&
+        Number.isFinite(updatedAt) &&
+        now - updatedAt <= maxAgeMs &&
+        (
+          tags.includes('projet-potentiel') ||
+          tags.includes('objectif') ||
+          normalizeText(item.project_lifecycle_phase || '') === 'potential_project'
+        ) &&
+        !tags.includes('project-clarification-started')
+      );
+    })
+    .sort((a, b) => {
+      return new Date(b.updated_at || b.created_at || 0).getTime() -
+        new Date(a.updated_at || a.created_at || 0).getTime();
+    })[0] || null;
+}
+
+function buildProjectClarificationQuestion(objective = '') {
+  const normalizedObjective = normalizeText(objective);
+  const lower = normalizedObjective.toLowerCase();
+
+  if (includesAny(lower, ['pension canine', 'pension pour chien', 'pension pour chiens', 'refuge', 'animaux', 'animalier', 'chien', 'chiens', 'chat', 'chats'])) {
+    return 'Tu imagines plutôt accueillir les animaux chez toi, ou créer un lieu dédié séparé de ton logement ?';
+  }
+
+  if (includesAny(lower, ['application', 'appli', 'app', 'site', 'logiciel', 'plateforme'])) {
+    return 'Tu veux construire ce projet d’abord pour toi, pour quelques premiers utilisateurs, ou directement comme une offre commercialisable ?';
+  }
+
+  if (includesAny(lower, ['restaurant', 'boutique', 'boulangerie', 'pâtisserie', 'patisserie', 'commerce'])) {
+    return 'Tu imagines plutôt un lieu physique, une activité en ligne, ou tu es encore au stade où les deux options sont possibles ?';
+  }
+
+  if (includesAny(lower, ['livre', 'roman', 'chaîne', 'chaine', 'youtube', 'podcast', 'contenu'])) {
+    return 'Tu veux surtout créer ce projet pour t’exprimer, construire une audience, ou en faire une activité qui peut rapporter de l’argent ?';
+  }
+
+  return 'Quel résultat concret tu aimerais obtenir avec ce projet, même si c’est encore flou pour l’instant ?';
+}
+
+function buildProjectClarificationReply(analysis = {}) {
+  const objective = normalizeText(
+    analysis.potential_project_objective ||
+    analysis.project_goal ||
+    analysis.project_name ||
+    ''
+  );
+  const question = buildProjectClarificationQuestion(objective);
+
+  return [
+    'Parfait. On va le construire ensemble, sans partir directement dans une liste d’étapes.',
+    '',
+    objective
+      ? `Pour l’instant, je pars de ton objectif : « ${objective} ».`
+      : 'Pour l’instant, je vais d’abord chercher à comprendre ton objectif.',
+    '',
+    question,
+  ].join('\n');
+}
+
+function buildProjectClarificationContext({ userId, message, analysis = {} } = {}) {
+  if (!isProjectClarificationAcceptanceMessage(message)) {
+    return {
+      should_start_project_clarification: false,
+      analysis_patch: {},
+      pending_project_item: null,
+    };
+  }
+
+  const pendingProjectItem = findLatestPotentialProjectConversationItem(userId);
+
+  if (!pendingProjectItem) {
+    return {
+      should_start_project_clarification: false,
+      analysis_patch: {},
+      pending_project_item: null,
+    };
+  }
+
+  const objective = normalizeText(
+    pendingProjectItem.potential_project_objective ||
+    pendingProjectItem.project_goal ||
+    pendingProjectItem.content ||
+    pendingProjectItem.title ||
+    ''
+  );
+
+  return {
+    should_start_project_clarification: true,
+    pending_project_item: pendingProjectItem,
+    analysis_patch: {
+      type: 'project_note',
+      is_project: true,
+      is_task: false,
+      is_idea: false,
+      suggested_bucket: 'projects',
+      response_level: 'project',
+      project_lifecycle_phase: 'project_clarification',
+      potential_project_objective: objective,
+      project_name: null,
+      conversation_intent: 'agreement',
+      tags: uniqueArray([
+        ...(Array.isArray(analysis.tags) ? analysis.tags : []),
+        'projet',
+        'objectif',
+        'clarification-projet',
+      ]),
+    },
+  };
+}
+
+
 function detectKnownProjectName(text) {
   const projectCreationName = extractProjectNameFromProjectCreationRequest(text);
 
@@ -3110,6 +3258,9 @@ function buildSuggestions(analysis, action) {
   if (analysis.is_project) {
     if (analysis.project_lifecycle_phase === 'potential_project') {
       suggestions.push('Clarifier ce projet avec Nyra');
+    } else if (analysis.project_lifecycle_phase === 'project_clarification') {
+      suggestions.push('Répondre à la question');
+      suggestions.push('Clarifier plus tard');
     } else {
       suggestions.push('Ajouter à la roadmap');
       suggestions.push('Créer une tâche projet');
@@ -5870,6 +6021,30 @@ function buildChatExecutionPolicy({ message, thoughtOrchestration, pipelineConte
       reason: 'Surcharge mentale détectée : la collecte doit minimiser le coût cognitif et ne demander aucun tri.',
       behavior_impact: 'visible_reply_controlled',
       reply: buildBrainDumpCollectReply(),
+      generated_at: new Date().toISOString(),
+    };
+
+    console.log('===== NYRA EXECUTION POLICY =====');
+    console.log(JSON.stringify({
+      mode: policy.mode,
+      protocol: policy.protocol,
+      phase: policy.phase,
+      reason: policy.reason,
+      llm_call_expected: false,
+    }, null, 2));
+
+    return policy;
+  }
+
+  if (analysis?.project_lifecycle_phase === 'project_clarification') {
+    const policy = {
+      contract: 'execution-policy-v1',
+      mode: 'deterministic',
+      protocol: 'project_guidance',
+      phase: 'first_clarification_question',
+      reason: 'L’utilisateur accepte de construire le projet : Nyra pose une seule question utile avant toute roadmap.',
+      behavior_impact: 'visible_reply_controlled_no_project_creation',
+      reply: buildProjectClarificationReply(analysis),
       generated_at: new Date().toISOString(),
     };
 
@@ -13515,6 +13690,22 @@ app.post('/chat', async (req, res) => {
       thoughtOrchestration
     );
     perf.mark('enrich_ai_analysis_with_pipeline', enrichAiAnalysisStartedAt);
+
+    const projectClarificationStartedAt = Date.now();
+    const projectClarificationContext = buildProjectClarificationContext({
+      userId,
+      message: thought.content,
+      analysis,
+    });
+
+    if (projectClarificationContext.should_start_project_clarification) {
+      Object.assign(analysis, projectClarificationContext.analysis_patch);
+    }
+
+    perf.mark('project_clarification_context', projectClarificationStartedAt, {
+      started: Boolean(projectClarificationContext.should_start_project_clarification),
+      pending_project_item_id: projectClarificationContext.pending_project_item?.id || null,
+    });
 
     const detectActionStartedAt = Date.now();
     const detectedAction = detectAction(thought.content, userId, analysis);
