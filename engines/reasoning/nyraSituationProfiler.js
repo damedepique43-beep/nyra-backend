@@ -461,8 +461,8 @@ function selectCognitiveIntervention({ profile = {}, basis = {}, directiveDetect
       confidence: 0.8,
       conversationStyle: 'project_clarification',
       recommendedBuilders: ['clarify_project_objective'],
-      nextPromptGoal: 'Poser une seule question utile pour mieux comprendre l’objectif avant de proposer une feuille de route.',
-      rationale: 'Un objectif pouvant devenir un projet demande une clarification progressive avant toute roadmap.',
+      nextPromptGoal: 'Poser la question dont la réponse ferait le plus progresser la compréhension utile du projet avant toute roadmap.',
+      rationale: 'Un objectif pouvant devenir un projet demande de cibler l’information la plus structurante avant toute roadmap.',
     });
   }
 

@@ -186,6 +186,7 @@ function buildCreateProjectStrategy({ basis, hypothesis = null }) {
 
 function buildProjectClarificationStrategy({ basis, hypothesis = null }) {
   const profile = normalizeObject(basis.situation_profile);
+  const informationValue = normalizeObject(basis.information_value_assessment);
   const confidence = Math.max(
     hypothesis ? getHypothesisConfidence(hypothesis, basis.confidence) : basis.confidence,
     0.78
@@ -208,6 +209,7 @@ function buildProjectClarificationStrategy({ basis, hypothesis = null }) {
     reasons: [
       getHypothesisReason(hypothesis, 'Un objectif pouvant devenir un projet a été détecté.'),
       'Nyra doit comprendre suffisamment le projet avant de proposer une roadmap.',
+      informationValue.why_this_matters || 'La prochaine question doit viser l’information qui augmente le plus la compréhension utile.',
       'Une seule question utile réduit la charge cognitive par rapport à un formulaire ou une liste de questions.',
     ],
     constraints: {
@@ -216,7 +218,10 @@ function buildProjectClarificationStrategy({ basis, hypothesis = null }) {
       hypothesis_status: hypothesis?.evaluation?.status || null,
       project_lifecycle_phase: 'clarification',
       conversation_style: 'project_clarification',
-      next_prompt_goal: 'Poser une seule question utile pour mieux comprendre l’objectif avant toute roadmap.',
+      next_prompt_goal: informationValue.question_focus || 'Poser une seule question utile pour mieux comprendre l’objectif avant toute roadmap.',
+      information_value_assessment: informationValue,
+      selected_knowledge_gap: informationValue.selected_gap || null,
+      why_this_question_matters: informationValue.why_this_matters || null,
       forbid_direct_project_creation: true,
       should_not_generate_roadmap_yet: true,
     },
@@ -225,7 +230,10 @@ function buildProjectClarificationStrategy({ basis, hypothesis = null }) {
       hypothesis_id: hypothesis?.id || null,
       domain: profile.domain || basis.domain || 'project',
       project_lifecycle_phase: 'clarification',
-      guidance: 'Poser une seule question contextualisée sur le projet. Ne pas générer de roadmap et ne pas créer le projet tout de suite.',
+      guidance: informationValue.why_this_matters
+        ? `Poser une seule question contextualisée sur le projet. Montrer brièvement pourquoi cette information est utile pour l’utilisateur : ${informationValue.why_this_matters}. Ne pas générer de roadmap et ne pas créer le projet tout de suite.`
+        : 'Poser une seule question contextualisée sur le projet. Ne pas générer de roadmap et ne pas créer le projet tout de suite.',
+      information_value_assessment: informationValue,
     },
   });
 }

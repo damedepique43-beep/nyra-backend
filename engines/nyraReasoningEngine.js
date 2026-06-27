@@ -204,6 +204,204 @@ function buildUnderstandingAssessment({ understanding = {}, basis = {} } = {}) {
   };
 }
 
+
+function includesAnyText(value, patterns = []) {
+  const normalizedValue = normalizeText(value).toLowerCase();
+
+  if (!normalizedValue) return false;
+
+  return normalizeArray(patterns).some(pattern => {
+    return normalizedValue.includes(normalizeText(pattern).toLowerCase());
+  });
+}
+
+function buildInformationValueAssessment({ understanding = {}, basis = {} } = {}) {
+  const profile = normalizeObject(basis.situation_profile);
+  const understandingAssessment = normalizeObject(basis.understanding_assessment);
+  const metadata = normalizeObject(understanding.metadata);
+  const analysis = normalizeObject(understanding.analysis || metadata.analysis || metadata.local_analysis);
+  const rawText = normalizeText(understanding.raw_text || understanding.text || analysis.raw_text || '');
+  const objective = normalizeText(
+    understanding.potential_project_objective ||
+    understanding.project_goal ||
+    understanding.project_name ||
+    analysis.potential_project_objective ||
+    analysis.project_goal ||
+    analysis.project_name ||
+    rawText ||
+    ''
+  );
+  const lowerObjective = objective.toLowerCase();
+  const domain = normalizeText(profile.domain || basis.domain || 'context');
+  const lifecyclePhase = normalizeText(
+    understanding.project_lifecycle_phase ||
+    analysis.project_lifecycle_phase ||
+    metadata.project_lifecycle_phase ||
+    understandingAssessment.lifecycle_phase ||
+    ''
+  );
+
+  const isProjectContext = Boolean(
+    domain === 'project' ||
+    basis.primary_intent === 'project_thought' ||
+    profile.should_clarify_project ||
+    ['potential_project', 'project_clarification', 'project_clarification_answer'].includes(lifecyclePhase)
+  );
+
+  if (!isProjectContext) {
+    return {
+      version: 'information-value-assessment-v1',
+      applies_to_domain: domain,
+      selected_gap: null,
+      question_focus: null,
+      why_this_matters: null,
+      value_scores: {
+        information_gain: 0,
+        ambiguity_reduction: 0,
+        decision_impact: 0,
+        cognitive_load_reduction: 0,
+        knowledge_value: 0,
+      },
+      alternatives: [],
+      principle: 'Identifier uniquement l’information dont la réponse ferait le plus progresser l’aide utile.',
+    };
+  }
+
+  let selectedGap = 'project_core_direction';
+  let questionFocus = 'Clarifier le résultat concret attendu afin d’éviter une feuille de route trop générique.';
+  let whyThisMatters = 'Le résultat attendu guide la manière de découper le projet, de choisir les premières étapes et d’éviter de surcharger l’utilisateur.';
+  let valueScores = {
+    information_gain: 0.82,
+    ambiguity_reduction: 0.74,
+    decision_impact: 0.78,
+    cognitive_load_reduction: 0.7,
+  };
+  let alternatives = [
+    {
+      gap: 'budget',
+      rejected_reason: 'Utile plus tard, mais trop précoce si la direction du projet n’est pas encore posée.',
+      estimated_knowledge_value: 0.42,
+    },
+    {
+      gap: 'timeline',
+      rejected_reason: 'Le délai n’aide pas assez si le modèle de départ reste flou.',
+      estimated_knowledge_value: 0.36,
+    },
+  ];
+
+  if (includesAnyText(lowerObjective, ['pension canine', 'pension pour chien', 'pension pour chiens', 'refuge', 'animaux', 'animalier', 'chien', 'chiens', 'chat', 'chats'])) {
+    selectedGap = 'hosting_model';
+    questionFocus = 'Savoir où les animaux seraient accueillis.';
+    whyThisMatters = 'Le lieu d’accueil change presque tout : investissement, démarches, sécurité, capacité, rythme quotidien et type de clientèle possible.';
+    valueScores = {
+      information_gain: 0.92,
+      ambiguity_reduction: 0.86,
+      decision_impact: 0.9,
+      cognitive_load_reduction: 0.78,
+    };
+    alternatives = [
+      {
+        gap: 'budget',
+        rejected_reason: 'Le budget dépendra fortement du lieu choisi, donc il est plus utile juste après.',
+        estimated_knowledge_value: 0.54,
+      },
+      {
+        gap: 'legal_status',
+        rejected_reason: 'Le cadre légal sera important, mais il dépend d’abord du modèle d’accueil.',
+        estimated_knowledge_value: 0.48,
+      },
+      {
+        gap: 'client_target',
+        rejected_reason: 'La clientèle se précisera mieux une fois la capacité et le lieu clarifiés.',
+        estimated_knowledge_value: 0.44,
+      },
+    ];
+  } else if (includesAnyText(lowerObjective, ['application', 'appli', 'app', 'site', 'logiciel', 'plateforme'])) {
+    selectedGap = 'target_user';
+    questionFocus = 'Savoir pour qui le projet doit d’abord être construit.';
+    whyThisMatters = 'Le premier public cible influence le périmètre, la complexité, les priorités V1 et le niveau de finition nécessaire.';
+    valueScores = {
+      information_gain: 0.9,
+      ambiguity_reduction: 0.82,
+      decision_impact: 0.88,
+      cognitive_load_reduction: 0.76,
+    };
+    alternatives = [
+      {
+        gap: 'features',
+        rejected_reason: 'Lister des fonctionnalités trop tôt risque de créer une usine à gaz.',
+        estimated_knowledge_value: 0.52,
+      },
+      {
+        gap: 'technology',
+        rejected_reason: 'La technologie vient après le public et l’usage prioritaire.',
+        estimated_knowledge_value: 0.34,
+      },
+    ];
+  } else if (includesAnyText(lowerObjective, ['restaurant', 'boutique', 'boulangerie', 'pâtisserie', 'patisserie', 'commerce'])) {
+    selectedGap = 'business_model_location';
+    questionFocus = 'Clarifier le modèle de départ : lieu physique, en ligne ou modèle mixte.';
+    whyThisMatters = 'Le modèle de départ conditionne le budget, les contraintes, les premières démarches et la façon de trouver les clients.';
+    valueScores = {
+      information_gain: 0.88,
+      ambiguity_reduction: 0.8,
+      decision_impact: 0.86,
+      cognitive_load_reduction: 0.72,
+    };
+    alternatives = [
+      {
+        gap: 'brand_identity',
+        rejected_reason: 'L’identité viendra mieux après le modèle de départ.',
+        estimated_knowledge_value: 0.38,
+      },
+      {
+        gap: 'supplier_list',
+        rejected_reason: 'Trop opérationnel à ce stade.',
+        estimated_knowledge_value: 0.31,
+      },
+    ];
+  } else if (includesAnyText(lowerObjective, ['livre', 'roman', 'chaîne', 'chaine', 'youtube', 'podcast', 'contenu'])) {
+    selectedGap = 'creative_intention';
+    questionFocus = 'Comprendre l’intention principale : expression, audience, revenus ou structure personnelle.';
+    whyThisMatters = 'L’intention change la forme du projet, le rythme de travail, les critères de réussite et les premières étapes utiles.';
+    valueScores = {
+      information_gain: 0.86,
+      ambiguity_reduction: 0.78,
+      decision_impact: 0.76,
+      cognitive_load_reduction: 0.7,
+    };
+    alternatives = [
+      {
+        gap: 'publishing_channel',
+        rejected_reason: 'Le canal dépendra de l’intention principale.',
+        estimated_knowledge_value: 0.41,
+      },
+    ];
+  }
+
+  const knowledgeValue = clamp01(
+    valueScores.information_gain * 0.4 +
+    valueScores.ambiguity_reduction * 0.25 +
+    valueScores.decision_impact * 0.25 +
+    valueScores.cognitive_load_reduction * 0.1,
+    0.75
+  );
+
+  return {
+    version: 'information-value-assessment-v1',
+    applies_to_domain: 'project',
+    selected_gap: selectedGap,
+    question_focus: questionFocus,
+    why_this_matters: whyThisMatters,
+    value_scores: {
+      ...valueScores,
+      knowledge_value: knowledgeValue,
+    },
+    alternatives,
+    principle: 'Identifier uniquement l’information dont la réponse ferait le plus progresser l’aide utile, sans transformer la conversation en questionnaire.',
+  };
+}
+
 function buildReasoningBasis(understanding) {
   const layers = getCognitiveLayers(understanding);
   const primaryIntent = getPrimaryIntent(understanding);
@@ -257,6 +455,20 @@ function buildReasoningBasis(understanding) {
       cognitive_intervention: cognitiveIntervention,
     },
   });
+  const informationValueAssessment = buildInformationValueAssessment({
+    understanding,
+    basis: {
+      ...provisionalBasis,
+      domain: situationProfile.domain,
+      cognitive_state: situationProfile.cognitive_state,
+      dominant_cognitive_need: situationProfile.dominant_need,
+      directive_detection: directiveDetection,
+      situation_profile: situationProfile,
+      cognitive_intervention: cognitiveIntervention,
+      understanding_assessment: understandingAssessment,
+    information_value_assessment: informationValueAssessment,
+    },
+  });
 
   return {
     ...provisionalBasis,
@@ -267,6 +479,7 @@ function buildReasoningBasis(understanding) {
     situation_profile: situationProfile,
     cognitive_intervention: cognitiveIntervention,
     understanding_assessment: understandingAssessment,
+    information_value_assessment: informationValueAssessment,
     confidence,
     temporal_scope: temporalScope,
     emotional_intensity: emotionalIntensity,
@@ -583,6 +796,7 @@ function buildReasoningOutput({ thought, understanding, basis, strategies, alter
       situation_profile: basis.situation_profile || null,
       cognitive_intervention: basis.cognitive_intervention || null,
       understanding_assessment: basis.understanding_assessment || null,
+      information_value_assessment: basis.information_value_assessment || null,
       hypothesis_evaluation_summary: hypothesisEvaluationSummary,
     },
     evaluated_hypotheses: basis.hypotheses.map(hypothesis => ({
@@ -619,6 +833,12 @@ function buildReasoningOutput({ thought, understanding, basis, strategies, alter
       behavior_changed: false,
       assessment: basis.understanding_assessment || null,
       principle: 'Nyra évalue si sa compréhension est suffisante pour produire une aide utile avant de choisir une stratégie.',
+    },
+    information_value_assessment_analysis: {
+      version: 'information-value-assessment-v1',
+      behavior_changed: false,
+      assessment: basis.information_value_assessment || null,
+      principle: 'Nyra évalue quelle information ferait le plus progresser l’aide utile avant de formuler une question.',
     },
     cognitive_need_analysis: {
       version: 'cognitive-need-strategy-annotation-v1',
@@ -681,7 +901,7 @@ function reasonAboutThought({ thought, context = {} } = {}) {
       nextEngine: null,
       behaviorChanged: false,
       metadata: {
-        internal_analyzers: ['hypothesis_evaluator_v2', 'hypothesis_arbitration_v1', 'directive_detection_v1', 'understanding_assessment_v1', 'situation_profile_v1', 'cognitive_intervention_selector_v1', 'project_clarification_strategy_v1', 'cognitive_layer_strategy_generator_v1', 'alternative_strategy_analyzer_v1', 'cognitive_need_strategy_annotation_v1', 'strategy_evaluator_v1', 'cognitive_questions_v1'],
+        internal_analyzers: ['hypothesis_evaluator_v2', 'hypothesis_arbitration_v1', 'directive_detection_v1', 'understanding_assessment_v1', 'information_value_assessment_v1', 'situation_profile_v1', 'cognitive_intervention_selector_v1', 'project_clarification_strategy_v1', 'cognitive_layer_strategy_generator_v1', 'alternative_strategy_analyzer_v1', 'cognitive_need_strategy_annotation_v1', 'strategy_evaluator_v1', 'cognitive_questions_v1'],
         foundation_role: 'construct_strategies_without_deciding',
         reasoning_priority: ['evaluated_hypotheses', 'facts', 'observations', 'fallback_signals'],
       },

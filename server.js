@@ -2001,9 +2001,9 @@ function buildPotentialProjectOfferReply(analysis = {}) {
 
   if (includesAny(lowerObjective, ['pension canine', 'pension pour chien', 'pension pour chiens', 'refuge', 'animaux', 'animalier', 'chien', 'chiens', 'chat', 'chats'])) {
     return [
-      'Ce genre de projet demande de poser quelques bases dès le départ, parce que le lieu, le rythme et les règles vont vite influencer toute la suite.',
+      'Avant même de parler démarches ou budget, il y a une décision qui va changer presque tout le reste : l’endroit où les chiens seront accueillis.',
       '',
-      'On peut le construire progressivement depuis ici, sans te noyer dans un plan tout fait.',
+      'On peut poser les bases depuis ici, une décision importante à la fois, sans te noyer dans un plan tout fait.',
       '',
       'Tu veux qu’on commence ?',
     ].join('\n');
@@ -2138,7 +2138,9 @@ function buildProjectClarificationReply(analysis = {}) {
 
   if (includesAny(lowerObjective, ['pension canine', 'pension pour chien', 'pension pour chiens', 'refuge', 'animaux', 'animalier', 'chien', 'chiens', 'chat', 'chats'])) {
     return [
-      'Les premières décisions vont beaucoup compter ici, parce qu’elles vont influencer le budget, les démarches, l’organisation quotidienne et la capacité d’accueil.',
+      'Avant même de parler démarches ou budget, il y a une décision qui va changer presque tout le reste : l’endroit où les chiens seront accueillis.',
+      '',
+      'Selon ce choix, les contraintes, les coûts, la capacité et même ton organisation quotidienne ne seront pas les mêmes.',
       '',
       question,
     ].join('\n');
@@ -2190,9 +2192,9 @@ function buildProjectFirstGuidanceReply(analysis = {}) {
   if (includesAny(lowerObjective, ['pension canine', 'pension pour chien', 'pension pour chiens', 'refuge', 'animaux', 'animalier', 'chien', 'chiens', 'chat', 'chats'])) {
     if (includesAny(lowerAnswer, ['chez moi', 'maison', 'domicile'])) {
       return [
-        'Commencer chez toi peut limiter l’investissement de départ, mais ça rend l’organisation quotidienne beaucoup plus importante.',
+        'Commencer chez toi peut te permettre de tester l’activité avec moins de risques, sans investir tout de suite dans un lieu dédié.',
         '',
-        'Il faudra penser espace disponible, sécurité des animaux, règles du logement et rythme de vie.',
+        'La limite, c’est que ton espace, ton rythme de vie et la sécurité des animaux vont vite déterminer ce qui est réaliste.',
         '',
         'Tu imagines accueillir quelques chiens ponctuellement, ou construire une activité régulière ?',
       ].join('\n');
@@ -2200,9 +2202,9 @@ function buildProjectFirstGuidanceReply(analysis = {}) {
 
     if (includesAny(lowerAnswer, ['lieu dédié', 'lieu dedie', 'local', 'terrain', 'établissement', 'etablissement'])) {
       return [
-        'Un lieu dédié donne plus de marge pour construire une vraie structure, mais il demande aussi plus de préparation dès le départ.',
+        'Un lieu dédié ouvre plus de possibilités, mais il augmente aussi le niveau d’engagement dès le départ.',
         '',
-        'Budget, autorisations, emplacement et capacité d’accueil vont devenir des décisions centrales.',
+        'L’emplacement, le budget, les autorisations et la capacité d’accueil vont alors devenir les premières vraies décisions structurantes.',
         '',
         'Tu te vois commencer avec un petit lieu simple, ou viser directement une structure professionnelle ?',
       ].join('\n');
